@@ -419,8 +419,8 @@ def test_search_page_highlights_and_links_to_utterance(env, monkeypatch):
     run_all(env)
 
     with TestClient(env.app) as client:
-        assert client.get("/search?q=смету").status_code == 401
-        page = client.get("/search?q=смету", auth=AUTH)
+        assert client.get("/legacy/search?q=смету").status_code == 401
+        page = client.get("/legacy/search?q=смету", auth=AUTH)
     assert page.status_code == 200
     assert "<mark>смету</mark>" in page.text
     assert "/session/xiao-01/7#u-1-0" in page.text
@@ -436,13 +436,13 @@ def test_rename_speaker_changes_labels_not_raw_data(env, monkeypatch):
 
     with TestClient(env.app) as client:
         response = client.post(
-            "/session/xiao-01/7/speakers", auth=AUTH,
+            "/legacy/session/xiao-01/7/speakers", auth=AUTH,
             content="name_0=%D0%98%D0%B3%D0%BE%D1%80%D1%8C&name_1=%D0%9C%D0%B0%D1%80%D0%B8%D1%8F&me=0",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             follow_redirects=False,
         )
         assert response.status_code == 303
-        page = client.get("/session/xiao-01/7", auth=AUTH)
+        page = client.get("/legacy/session/xiao-01/7", auth=AUTH)
 
     assert "Игорь:" in page.text and "Мария:" in page.text
     with closing(env.db.connect()) as conn:
@@ -479,7 +479,7 @@ def test_status_sees_gap_failure_and_duration_mismatch(env, monkeypatch):
     assert abs(s["deepgram_minutes"] - 1.0 / 60) < 1e-6
 
     with TestClient(env.app) as client:
-        page = client.get("/status", auth=AUTH)
+        page = client.get("/legacy/status", auth=AUTH)
     assert page.status_code == 200
     assert "битое аудио" in page.text
 
@@ -504,7 +504,7 @@ def test_session_page_has_seek_targets_and_sources(env, monkeypatch):
     run_all(env)
 
     with TestClient(env.app) as client:
-        page = client.get("/session/xiao-01/7", auth=AUTH)
+        page = client.get("/legacy/session/xiao-01/7", auth=AUTH)
     t = page.text
     assert "id='u-1-0' data-seek-part='1' data-seek-start='1.0'" in t
     assert "<audio controls preload='none' data-part='1'" in t
@@ -525,7 +525,7 @@ def test_web_marks_missing_owner_and_due_instead_of_inventing(env, monkeypatch):
     run_all(env)
 
     with TestClient(env.app) as client:
-        detail = client.get("/session/xiao-01/7", auth=AUTH)
+        detail = client.get("/legacy/session/xiao-01/7", auth=AUTH)
     assert "исполнитель не назван" in detail.text
     assert "срок не назван" in detail.text
 
@@ -534,7 +534,7 @@ def test_audio_supports_range_requests(env):
     """Safari на iPhone без Range не проигрывает аудио."""
     upload(env)
     with TestClient(env.app) as client:
-        response = client.get("/audio/xiao-01/7/1", auth=AUTH, headers={"Range": "bytes=0-43"})
+        response = client.get("/legacy/audio/xiao-01/7/1", auth=AUTH, headers={"Range": "bytes=0-43"})
         assert response.status_code == 206
         assert response.content[:4] == b"RIFF"
 
@@ -642,16 +642,16 @@ def test_tasks_page_closes_task_by_form(env, monkeypatch):
         task_id = env.db.task_rows(conn)[0]["task_id"]
 
     with TestClient(env.app) as client:
-        page = client.get("/tasks", auth=AUTH)
+        page = client.get("/legacy/tasks", auth=AUTH)
         assert "Выслать смету" in page.text
         response = client.post(
-            f"/tasks/xiao-01/7/{task_id}", auth=AUTH,
+            f"/legacy/tasks/xiao-01/7/{task_id}", auth=AUTH,
             content="status=done&back=%2Ftasks%3Fshow%3Dopen",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             follow_redirects=False,
         )
         assert response.status_code == 303
-        assert client.get("/tasks", auth=AUTH).text.count("Выслать смету") == 0
+        assert client.get("/legacy/tasks", auth=AUTH).text.count("Выслать смету") == 0
 
     with closing(env.db.connect()) as conn:
         assert conn.execute("SELECT status FROM tasks").fetchone()[0] == "done"
@@ -668,7 +668,7 @@ def test_task_form_does_not_redirect_outside(env, monkeypatch):
         task_id = env.db.task_rows(conn)[0]["task_id"]
     with TestClient(env.app) as client:
         response = client.post(
-            f"/tasks/xiao-01/7/{task_id}", auth=AUTH,
+            f"/legacy/tasks/xiao-01/7/{task_id}", auth=AUTH,
             content="status=done&back=https%3A%2F%2Fevil.example",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             follow_redirects=False,
@@ -693,15 +693,15 @@ def test_question_state_is_manual_and_survives_rebuild(env, monkeypatch):
         question_id = rows[0]["question_id"]
 
     with TestClient(env.app) as client:
-        assert "Кто смотрит договор" in client.get("/questions", auth=AUTH).text
+        assert "Кто смотрит договор" in client.get("/legacy/questions", auth=AUTH).text
         client.post(
-            f"/questions/xiao-01/7/{question_id}", auth=AUTH,
+            f"/legacy/questions/xiao-01/7/{question_id}", auth=AUTH,
             content="state=answered&back=%2Fquestions",
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             follow_redirects=False,
         )
-        assert "Кто смотрит договор" not in client.get("/questions", auth=AUTH).text
-        assert "Кто смотрит договор" in client.get("/questions?show=all", auth=AUTH).text
+        assert "Кто смотрит договор" not in client.get("/legacy/questions", auth=AUTH).text
+        assert "Кто смотрит договор" in client.get("/legacy/questions?show=all", auth=AUTH).text
 
     upload(env, part=2, marker=2)
     run_all(env)
@@ -727,8 +727,8 @@ def test_alias_joins_two_spellings_of_one_project(env, monkeypatch):
     assert projects["Пози флора"][0]["session"] == 7
 
     with TestClient(env.app) as client:
-        assert "Пози флора" in client.get("/projects", auth=AUTH).text
-        feed = client.get("/project/Posiflora", auth=AUTH)
+        assert "Пози флора" in client.get("/legacy/projects", auth=AUTH).text
+        feed = client.get("/legacy/project/Posiflora", auth=AUTH)
     assert "Обсудили смету." in feed.text          # псевдоним ведёт в ту же ленту
 
 
@@ -766,7 +766,7 @@ def test_review_collects_only_what_needs_owner(env, monkeypatch):
     assert kinds.count("источник не подтверждён") == 1
 
     with TestClient(env.app) as client:
-        assert "Проверить договор" in client.get("/review", auth=AUTH).text
+        assert "Проверить договор" in client.get("/legacy/review", auth=AUTH).text
 
 
 def test_old_transcripts_without_confidence_are_not_flagged(env, monkeypatch):
@@ -799,7 +799,7 @@ def test_digest_counts_without_calling_model(env, monkeypatch):
     assert day["my_open_tasks"] == 0        # «это я» ещё не отмечен
 
     with TestClient(env.app) as client:
-        assert "Записано минут" in client.get("/digest", auth=AUTH).text
+        assert "Записано минут" in client.get("/legacy/digest", auth=AUTH).text
 
 
 def test_web_escapes_transcript_text(env, monkeypatch):
@@ -813,6 +813,6 @@ def test_web_escapes_transcript_text(env, monkeypatch):
     run_all(env)
 
     with TestClient(env.app) as client:
-        detail = client.get("/session/xiao-01/7", auth=AUTH)
+        detail = client.get("/legacy/session/xiao-01/7", auth=AUTH)
     assert "<script>alert(1)</script>" not in detail.text
     assert "&lt;script&gt;" in detail.text

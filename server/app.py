@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager, closing
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+import static_site
 import web
 from db import AUDIO_DIR, connect, init_storage
 
@@ -29,7 +30,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Recorder", version="1", lifespan=lifespan)
-app.include_router(web.router)
+app.include_router(web.router, prefix="/legacy")
 
 
 def _int_header(value, name, low, high):
@@ -144,3 +145,9 @@ def sessions():
             " FROM parts GROUP BY device_id, session ORDER BY device_id, session"
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+# Catch-all регистрируется последним из всех: /api/v1/... объявлены декораторами
+# выше в этом же файле, а значит попадают в app.router раньше него — но легко
+# забыть при следующей правке, поэтому регистрация вынесена в самый конец файла.
+app.include_router(static_site.router)

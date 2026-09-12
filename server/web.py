@@ -7,41 +7,18 @@
 """
 import html
 import json
-import os
-import secrets
 from contextlib import closing
 from datetime import date
 from urllib.parse import parse_qs, quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 import db
 import textnorm
-
-OWNER_USER = os.environ.get("RECORDER_OWNER_USER", "owner")
-OWNER_PASSWORD = os.environ.get("RECORDER_OWNER_PASSWORD", "")
+from auth import owner
 
 router = APIRouter()
-security = HTTPBasic()
-
-
-def owner(credentials: HTTPBasicCredentials = Depends(security)):
-    """Базовая аутентификация поверх HTTPS.
-
-    Пустой пароль в настройках означает незакрытый сервер: отдавать разговоры
-    в таком состоянии нельзя, поэтому это отказ, а не свободный доступ.
-    """
-    if not OWNER_PASSWORD:
-        raise HTTPException(503, "RECORDER_OWNER_PASSWORD не задан, доступ закрыт")
-    # Сравнение постоянного времени: иначе пароль подбирается по задержке ответа.
-    user_ok = secrets.compare_digest(credentials.username, OWNER_USER)
-    password_ok = secrets.compare_digest(credentials.password, OWNER_PASSWORD)
-    if not (user_ok and password_ok):
-        raise HTTPException(401, "неверный логин или пароль",
-                            headers={"WWW-Authenticate": "Basic"})
-    return credentials.username
 
 
 PAGE = """<!doctype html>
