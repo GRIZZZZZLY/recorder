@@ -1,0 +1,69 @@
+/* ---------------------------------------------------------------------------
+ * Тёмная тема диктофона поверх токенов BoardUI.
+ *
+ * Референс Officevibe светлый; здесь взят его принцип двух синих: Ink Navy
+ * держит вес (канвас и карточки), Electric Cobalt отвечает за действие.
+ * Файл импортируется после globals.css, поэтому перекрывает значения .dark.
+ * Компоненты трогать не нужно: они читают эти же семантические токены.
+ * --------------------------------------------------------------------------- */
+
+.dark {
+  /* Поверхности: канвас темнее карточки, карточка темнее вложенного блока. */
+  --color-background-full: #080e33;
+  --color-background-primary-default: #0c1754;
+  --color-background-primary-hover: #132070;
+  --color-background-primary-active: #132070;
+  --color-background-inner-default: #0c1754;
+  --color-background-secondary-default: #132070;
+  --color-background-secondary-hover: #1b2a8a;
+  --color-background-tertiary-default: #132070;
+  --color-background-tertiary-hover: #1b2a8a;
+
+  /* Текст. */
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #eaebf8;
+  --color-text-tertiary: rgba(234, 235, 248, 0.6);
+  --color-text-placeholder: rgba(234, 235, 248, 0.45);
+  --color-text-white: #ffffff;
+
+  /* Иконки. */
+  --color-foreground-icon-primary: #ffffff;
+  --color-foreground-icon-secondary: #eaebf8;
+  --color-foreground-icon-tertiary: rgba(234, 235, 248, 0.6);
+
+  /* Линии: тёплый кремовый волос референса вместо холодного серого. */
+  --color-separator-border: rgba(240, 233, 225, 0.14);
+  --color-separator-border-strong: rgba(240, 233, 225, 0.24);
+  --color-border-button-default: rgba(240, 233, 225, 0.14);
+  --color-border-button-hover: rgba(240, 233, 225, 0.28);
+  --color-border-button-active: rgba(240, 233, 225, 0.34);
+  --color-border-table: rgba(240, 233, 225, 0.14);
+  --color-border-checkbox-default: rgba(240, 233, 225, 0.28);
+
+  /* Действие: единственная хроматическая точка на странице. */
+  --color-accent-400: #3d5aff;
+  --color-accent-500: #2545ff;
+  --color-accent-600: #1c37d9;
+  --color-accent-700: #1730b0;
+  --color-border-focus-ring: #3d5aff;
+}
+
+/* Состояния источника и просрочки. Три цвета, больше не вводить. */
+:root {
+  --color-source-confirmed: #34d399;
+  --color-source-unconfirmed: #fbbf24;
+  --color-source-missing: #ff6b5c;
+}
+
+/* Подсветка поиска: лаванда на нави, как mark в референсе. */
+mark {
+  background-color: #eaebf8;
+  color: #0c1754;
+  border-radius: 0.25rem;
+  padding: 0 0.15em;
+}
+
+/* Числа и время не должны прыгать по ширине при обновлении. */
+.nums {
+  font-variant-numeric: tabular-nums;
+}
