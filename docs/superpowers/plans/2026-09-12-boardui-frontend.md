@@ -25,7 +25,7 @@
 - Точные значения тёмной темы: канвас `#080e33`, карточка `#0c1754`, вложенное `#132070`, текст `#ffffff` и `#eaebf8`, линия `rgba(240, 233, 225, 0.14)`, действие `#2545ff` (ховер `#3d5aff`, нажатие `#1c37d9`), коралл `#ff6b5c`.
 - Радиусы: карточки и поля 16px (`rounded-2xl`), пилюли `rounded-full`. Тень только у плеера: `0 8px 32px rgba(0, 0, 0, 0.4)`.
 - Каждая задача заканчивается зелёным `cd server && python -m pytest -q` (50 проверок на старте плана) и, начиная с задачи 2, зелёными `npm run typecheck` и `npm run build` в `web/`.
-- Git в проекте нет. Шаги «Commit» выполняются как снимок каталога: `tools/snapshot.sh <имя>` создаёт `.snapshots/<дата>-<имя>/` копией изменённых файлов. Если владелец инициализирует git, шаги становятся обычными `git add` и `git commit`.
+- Работа идёт в ветке `boardui-frontend` (базовый коммит `361b50c`). Коммит в конце каждой задачи обязателен; сообщение на русском в формате `<тип>: <что сделано>`, типы `feat`, `fix`, `refactor`, `test`, `docs`, `chore`. Собранный `web/out`, `node_modules` и `demo-data` в историю не попадают — они в `.gitignore`.
 
 ---
 
@@ -181,7 +181,7 @@ cd /d/PROJECTS/Recorder_v0_1
 npx create-next-app@latest web --ts --tailwind --eslint --app --src-dir=false --import-alias "@/*" --no-turbopack --yes
 cd web
 npx boardui@latest init
-npx boardui@latest add button badge button-group input radio table tabs tooltip dashboard-sidebar
+npx boardui@latest add button badge button-group input radio table dashboard-sidebar
 ```
 
 - [ ] **Step 2: Включить экспорт и прокси для разработки**
@@ -370,10 +370,10 @@ Expected: обе команды без ошибок.
 
 Добавить в `web/package.json` скрипт `"typecheck": "tsc --noEmit"`.
 
-Убедиться, что `web/.gitignore` содержит `node_modules`, `.next`, а `out` — **не** содержит: собранный каталог едет на VPS.
+Корневой `.gitignore` уже покрывает `node_modules`, `web/.next` и `web/out`. Собранный каталог в историю не попадает: `tools/deploy.sh` собирает его сам и кладёт на VPS через rsync из локального каталога, а в истории он забивал бы diff каждой задачи тысячами строк.
 
 ```bash
-cd /d/PROJECTS/Recorder_v0_1 && tools/snapshot.sh web-skeleton
+git add -A && git commit -m "feat: каркас фронтенда на BoardUI с тёмной темой"
 ```
 
 ---
@@ -458,7 +458,45 @@ def test_site_does_not_serve_files_outside_the_build(site):
 Run: `cd server && python -m pytest test_api_ui.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'static_site'`.
 
-- [ ] **Step 3: Написать отдачу статики**
+- [ ] **Step 3: Вынести аутентификацию в отдельный модуль**
+
+Новые модули не должны зависеть от `web.py`, который на последней задаче удаляется. Создать `server/auth.py`, перенеся в него из `web.py` без изменений: `OWNER_USER`, `OWNER_PASSWORD`, `security = HTTPBasic()` и функцию `owner` целиком вместе с комментариями. В `web.py` удалить перенесённое и добавить `from auth import owner` — остальные его страницы продолжают работать.
+
+`server/auth.py`:
+
+```python
+"""Аутентификация владельца. Basic поверх HTTPS: пользователь один.
+
+Модуль отдельный, потому что зависимость `owner` нужна и страницам, и JSON-API,
+и отдаче статики, а страницы уходят вместе с web.py.
+"""
+import os
+import secrets
+
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+
+OWNER_USER = os.environ.get("RECORDER_OWNER_USER", "owner")
+OWNER_PASSWORD = os.environ.get("RECORDER_OWNER_PASSWORD", "")
+
+security = HTTPBasic()
+
+
+def owner(credentials: HTTPBasicCredentials = Depends(security)):
+    """Пустой пароль в настройках означает незакрытый сервер: отдавать разговоры
+    в таком состоянии нельзя, поэтому это отказ, а не свободный доступ."""
+    if not OWNER_PASSWORD:
+        raise HTTPException(503, "RECORDER_OWNER_PASSWORD не задан, доступ закрыт")
+    # Сравнение постоянного времени: иначе пароль подбирается по задержке ответа.
+    user_ok = secrets.compare_digest(credentials.username, OWNER_USER)
+    password_ok = secrets.compare_digest(credentials.password, OWNER_PASSWORD)
+    if not (user_ok and password_ok):
+        raise HTTPException(401, "неверный логин или пароль",
+                            headers={"WWW-Authenticate": "Basic"})
+    return credentials.username
+```
+
+- [ ] **Step 4: Написать отдачу статики**
 
 `server/static_site.py`:
 
@@ -475,7 +513,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 
-from web import owner
+from auth import owner
 
 WEB_DIR = Path(os.environ.get(
     "RECORDER_WEB_DIR",
@@ -520,7 +558,7 @@ def site(path: str = "", _=Depends(owner)):
     return FileResponse(hit)
 ```
 
-- [ ] **Step 4: Подключить маршруты в нужном порядке**
+- [ ] **Step 5: Подключить маршруты в нужном порядке**
 
 В `server/app.py` заменить подключение `web.router` на три строки. Catch-all идёт последним, иначе он перехватит `/api` и `/audio`:
 
@@ -532,12 +570,12 @@ app.include_router(web.router, prefix="/legacy")
 app.include_router(static_site.router)
 ```
 
-- [ ] **Step 5: Запустить тесты**
+- [ ] **Step 6: Запустить тесты**
 
 Run: `cd server && python -m pytest -q`
 Expected: PASS. Тесты страниц из `test_pipeline.py` теперь бьют по старым адресам — поправить в них пути на `/legacy/...` (например, `client.get("/legacy/tasks", auth=AUTH)`).
 
-- [ ] **Step 6: Проверить живьём**
+- [ ] **Step 7: Проверить живьём**
 
 ```bash
 cd server && RECORDER_DATA=../demo-data RECORDER_OWNER_PASSWORD=demo RECORDER_WEB_DIR=../web/out \
@@ -550,7 +588,7 @@ curl -s -o /dev/null -w "legacy: %{http_code}\n" -u owner:demo http://127.0.0.1:
 Expected: обе строки `200`.
 
 ```bash
-cd /d/PROJECTS/Recorder_v0_1 && tools/snapshot.sh static-serving
+git add -A && git commit -m "<тип>: <что сделано в этой задаче>"
 ```
 
 ---
@@ -576,7 +614,6 @@ def prepared(env, monkeypatch):
     """Сессия 7 с расшифровкой, саммари, задачей и вопросом."""
     upload(env)
     monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
-    result = json.loads(json.dumps(env.SUMMARY if hasattr(env, "SUMMARY") else {}))
     summary_stub(env, monkeypatch)
     run_all(env)
     return env
@@ -693,7 +730,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import db
-from web import owner
+from auth import owner
 
 router = APIRouter(prefix="/api/ui")
 
@@ -703,15 +740,26 @@ class Speakers(BaseModel):
     me: int | None = None
 
 
-def day_of(days, device_id, session):
-    value = days.get((device_id, session))
-    return value.isoformat() if value else None
+def with_source(tasks):
+    """Разбирает поле source из строки JSON в объект.
+
+    В базе оно лежит строкой, а /review уже отдаёт источник объектом. Одна форма
+    на оба роута: иначе фронтенду пришлось бы знать, где парсить, а где нет.
+    """
+    for task in tasks:
+        raw = task.get("source")
+        if isinstance(raw, str):
+            try:
+                task["source"] = json.loads(raw)
+            except json.JSONDecodeError:
+                task["source"] = None
+    return tasks
 
 
 @router.get("/digest")
 def digest(_=Depends(owner)):
     with closing(db.connect()) as conn:
-        tasks = db.task_rows(conn, only_open=True)
+        tasks = with_source(db.task_rows(conn, only_open=True))
         return {
             "day": db.digest(conn, 1),
             "week": db.digest(conn, 7),
@@ -746,7 +794,7 @@ def session_detail(device_id: str, session: int, _=Depends(owner)):
         timeline, failed = db.session_timeline(conn, device_id, session)
         names = db.speaker_names(conn, device_id, session)
         speakers = sorted({u["speaker"] for u in timeline if u["speaker"] is not None})
-        tasks = db.task_rows(conn, only_open=False, session=session)
+        tasks = with_source(db.task_rows(conn, only_open=False, session=session))
         questions = [q for q in db.question_rows(conn, only_open=False)
                      if q["device_id"] == device_id and q["session"] == session]
         day = db.session_day(conn, device_id, session)
@@ -796,7 +844,7 @@ Run: `cd server && python -m pytest -q`
 Expected: PASS.
 
 ```bash
-cd /d/PROJECTS/Recorder_v0_1 && tools/snapshot.sh api-sessions
+git add -A && git commit -m "<тип>: <что сделано в этой задаче>"
 ```
 
 ---
@@ -825,6 +873,8 @@ def test_tasks_filters_and_status_change(env, monkeypatch):
         assert rows["has_me"] is False and len(rows["tasks"]) == 1
         task_id = rows["tasks"][0]["task_id"]
         assert rows["tasks"][0]["due_date"]          # «пятница» разобрана
+        # source приходит объектом, как в /review, а не строкой JSON из базы
+        assert rows["tasks"][0]["source"]["confirmed"] is True
 
         assert client.post(f"/api/ui/tasks/xiao-01/7/{task_id}", auth=AUTH,
                            json={"status": "done"}).status_code == 200
@@ -876,7 +926,7 @@ def test_projects_list_feed_and_alias(env, monkeypatch):
 
 def test_search_returns_segments_not_html(env, monkeypatch):
     prepared(env, monkeypatch)
-    if not env.web.textnorm.available():
+    if not env.db.textnorm.available():
         pytest.skip("pymorphy3 не установлен")
     with TestClient(env.app) as client:
         hits = client.get("/api/ui/search?q=сметы", auth=AUTH).json()
@@ -985,8 +1035,8 @@ class Alias(BaseModel):
 @router.get("/tasks")
 def tasks(show: str = "open", session: int | None = None, _=Depends(owner)):
     with closing(db.connect()) as conn:
-        rows = db.task_rows(conn, only_open=show != "all", mine=show == "mine",
-                            overdue=show == "overdue", session=session)
+        rows = with_source(db.task_rows(conn, only_open=show != "all", mine=show == "mine",
+                                        overdue=show == "overdue", session=session))
         return {"tasks": rows, "has_me": bool(db.my_names(conn))}
 
 
@@ -1094,7 +1144,7 @@ curl -s -u owner:demo "http://127.0.0.1:8099/api/ui/tasks?show=open" | python -c
 Expected: `2 2026-09-18`.
 
 ```bash
-cd /d/PROJECTS/Recorder_v0_1 && tools/snapshot.sh api-rest
+git add -A && git commit -m "<тип>: <что сделано в этой задаче>"
 ```
 
 ---
@@ -1159,7 +1209,7 @@ export type Task = {
   owner: string;
   due_said: string;
   due_date: string | null;
-  source: string | null;
+  source: Source;
   status: "open" | "done" | "dismissed";
   vanished: number;
   mine: boolean;
@@ -1457,7 +1507,7 @@ Expected: без ошибок.
 Запустить `cd server && RECORDER_DATA=../demo-data RECORDER_OWNER_PASSWORD=demo python -m uvicorn app:app --port 8099 --host 127.0.0.1 &` и `cd web && npm run dev`. Открыть `http://127.0.0.1:3000/`, ввести owner/demo. Ожидается: тёмный фон `#080e33`, боковая панель, пункты меню, бейдж у «Спорных».
 
 ```bash
-cd /d/PROJECTS/Recorder_v0_1 && tools/snapshot.sh web-shell
+git add -A && git commit -m "<тип>: <что сделано в этой задаче>"
 ```
 
 ---
@@ -1544,7 +1594,6 @@ function due(task: Task) {
 
 export function TaskRow({ task, onChanged }: { task: Task; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
-  const source = task.source ? (JSON.parse(task.source) as Task["source"] extends string ? never : never) : null;
 
   async function change(status: Task["status"]) {
     setBusy(true);
@@ -1577,6 +1626,10 @@ export function TaskRow({ task, onChanged }: { task: Task; onChanged: () => void
           {chips.join(" · ")}
         </p>
       )}
+      <div className="mt-3 flex items-center gap-2">
+        <SourceDot source={task.source} />
+        <ListenLink source={task.source} deviceId={task.device_id} session={task.session} />
+      </div>
       <div className="mt-4 flex flex-wrap items-center gap-3">
         {ACTIONS.filter((action) => action.status !== task.status).map((action) => (
           <Button key={action.status} variant="ghost" size="small" isDisabled={busy}
@@ -1590,13 +1643,7 @@ export function TaskRow({ task, onChanged }: { task: Task; onChanged: () => void
 }
 ```
 
-Примечание: `task.source` приходит строкой JSON из базы. Разобрать её один раз здесь функцией `JSON.parse` в `useMemo` и передать в `<SourceDot>` и `<ListenLink>`; временная заглушка выше заменяется на:
-
-```tsx
-const source = useMemo(() => (task.source ? JSON.parse(task.source) : null), [task.source]);
-```
-
-и в разметку добавляется строка `<div className="mt-2 flex items-center gap-2"><SourceDot source={source} /><ListenLink source={source} deviceId={task.device_id} session={task.session} /></div>`.
+`task.source` приходит из API уже объектом: `/api/ui/tasks` и `/api/ui/digest` разбирают его на сервере функцией `with_source` (задача 4). Парсить JSON на клиенте не нужно.
 
 - [ ] **Step 3: Страница сводки**
 
@@ -1702,7 +1749,7 @@ Expected: без ошибок.
 Ожидается: плитки показывают 4.0 минуты, 3 разговора, 2 новых задачи; блок «Мои открытые задачи» объясняет, что «это я» не отмечен; три последние записи кликабельны.
 
 ```bash
-cd /d/PROJECTS/Recorder_v0_1 && tools/snapshot.sh page-digest
+git add -A && git commit -m "<тип>: <что сделано в этой задаче>"
 ```
 
 ---
@@ -1792,7 +1839,7 @@ Run: `cd web && npm run typecheck && npm run build`
 Expected: без ошибок. На `http://127.0.0.1:3000/records/` видны три сессии демо-данных: 0009, 0008, 0007.
 
 ```bash
-cd /d/PROJECTS/Recorder_v0_1 && tools/snapshot.sh page-records
+git add -A && git commit -m "<тип>: <что сделано в этой задаче>"
 ```
 
 ---
@@ -2005,7 +2052,7 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
 ```tsx
 "use client";
 
-import { Suspense } from "react";
+import { Suspense, useMemo } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { PageTitle } from "@/components/recorder/eyebrow";
@@ -2030,7 +2077,17 @@ type Detail = {
 
 function Transcript({ timeline }: { timeline: Utterance[] }) {
   const seek = useSeek();
-  let currentPart: number | null = null;
+  // Группировка заранее: заголовок части ставится по данным, а не по счётчику,
+  // который менялся бы прямо во время отрисовки.
+  const byPart = useMemo(() => {
+    const groups: { part: number; items: Utterance[] }[] = [];
+    for (const item of timeline) {
+      const last = groups[groups.length - 1];
+      if (last && last.part === item.part) last.items.push(item);
+      else groups.push({ part: item.part, items: [item] });
+    }
+    return groups;
+  }, [timeline]);
 
   return (
     <section className="mt-8 pb-40">
@@ -2038,27 +2095,22 @@ function Transcript({ timeline }: { timeline: Utterance[] }) {
       <p className="mt-1 text-body-2-regular text-text-tertiary">
         Нажмите на реплику, чтобы послушать.
       </p>
-      <div className="mt-3 flex flex-col gap-1">
-        {timeline.map((u) => {
-          const header = u.part !== currentPart ? (currentPart = u.part) : null;
-          return (
-            <div key={`${u.part}-${u.idx}`}>
-              {header !== null && (
-                <p className="mt-4 text-caption-1-medium uppercase tracking-[0.12em] text-text-tertiary">
-                  часть {String(u.part).padStart(2, "0")}
-                </p>
-              )}
-              <button type="button" id={`u-${u.part}-${u.idx}`}
-                      onClick={() => seek(u.part, u.start)}
-                      className="w-full rounded-xl px-3 py-2 text-left hover:bg-background-secondary-default target:bg-background-secondary-default">
-                <span className="nums mr-2 text-text-tertiary">{formatClock(u.start_abs)}</span>
-                <span className="text-body-medium text-text-primary">{u.label}:</span>{" "}
-                <span className="text-body-regular text-text-secondary">{u.text}</span>
-              </button>
-            </div>
-          );
-        })}
-      </div>
+      {byPart.map((group) => (
+        <div key={group.part} className="mt-4 flex flex-col gap-1">
+          <p className="text-caption-1-medium uppercase tracking-[0.12em] text-text-tertiary">
+            часть {String(group.part).padStart(2, "0")}
+          </p>
+          {group.items.map((u) => (
+            <button key={`${u.part}-${u.idx}`} type="button" id={`u-${u.part}-${u.idx}`}
+                    onClick={() => seek(u.part, u.start)}
+                    className="w-full rounded-xl px-3 py-2 text-left hover:bg-background-secondary-default target:bg-background-secondary-default">
+              <span className="nums mr-2 text-text-tertiary">{formatClock(u.start_abs)}</span>
+              <span className="text-body-medium text-text-primary">{u.label}:</span>{" "}
+              <span className="text-body-regular text-text-secondary">{u.text}</span>
+            </button>
+          ))}
+        </div>
+      ))}
     </section>
   );
 }
@@ -2148,7 +2200,7 @@ Expected: без ошибок. Если сборка ругается на `useS
 Ожидается: темы ведут на `/project/`, у пункта «Проверить пункт о пени» жёлтая точка «источник не подтверждён», клик по «Послушать основание» запускает нужную часть с нужной секунды, клик по реплике перематывает, форма говорящих сохраняет имена и после перезагрузки подписи в транскрипте меняются на «Игорь» и «Мария».
 
 ```bash
-cd /d/PROJECTS/Recorder_v0_1 && tools/snapshot.sh page-session
+git add -A && git commit -m "<тип>: <что сделано в этой задаче>"
 ```
 
 ---
@@ -2272,7 +2324,7 @@ Expected: без ошибок.
 На `http://127.0.0.1:3000/tasks/`: две задачи, у первой срок «пятница · 18 сентября 2026», «Закрыть» убирает её из фильтра «Открытые» и оставляет в «Все» с чипом «закрыта». После проверки вернуть демо-данные: `python tools/seed_demo.py`.
 
 ```bash
-cd /d/PROJECTS/Recorder_v0_1 && tools/snapshot.sh page-tasks
+git add -A && git commit -m "<тип>: <что сделано в этой задаче>"
 ```
 
 ---
@@ -2442,7 +2494,7 @@ Expected: без ошибок.
 На демо-данных `/questions/` показывает «Кто согласует фасад с городом», «Ответ получен» убирает его из фильтра «Без ответа». `/review/` показывает три группы: «задача без исполнителя», «источник не подтверждён», «число распознано неуверенно».
 
 ```bash
-cd /d/PROJECTS/Recorder_v0_1 && tools/snapshot.sh page-questions-review
+git add -A && git commit -m "<тип>: <что сделано в этой задаче>"
 ```
 
 ---
@@ -2652,7 +2704,7 @@ Expected: без ошибок.
 На демо-данных `/projects/` показывает два проекта; после добавления псевдонима «смета заказчику» → «Смета для заказчика» список сводится. Переход с темы на странице сессии ведёт в ленту, и она открывается по псевдониму тоже.
 
 ```bash
-cd /d/PROJECTS/Recorder_v0_1 && tools/snapshot.sh page-projects
+git add -A && git commit -m "<тип>: <что сделано в этой задаче>"
 ```
 
 ---
@@ -2747,6 +2799,9 @@ export default function SearchPage() {
 ```tsx
 "use client";
 
+import {
+  Table, TableBody, TableCell, TableColumn, TableHeader, TableRow,
+} from "@/components/base/table/table";
 import { PageTitle } from "@/components/recorder/eyebrow";
 import { Empty, Failed, Loading } from "@/components/recorder/states";
 import { Tile } from "@/components/recorder/tile";
@@ -2773,28 +2828,18 @@ function Rows({ title, hint, head, rows }: {
       <h2 className="text-title-3-semibold text-text-primary">{title}</h2>
       {hint ? <p className="mt-1 text-body-2-regular text-text-tertiary">{hint}</p> : null}
       {rows.length === 0 ? <div className="mt-3"><Empty text="Нет." /></div> : (
-        <div className="mt-3 overflow-x-auto rounded-2xl border border-separator-border">
-          <table className="w-full border-collapse text-left">
-            <thead>
-              <tr>{head.map((cell) => (
-                <th key={cell} className="border-b border-separator-border px-4 py-3 text-caption-1-medium uppercase tracking-[0.12em] text-text-tertiary">
-                  {cell}
-                </th>
-              ))}</tr>
-            </thead>
-            <tbody>
-              {rows.map((row, index) => (
-                <tr key={index}>
-                  {row.map((cell, cellIndex) => (
-                    <td key={cellIndex} className="nums border-b border-separator-border px-4 py-3 text-body-2-regular text-text-secondary">
-                      {cell}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Table aria-label={title} size="sm" containerClassName="mt-3 rounded-2xl border border-separator-border">
+          <TableHeader>
+            {head.map((cell) => <TableColumn key={cell} isRowHeader={cell === head[0]}>{cell}</TableColumn>)}
+          </TableHeader>
+          <TableBody>
+            {rows.map((row, index) => (
+              <TableRow key={index}>
+                {row.map((cell, cellIndex) => <TableCell key={cellIndex} className="nums">{cell}</TableCell>)}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       )}
     </section>
   );
@@ -2849,7 +2894,7 @@ Expected: без ошибок.
 На демо-данных `/search/?q=сметы` подсвечивает «смету» и ведёт на реплику. `/status/` показывает пропуск части 3 в сессии 0009 и расхождение длительности.
 
 ```bash
-cd /d/PROJECTS/Recorder_v0_1 && tools/snapshot.sh page-search-status
+git add -A && git commit -m "<тип>: <что сделано в этой задаче>"
 ```
 
 ---
@@ -2866,24 +2911,20 @@ cd /d/PROJECTS/Recorder_v0_1 && tools/snapshot.sh page-search-status
 - Consumes: всё предыдущее
 - Produces: `server/auth.py` с функцией `owner`; `tools/deploy.sh`
 
-- [ ] **Step 1: Перенести аутентификацию в отдельный модуль**
-
-Создать `server/auth.py`, перенеся в него из `web.py` без изменений: `OWNER_USER`, `OWNER_PASSWORD`, `security`, функцию `owner`. В `api_ui.py` и `static_site.py` заменить `from web import owner` на `from auth import owner`.
-
-- [ ] **Step 2: Перенести отдачу аудио**
+- [ ] **Step 1: Перенести отдачу аудио**
 
 Роут `/audio/{device_id}/{session}/{part}` из `web.py` перенести в `api_ui.py` без изменений тела (`FileResponse` с Range обязателен для Safari). Тест `test_audio_supports_range_requests` в `test_pipeline.py` менять не требуется — адрес тот же.
 
-- [ ] **Step 3: Удалить старый интерфейс**
+- [ ] **Step 2: Удалить старый интерфейс**
 
-Удалить `server/web.py` целиком и строку `app.include_router(web.router, prefix="/legacy")` из `app.py`. Из `server/test_pipeline.py` удалить тесты, которые бьют по HTML-страницам: `test_search_page_highlights_and_links_to_utterance`, `test_session_page_has_seek_targets_and_sources`, `test_web_marks_missing_owner_and_due_instead_of_inventing`, `test_rename_speaker_changes_labels_not_raw_data` (его проверка данных переезжает в `test_api_ui.py::test_speakers_are_saved_as_json`), `test_tasks_page_closes_task_by_form`, `test_task_form_does_not_redirect_outside`, `test_web_escapes_transcript_text`, `test_status_sees_gap_failure_and_duration_mismatch` (часть про страницу; проверку `db.processing_status` оставить).
+Удалить `server/web.py` целиком и строку `app.include_router(web.router, prefix="/legacy")` из `app.py`. В фикстуре `env` файла `server/test_pipeline.py` убрать `web` из списка импорта и перезагрузки модулей, а `bundle.web` заменить на `bundle.textnorm = textnorm` (единственное обращение — проверка `env.db.textnorm.available()` в тесте поиска, она становится `env.textnorm.available()`). Из `server/test_pipeline.py` удалить тесты, которые бьют по HTML-страницам: `test_search_page_highlights_and_links_to_utterance`, `test_session_page_has_seek_targets_and_sources`, `test_web_marks_missing_owner_and_due_instead_of_inventing`, `test_rename_speaker_changes_labels_not_raw_data` (его проверка данных переезжает в `test_api_ui.py::test_speakers_are_saved_as_json`), `test_tasks_page_closes_task_by_form`, `test_task_form_does_not_redirect_outside`, `test_web_escapes_transcript_text`, `test_status_sees_gap_failure_and_duration_mismatch` (часть про страницу; проверку `db.processing_status` оставить).
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 3: Запустить тесты**
 
 Run: `cd server && python -m pytest -q`
 Expected: PASS. Ни один тест не должен обращаться к `web.py`.
 
-- [ ] **Step 5: Скрипт развёртки**
+- [ ] **Step 4: Скрипт развёртки**
 
 `tools/deploy.sh`:
 
@@ -2913,7 +2954,7 @@ echo "  ssh $HOST 'sudo systemctl restart recorder-api recorder-worker'"
 
 Сделать исполняемым: `chmod +x tools/deploy.sh`.
 
-- [ ] **Step 6: Переписать README**
+- [ ] **Step 5: Переписать README**
 
 В `server/README_RU.md`:
 - в таблицу файлов добавить `api_ui.py`, `static_site.py`, `auth.py`, убрать `web.py`;
@@ -2922,7 +2963,7 @@ echo "  ssh $HOST 'sudo systemctl restart recorder-api recorder-worker'"
 - в «Запуск» заменить число проверок на фактическое из `pytest -q`;
 - в «Незакрытые вопросы» добавить измеренный размер бандла: взять из вывода `npm run build` (строка First Load JS) и записать числом, а не оценкой.
 
-- [ ] **Step 7: Финальная проверка целиком**
+- [ ] **Step 6: Финальная проверка целиком**
 
 ```bash
 cd /d/PROJECTS/Recorder_v0_1 && python tools/seed_demo.py
@@ -2940,7 +2981,7 @@ done
 Expected: все строки `200`. Открыть в браузере `http://127.0.0.1:8099/`, пройти по всем восьми пунктам меню, проверить на ширине телефона (в инструментах разработчика 390×844): боковая панель становится выдвижной, плитки в две колонки, горизонтальной прокрутки нет, плеер на странице сессии не перекрывает последнюю реплику.
 
 ```bash
-cd /d/PROJECTS/Recorder_v0_1 && tools/snapshot.sh frontend-complete
+git add -A && git commit -m "<тип>: <что сделано в этой задаче>"
 ```
 
 ---
