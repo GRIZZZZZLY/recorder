@@ -2,6 +2,7 @@ import Link from "next/link";
 import { RiPlayCircleLine } from "@remixicon/react";
 import { cx } from "@/utils/cx";
 import type { Source } from "@/lib/api";
+import { sessionHref } from "@/lib/session-link";
 
 /** Цвет точки — состояние источника: подтверждён, не подтверждён, не найден. */
 export function SourceDot({ source }: { source: Source }) {
@@ -27,7 +28,7 @@ export function ListenLink({ source, deviceId, session }:
   if (!source) return null;
   return (
     <Link
-      href={`/session/?d=${encodeURIComponent(deviceId)}&n=${session}#u-${source.part}-${source.idx}`}
+      href={sessionHref(deviceId, session, source.part, source.idx)}
       className="inline-flex items-center gap-1 text-body-2-medium text-text-secondary underline-offset-2 hover:underline"
     >
       <RiPlayCircleLine className="size-4" aria-hidden />

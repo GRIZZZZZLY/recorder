@@ -62,8 +62,8 @@
 
 /* Подсветка поиска: лаванда на нави, как mark в референсе. */
 mark {
-  background-color: #eaebf8;
-  color: #0c1754;
+  background-color: var(--color-text-secondary);
+  color: var(--color-background-primary-default);
   border-radius: 0.25rem;
   padding: 0 0.15em;
 }
