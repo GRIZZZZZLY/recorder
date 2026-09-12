@@ -7,6 +7,7 @@ import { PageTitle } from "@/components/recorder/eyebrow";
 import { Empty, Failed, Loading } from "@/components/recorder/states";
 import { useApi } from "@/lib/use-api";
 import { formatDay } from "@/lib/format";
+import { sessionHref } from "@/lib/session-link";
 
 type Feed = {
   name: string;
@@ -56,7 +57,7 @@ function Body() {
                 className="rounded-2xl border border-separator-border bg-background-primary-default p-6">
               <p className="font-[family-name:var(--font-literata)] text-title-3-semibold text-text-primary">
                 <span className="nums">{formatDay(item.day)}</span>{" "}
-                <Link href={`/session/?d=${encodeURIComponent(item.device_id)}&n=${item.session}`}
+                <Link href={sessionHref(item.device_id, item.session)}
                       className="text-body-2-medium text-text-tertiary underline-offset-2 hover:underline">
                   сессия <span className="nums">{String(item.session).padStart(4, "0")}</span>
                 </Link>

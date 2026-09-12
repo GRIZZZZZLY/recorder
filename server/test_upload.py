@@ -7,6 +7,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 TOKEN = "test-token"
+PASSWORD = "owner-secret"
+AUTH = ("owner", PASSWORD)
 
 
 def wav(seconds=1, marker=0):
@@ -39,6 +41,7 @@ def headers(body, session=7, part=1, crc=None, device="xiao-01", recovered="0"):
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("RECORDER_DATA", str(tmp_path))
     monkeypatch.setenv("RECORDER_DEVICE_TOKEN", TOKEN)
+    monkeypatch.setenv("RECORDER_OWNER_PASSWORD", PASSWORD)
     import db as db_module
     import app as app_module
 
@@ -74,7 +77,7 @@ def test_repeat_of_same_part_is_duplicate_not_second_row(client):
     assert second.status_code == 200
     assert second.json()["status"] == "duplicate"
     assert second.json()["crc32"] == first.json()["crc32"]
-    sessions = client.get("/api/v1/sessions").json()
+    sessions = client.get("/api/v1/sessions", auth=AUTH).json()
     assert len(sessions) == 1
     assert sessions[0]["parts"] == 1
 
@@ -99,7 +102,7 @@ def test_wrong_crc_is_rejected_and_leaves_nothing_behind(client):
 
     assert response.status_code == 422
     assert list(client.audio_dir.iterdir()) == []
-    assert client.get("/api/v1/sessions").json() == []
+    assert client.get("/api/v1/sessions", auth=AUTH).json() == []
 
 
 def test_wrong_token_is_rejected(client):
@@ -127,7 +130,7 @@ def test_recovered_flag_is_kept(client):
     client.post(
         "/api/v1/upload", content=body, headers=headers(body, recovered="1")
     )
-    assert client.get("/api/v1/sessions").json()[0]["recovered_parts"] == 1
+    assert client.get("/api/v1/sessions", auth=AUTH).json()[0]["recovered_parts"] == 1
 
 
 def test_reply_matches_what_firmware_greps_for(client):
@@ -152,6 +155,6 @@ def test_parts_of_one_session_are_grouped(client):
         body = wav(marker=part)
         client.post("/api/v1/upload", content=body, headers=headers(body, part=part))
 
-    sessions = client.get("/api/v1/sessions").json()
+    sessions = client.get("/api/v1/sessions", auth=AUTH).json()
     assert sessions[0]["parts"] == 3
     assert sessions[0]["bytes"] == 3 * len(wav())

@@ -70,7 +70,7 @@ export function TaskRow({ task, onChanged }: { task: Task; onChanged: () => void
         ))}
       </div>
       {error && (
-        <p className="mt-2 text-body-2-regular text-[var(--color-overdue)]">{error}</p>
+        <p className="mt-2 text-body-2-regular text-text-error-primary">{error}</p>
       )}
     </li>
   );

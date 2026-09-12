@@ -1,8 +1,8 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/base/buttons/button";
 import { Input } from "@/components/base/input/input";
 import { PageTitle } from "@/components/recorder/eyebrow";
@@ -13,10 +13,13 @@ import { formatClock } from "@/lib/format";
 import { sessionHref } from "@/lib/session-link";
 
 function Body() {
-  const initial = useSearchParams().get("q") ?? "";
-  const [draft, setDraft] = useState(initial);
-  const [query, setQuery] = useState(initial);
+  const router = useRouter();
+  // Единственный источник правды — адрес: запрос попадает в ?q=, «назад»
+  // восстанавливает прошлый (та же причина, что и на /tasks и /questions).
+  const query = useSearchParams().get("q") ?? "";
   const trimmed = query.trim();
+  const [draft, setDraft] = useState(query);
+  useEffect(() => setDraft(query), [query]);
   const { data, error, loading, reload } =
     useApi<SearchHit[]>(trimmed ? `/search?q=${encodeURIComponent(trimmed)}` : null);
 
@@ -24,7 +27,7 @@ function Body() {
     <>
       <PageTitle eyebrow="ДИКТОФОН" plain="Найти" italic="сказанное" />
       <form className="flex flex-wrap items-center gap-3"
-            onSubmit={(event) => { event.preventDefault(); setQuery(draft); }}>
+            onSubmit={(event) => { event.preventDefault(); router.push(`/search/?q=${encodeURIComponent(draft.trim())}`); }}>
         <Input className="min-w-48 flex-1" placeholder="Слово или фраза"
                value={draft} onChange={setDraft} />
         <Button type="submit" variant="primary" size="small">Найти</Button>

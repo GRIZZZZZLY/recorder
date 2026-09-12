@@ -81,7 +81,7 @@ export default function ProjectsPage() {
                 </Button>
               </div>
               {saveError && (
-                <p className="mt-2 text-body-2-regular text-[var(--color-overdue)]">{saveError}</p>
+                <p className="mt-2 text-body-2-regular text-text-error-primary">{saveError}</p>
               )}
               {data.aliases.length > 0 && (
                 <ul className="mt-4 flex flex-col gap-2">

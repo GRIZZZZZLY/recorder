@@ -63,7 +63,7 @@ function QuestionRow({ question, onChanged }: { question: Question; onChanged: (
         ))}
       </div>
       {error && (
-        <p className="mt-2 text-body-2-regular text-[var(--color-overdue)]">{error}</p>
+        <p className="mt-2 text-body-2-regular text-text-error-primary">{error}</p>
       )}
     </li>
   );

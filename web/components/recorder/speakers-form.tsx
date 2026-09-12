@@ -17,6 +17,7 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
     return found ? String(found.speaker) : "";
   });
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   if (speakers.length === 0) return null;
 
@@ -25,7 +26,10 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
     try {
       await apiPost(`/sessions/${encodeURIComponent(deviceId)}/${session}/speakers`,
                     { names, me: me === "" ? null : Number(me) });
+      setError(null);
       onSaved();
+    } catch (err) {
+      setError(`не удалось сохранить: ${(err as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -56,6 +60,9 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
       <Button className="mt-4" variant="primary" size="small" disabled={busy} onClick={save}>
         Сохранить
       </Button>
+      {error && (
+        <p className="mt-2 text-body-2-regular text-text-error-primary">{error}</p>
+      )}
     </section>
   );
 }

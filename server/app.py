@@ -9,12 +9,13 @@ import re
 import zlib
 from contextlib import asynccontextmanager, closing
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 import api_ui
 import audio
 import static_site
+from auth import owner
 from db import AUDIO_DIR, connect, init_storage
 
 MAX_BYTES = int(os.environ.get("RECORDER_MAX_BYTES", 64 * 1024 * 1024))
@@ -139,8 +140,13 @@ async def upload(
 
 
 @app.get("/api/v1/sessions")
-def sessions():
-    """Что уже принято. Нужен для проверки руками и для очереди обработки."""
+def sessions(_=Depends(owner)):
+    """Что уже принято. Нужен для проверки руками и для очереди обработки.
+
+    Список сессий, размеры и время выгрузки — не для чужих глаз, поэтому
+    роут закрыт тем же паролем владельца, что и остальной JSON-API. Прошивка
+    диктофона этот роут не вызывает (только POST /api/v1/upload с токеном
+    устройства), так что владелец не пострадает."""
     with closing(connect()) as conn:
         rows = conn.execute(
             "SELECT device_id, session, COUNT(*) AS parts, SUM(bytes) AS bytes,"

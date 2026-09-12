@@ -1,11 +1,12 @@
 import Link from "next/link";
 import type { SessionRow } from "@/lib/api";
 import { formatDay, formatDuration } from "@/lib/format";
+import { sessionHref } from "@/lib/session-link";
 
 export function SessionCard({ row }: { row: SessionRow }) {
   const ready = row.summary_status === "done";
   return (
-    <Link href={`/session/?d=${encodeURIComponent(row.device_id)}&n=${row.session}`}
+    <Link href={sessionHref(row.device_id, row.session)}
           className="block rounded-2xl border border-separator-border bg-background-primary-default p-6 hover:bg-background-primary-hover">
       <div className="flex items-center justify-between gap-4">
         <p className="text-headline-medium text-text-primary">

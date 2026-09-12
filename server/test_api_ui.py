@@ -164,6 +164,15 @@ def test_api_requires_password(env):
         assert client.get("/api/ui/digest").status_code == 401
 
 
+def test_v1_sessions_requires_owner_password(env):
+    """GET /api/v1/sessions отдаёт список загрузок и раньше был открыт всем:
+    без Depends(owner) размеры и время выгрузки видел любой, кто знает адрес.
+    Прошивку это не задевает — она вызывает только POST /api/v1/upload."""
+    with TestClient(env.app) as client:
+        assert client.get("/api/v1/sessions").status_code == 401
+        assert client.get("/api/v1/sessions", auth=AUTH).status_code == 200
+
+
 SUMMARY_WITH_QUESTION = {
     "summary": "Обсудили смету.",
     "topics": ["смета для заказчика"],

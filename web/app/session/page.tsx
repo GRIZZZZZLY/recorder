@@ -7,10 +7,11 @@ import { PageTitle } from "@/components/recorder/eyebrow";
 import { PlayerProvider, useSeek } from "@/components/recorder/player";
 import { SpeakersForm } from "@/components/recorder/speakers-form";
 import { SummaryList } from "@/components/recorder/summary-list";
+import { TaskRow } from "@/components/recorder/task-row";
 import { Empty, Failed, Loading } from "@/components/recorder/states";
 import { useApi } from "@/lib/use-api";
-import type { Summary, Utterance } from "@/lib/api";
-import { formatClock, formatDay, plural } from "@/lib/format";
+import type { Summary, Task, Utterance } from "@/lib/api";
+import { formatClock, formatDay, formatDuration, plural } from "@/lib/format";
 import { cx } from "@/utils/cx";
 
 type Detail = {
@@ -22,6 +23,7 @@ type Detail = {
   summary_error: string | null;
   timeline: Utterance[];
   speakers: { speaker: number; name: string; is_me: boolean }[];
+  tasks: Task[];
 };
 
 function Transcript({ timeline, highlight }: { timeline: Utterance[]; highlight: string | null }) {
@@ -103,12 +105,21 @@ function Body() {
   if (error) return <Failed error={error} onRetry={reload} />;
   if (loading || !data) return <Loading />;
 
-  const minutes = data.parts.length;
+  // Длительность — из шкалы времени (последняя реплика: начало + её длина),
+  // а не число загруженных частей. Пустая шкала (расшифровки ещё нет) —
+  // запасной вариант, части хоть что-то показывают.
+  const duration = data.timeline.length > 0
+    ? Math.max(...data.timeline.map((u) => u.start_abs + (u.end - u.start)))
+    : null;
+  const partsCount = data.parts.length;
+  const durationLabel = duration !== null
+    ? formatDuration(duration).toUpperCase()
+    : `${partsCount} ${plural(partsCount, "часть", "части", "частей").toUpperCase()}`;
 
   return (
     <PlayerProvider deviceId={data.device_id} session={data.session}>
       <PageTitle
-        eyebrow={`СЕССИЯ ${String(data.session).padStart(4, "0")} · ${formatDay(data.day).toUpperCase()} · ${minutes} ${plural(minutes, "часть", "части", "частей").toUpperCase()}`}
+        eyebrow={`СЕССИЯ ${String(data.session).padStart(4, "0")} · ${formatDay(data.day).toUpperCase()} · ${durationLabel}`}
         plain="Разговор и его" italic="основания" />
 
       {data.summary ? (
@@ -132,6 +143,19 @@ function Body() {
       ) : (
         <Empty text="Саммари ещё не готово." />
       )}
+
+      <section className="mt-8">
+        <h2 className="text-title-3-semibold text-text-primary">Задачи сессии</h2>
+        {data.tasks.length === 0 ? (
+          <div className="mt-3"><Empty text="Задач нет." /></div>
+        ) : (
+          <ul className="mt-3 flex flex-col gap-3">
+            {data.tasks.map((task) => (
+              <TaskRow key={task.task_id} task={task} onChanged={reload} />
+            ))}
+          </ul>
+        )}
+      </section>
 
       {data.summary_error && (
         <p className="mt-4 rounded-2xl border border-separator-border p-4 text-body-2-regular text-text-tertiary">

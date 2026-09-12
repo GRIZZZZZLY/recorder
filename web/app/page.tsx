@@ -8,6 +8,7 @@ import { Tile } from "@/components/recorder/tile";
 import { useApi } from "@/lib/use-api";
 import type { DigestBody } from "@/lib/api";
 import { formatDay, formatDuration, formatMinutes, plural } from "@/lib/format";
+import { sessionHref } from "@/lib/session-link";
 
 /** Заголовок собирается из чисел дня; курсивом идёт последний член перечисления. */
 function headline(body: DigestBody): { plain: string; italic: string } {
@@ -43,8 +44,8 @@ export default function DigestPage() {
               hint={`за неделю ${formatMinutes(data.week.minutes)}`} />
         <Tile label="Разговоров" value={data.day.sessions} hint={`за неделю ${data.week.sessions}`} />
         <Tile label="Новых задач" value={data.day.new_tasks} hint={`за неделю ${data.week.new_tasks}`} />
-        <Tile label="Вопросов без ответа" value={data.week.open_questions}
-              hint={`просрочено задач: ${data.week.overdue_tasks}`} />
+        <Tile label="Спорных мест" value={data.day.review}
+              hint={`за неделю ${data.week.review}`} />
       </div>
 
       <section className="mt-12">
@@ -70,7 +71,7 @@ export default function DigestPage() {
         <ul className="mt-3 flex flex-col gap-3">
           {data.recent.map((row) => (
             <li key={`${row.device_id}-${row.session}`}>
-              <Link href={`/session/?d=${encodeURIComponent(row.device_id)}&n=${row.session}`}
+              <Link href={sessionHref(row.device_id, row.session)}
                     className="block rounded-2xl border border-separator-border bg-background-primary-default p-6 hover:bg-background-primary-hover">
                 <p className="text-headline-medium text-text-primary">
                   Сессия {String(row.session).padStart(4, "0")}
