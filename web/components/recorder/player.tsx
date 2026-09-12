@@ -55,7 +55,7 @@ export function PlayerProvider({ deviceId, session, children }:
     <SeekContext.Provider value={value}>
       {children}
       <div className="fixed inset-x-0 bottom-0 z-20 mx-auto w-full max-w-[360px] px-4 pb-4">
-        <div className="rounded-2xl border border-separator-border bg-background-primary-default p-4 shadow-[var(--shadow-player)]">
+        <div className="rounded-2xl border border-separator-border bg-background-primary-default p-4 shadow-player">
           <p className="text-caption-1-medium uppercase tracking-[0.12em] text-text-tertiary">
             {part === null ? "часть не выбрана" : `часть ${String(part).padStart(2, "0")}`}
             <span className="nums"> · {formatClock(position)}</span>

@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, Inter_Tight, Literata } from "next/font/google";
 import "@/styles/globals.css";
-import "@/styles/recorder-theme.css";
 import { Shell } from "@/components/recorder/shell";
 
 // subsets с cyrillic обязателен: интерфейс русский. Сборка падает, если
