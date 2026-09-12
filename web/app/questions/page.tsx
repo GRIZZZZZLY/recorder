@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/base/buttons/button";
 import { Filters } from "@/components/recorder/filters";
 import { PageTitle } from "@/components/recorder/eyebrow";
@@ -68,9 +69,19 @@ function QuestionRow({ question, onChanged }: { question: Question; onChanged: (
   );
 }
 
-export default function QuestionsPage() {
-  const [show, setShow] = useState("open");
+function Body() {
+  const router = useRouter();
+  const params = useSearchParams();
+  // Единственный источник правды — адрес: state не держим, иначе фильтр не
+  // попадёт в ссылку/историю (был баг, см. web/app/tasks/page.tsx).
+  const show = params.get("show") ?? "open";
   const { data, error, loading, reload } = useApi<Question[]>(`/questions?show=${show}`);
+
+  function setShow(key: string) {
+    // push, не replace: с replace «назад» после переключений не восстановит
+    // предыдущий фильтр — та же причина, что и на /tasks.
+    router.push(`/questions/?show=${key}`);
+  }
 
   return (
     <>
@@ -91,5 +102,13 @@ export default function QuestionsPage() {
           )}
       </div>
     </>
+  );
+}
+
+export default function QuestionsPage() {
+  return (
+    <Suspense fallback={<Loading />}>
+      <Body />
+    </Suspense>
   );
 }
