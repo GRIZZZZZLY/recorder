@@ -1632,7 +1632,7 @@ export function TaskRow({ task, onChanged }: { task: Task; onChanged: () => void
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-3">
         {ACTIONS.filter((action) => action.status !== task.status).map((action) => (
-          <Button key={action.status} variant="ghost" size="small" isDisabled={busy}
+          <Button key={action.status} variant="ghost" size="small" disabled={busy}
                   onClick={() => change(action.status)}>
             {action.title}
           </Button>
@@ -2035,7 +2035,7 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
         ))}
         <Radio value="">меня нет</Radio>
       </RadioGroup>
-      <Button className="mt-4" variant="primary" size="small" isDisabled={busy} onClick={save}>
+      <Button className="mt-4" variant="primary" size="small" disabled={busy} onClick={save}>
         Сохранить
       </Button>
     </section>
@@ -2586,7 +2586,7 @@ export default function ProjectsPage() {
                        value={alias} onChange={setAlias} />
                 <Input className="min-w-48 flex-1" placeholder="Название проекта"
                        value={canonical} onChange={setCanonical} />
-                <Button variant="primary" size="small" isDisabled={busy} onClick={save}>
+                <Button variant="primary" size="small" disabled={busy} onClick={save}>
                   Сохранить
                 </Button>
               </div>
