@@ -26,6 +26,13 @@ export function formatMinutes(value: number): string {
   return value.toFixed(1);
 }
 
+/** Длительность записи: секунды, пока меньше минуты, дальше минуты.
+ *  Короткая заметка не должна читаться как «0.0 мин». */
+export function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)} с`;
+  return `${(seconds / 60).toFixed(1)} мин`;
+}
+
 /** Русское склонение по числу: 1 разговор, 2 разговора, 5 разговоров. */
 export function plural(count: number, one: string, few: string, many: string): string {
   const mod100 = Math.abs(count) % 100;

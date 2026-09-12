@@ -7,7 +7,7 @@ import { TaskRow } from "@/components/recorder/task-row";
 import { Tile } from "@/components/recorder/tile";
 import { useApi } from "@/lib/use-api";
 import type { DigestBody } from "@/lib/api";
-import { formatDay, formatMinutes, plural } from "@/lib/format";
+import { formatDay, formatDuration, formatMinutes, plural } from "@/lib/format";
 
 /** Заголовок собирается из чисел дня; курсивом идёт последний член перечисления. */
 function headline(body: DigestBody): { plain: string; italic: string } {
@@ -76,7 +76,7 @@ export default function DigestPage() {
                   Сессия {String(row.session).padStart(4, "0")}
                 </p>
                 <p className="mt-1 text-body-2-regular text-text-tertiary nums">
-                  {formatDay(row.day)} · {formatMinutes(row.seconds / 60)} мин · частей {row.parts},
+                  {formatDay(row.day)} · {formatDuration(row.seconds)} · частей {row.parts},
                   расшифровано {row.done_parts} ·{" "}
                   {row.summary_status === "done" ? "саммари готово" : "обрабатывается"}
                 </p>
