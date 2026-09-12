@@ -2911,9 +2911,9 @@ git add -A && git commit -m "<тип>: <что сделано в этой зад
 - Consumes: всё предыдущее
 - Produces: `server/auth.py` с функцией `owner`; `tools/deploy.sh`
 
-- [ ] **Step 1: Перенести отдачу аудио**
+- [ ] **Step 1: Проверить, что аудио уже отделено**
 
-Роут `/audio/{device_id}/{session}/{part}` из `web.py` перенести в `api_ui.py` без изменений тела (`FileResponse` с Range обязателен для Safari). Тест `test_audio_supports_range_requests` в `test_pipeline.py` менять не требуется — адрес тот же.
+Роут `/audio/{device_id}/{session}/{part}` живёт в `server/audio.py` с задачи 3 и подключается без префикса — переносить его никуда не нужно. Убедиться, что `server/web.py` его не содержит и что тест `test_audio_supports_range_requests` бьёт по адресу без префикса.
 
 - [ ] **Step 2: Удалить старый интерфейс**
 
