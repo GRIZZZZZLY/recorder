@@ -6,6 +6,7 @@ import {
   RiAlertLine, RiCheckboxLine, RiCloseLine, RiFolderLine, RiHome4Line,
   RiMenuLine, RiMicLine, RiPulseLine, RiQuestionLine, RiSearchLine,
 } from "@remixicon/react";
+import { Dialog, Modal, ModalOverlay } from "react-aria-components";
 import { Badge } from "@/components/base/badges/badge";
 import { useApi } from "@/lib/use-api";
 import type { DigestBody } from "@/lib/api";
@@ -26,6 +27,13 @@ const NAV = [
  * Своя боковая панель вместо DashboardSidebar из BoardUI: тот безусловно
  * тянет меню команды, меню пользователя и модалку настроек (свойства их не
  * отключают) — у диктофона один владелец, команд и настроек нет.
+ *
+ * Выдвижная панель на узком экране собрана на ModalOverlay/Modal/Dialog из
+ * react-aria-components (уже зависимость BoardUI, не новая) — они дают
+ * фокус-ловушку, закрытие по Escape, автофокус в панель и возврат фокуса на
+ * кнопку-открывашку, а фону — inert через ariaHideOutside «из коробки».
+ * aria-modal RAC сознательно не ставит (баг Safari в iframe), нам это не
+ * грозит — добавлен вручную через ref.
  */
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
@@ -90,10 +98,18 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </header>
         <main className="mx-auto w-full max-w-[1200px] px-6 py-8 sm:px-8">{children}</main>
       </div>
-      {open && (
-        <div className="fixed inset-0 z-50 flex lg:hidden">
-          <div className="absolute inset-0 bg-black/50" onClick={() => setOpen(false)} />
-          <div className="relative flex w-[260px] flex-col border-r border-separator-border bg-background-secondary-default">
+      <ModalOverlay
+        isOpen={open}
+        onOpenChange={setOpen}
+        isDismissable
+        className="fixed inset-0 z-50 flex bg-black/50 lg:hidden"
+      >
+        <Modal className="relative h-full w-[260px] outline-none">
+          <Dialog
+            aria-label="Меню"
+            ref={(el) => el?.setAttribute("aria-modal", "true")}
+            className="flex h-full flex-col border-r border-separator-border bg-background-secondary-default outline-none"
+          >
             <div className="flex items-center justify-between p-3">
               <span className="text-body-medium text-text-primary">Диктофон</span>
               <button type="button" aria-label="Закрыть меню" onClick={() => setOpen(false)}>
@@ -101,9 +117,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
               </button>
             </div>
             {nav}
-          </div>
-        </div>
-      )}
+          </Dialog>
+        </Modal>
+      </ModalOverlay>
     </div>
   );
 }

@@ -67,3 +67,18 @@ mark {
 .nums {
   font-variant-numeric: tabular-nums;
 }
+
+/* Заголовок страницы (PageTitle): в шкале BoardUI нет размера с интерлиньяжем
+ * 1.1 (их ближайший, display-3, даёт 40/54 — интерлиньяж 1.35), а серифный
+ * курсив-подпись референса рассчитан на плотную строку. Собрано тем же
+ * способом, каким BoardUI регистрирует текстовые стили в typography.css. */
+@theme {
+  --text-display-recorder: 2.5rem; /* 40px */
+  --text-display-recorder--line-height: 1.1;
+  --text-display-recorder--letter-spacing: 0;
+  --text-display-recorder--font-weight: 400;
+  --text-display-recorder-lg: 3rem; /* 48px, sm: и выше */
+  --text-display-recorder-lg--line-height: 1.1;
+  --text-display-recorder-lg--letter-spacing: 0;
+  --text-display-recorder-lg--font-weight: 400;
+}

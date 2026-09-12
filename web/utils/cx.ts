@@ -29,9 +29,13 @@ const TEXT_FAMILIES = [
 
 const TEXT_WEIGHTS = ["regular", "medium", "semibold", "bold"] as const;
 
-const TEXT_STYLE_SUFFIXES = TEXT_FAMILIES.flatMap((family) =>
-  TEXT_WEIGHTS.map((weight) => `${family}-${weight}`),
-);
+const TEXT_STYLE_SUFFIXES = [
+  ...TEXT_FAMILIES.flatMap((family) => TEXT_WEIGHTS.map((weight) => `${family}-${weight}`)),
+  // Одноимённые исключения из styles/recorder-theme.css (не пара
+  // family-weight — фиксированный вес зашит в самом токене).
+  "display-recorder",
+  "display-recorder-lg",
+];
 
 const twMerge = extendTailwindMerge({
   extend: {

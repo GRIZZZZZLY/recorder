@@ -16,8 +16,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function apiGet<T>(path: string): Promise<T> {
-  return request<T>(path);
+export function apiGet<T>(path: string, init?: RequestInit): Promise<T> {
+  return request<T>(path, init);
 }
 
 export function apiPost<T>(path: string, body: unknown): Promise<T> {
@@ -91,6 +91,7 @@ export type SessionRow = {
 };
 
 export type Counts = {
+  days: number;
   minutes: number;
   sessions: number;
   new_tasks: number;

@@ -13,13 +13,18 @@ export function useApi<T>(path: string | null) {
   useEffect(() => {
     if (path === null) return;
     let alive = true;
+    const controller = new AbortController();
     setLoading(true);
-    apiGet<T>(path)
+    apiGet<T>(path, { signal: controller.signal })
       .then((body) => alive && (setData(body), setError(null)))
-      .catch((problem) => alive && setError(problem as Error))
+      .catch((problem) => {
+        if (problem instanceof DOMException && problem.name === "AbortError") return;
+        alive && setError(problem as Error);
+      })
       .finally(() => alive && setLoading(false));
     return () => {
       alive = false;
+      controller.abort();
     };
   }, [path, tick]);
 
