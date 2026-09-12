@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useMemo } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { PageTitle } from "@/components/recorder/eyebrow";
@@ -10,7 +10,8 @@ import { SummaryList } from "@/components/recorder/summary-list";
 import { Empty, Failed, Loading } from "@/components/recorder/states";
 import { useApi } from "@/lib/use-api";
 import type { Summary, Utterance } from "@/lib/api";
-import { formatClock, formatDay } from "@/lib/format";
+import { formatClock, formatDay, plural } from "@/lib/format";
+import { cx } from "@/utils/cx";
 
 type Detail = {
   device_id: string;
@@ -23,7 +24,7 @@ type Detail = {
   speakers: { speaker: number; name: string; is_me: boolean }[];
 };
 
-function Transcript({ timeline }: { timeline: Utterance[] }) {
+function Transcript({ timeline, highlight }: { timeline: Utterance[]; highlight: string | null }) {
   const seek = useSeek();
   // Группировка заранее: заголовок части ставится по данным, а не по счётчику,
   // который менялся бы прямо во время отрисовки.
@@ -48,15 +49,23 @@ function Transcript({ timeline }: { timeline: Utterance[] }) {
           <p className="text-caption-1-medium uppercase tracking-[0.12em] text-text-tertiary">
             часть {String(group.part).padStart(2, "0")}
           </p>
-          {group.items.map((u) => (
-            <button key={`${u.part}-${u.idx}`} type="button" id={`u-${u.part}-${u.idx}`}
-                    onClick={() => seek(u.part, u.start)}
-                    className="w-full rounded-xl px-3 py-2 text-left hover:bg-background-secondary-default target:bg-background-secondary-default">
-              <span className="nums mr-2 text-text-tertiary">{formatClock(u.start_abs)}</span>
-              <span className="text-body-medium text-text-primary">{u.label}:</span>{" "}
-              <span className="text-body-regular text-text-secondary">{u.text}</span>
-            </button>
-          ))}
+          {group.items.map((u) => {
+            const id = `u-${u.part}-${u.idx}`;
+            return (
+              <button key={id} type="button" id={id}
+                      onClick={() => seek(u.part, u.start)}
+                      className={cx(
+                        "w-full rounded-xl px-3 py-2 text-left hover:bg-background-secondary-default target:bg-background-secondary-default",
+                        // Подстраховка на случай, если :target не сработает после
+                        // программной прокрутки: подсвечиваем ту же реплику состоянием.
+                        highlight === id && "bg-background-secondary-default",
+                      )}>
+                <span className="nums mr-2 text-text-tertiary">{formatClock(u.start_abs)}</span>
+                <span className="text-body-medium text-text-primary">{u.label}:</span>{" "}
+                <span className="text-body-regular text-text-secondary">{u.text}</span>
+              </button>
+            );
+          })}
         </div>
       ))}
     </section>
@@ -71,6 +80,25 @@ function Body() {
   const { data, error, loading, reload } =
     useApi<Detail>(ready ? `/sessions/${encodeURIComponent(deviceId)}/${session}` : null);
 
+  // Ссылки на реплику-основание ведут на #u-{часть}-{индекс}: элемент с этим
+  // id появляется в DOM только после загрузки данных, а браузер уже
+  // попытался прокрутить к фрагменту при открытии страницы (там ещё Loading).
+  // Дублируем прокрутку вручную один раз, когда данные готовы.
+  const scrolled = useRef(false);
+  const [highlight, setHighlight] = useState<string | null>(null);
+  useEffect(() => {
+    if (!data || scrolled.current) return;
+    scrolled.current = true;
+    const hash = window.location.hash.slice(1);
+    if (!hash) return;
+    const target = document.getElementById(hash);
+    // Хеш может указывать на реплику, которой больше нет (саммари
+    // пересобралось) — тогда просто ничего не делаем.
+    if (!target) return;
+    target.scrollIntoView({ block: "center" });
+    setHighlight(hash);
+  }, [data]);
+
   if (!ready) return <Empty text="Не указана сессия." />;
   if (error) return <Failed error={error} onRetry={reload} />;
   if (loading || !data) return <Loading />;
@@ -80,7 +108,7 @@ function Body() {
   return (
     <PlayerProvider deviceId={data.device_id} session={data.session}>
       <PageTitle
-        eyebrow={`СЕССИЯ ${String(data.session).padStart(4, "0")} · ${formatDay(data.day).toUpperCase()} · ЧАСТЕЙ ${minutes}`}
+        eyebrow={`СЕССИЯ ${String(data.session).padStart(4, "0")} · ${formatDay(data.day).toUpperCase()} · ${minutes} ${plural(minutes, "часть", "части", "частей").toUpperCase()}`}
         plain="Разговор и его" italic="основания" />
 
       {data.summary ? (
@@ -113,16 +141,16 @@ function Body() {
 
       {data.parts.filter((part) => part.transcript_status === "failed").map((part) => (
         <p key={part.part} className="mt-4 rounded-2xl border border-separator-border p-4 text-body-2-regular text-text-tertiary">
-          Расшифровка части {String(part.part).padStart(2, "0")} не удалась: {part.last_error}
+          Расшифровка части {String(part.part).padStart(2, "0")} не удалась: {part.last_error || "причина не записана"}
         </p>
       ))}
 
-      <SpeakersForm deviceId={data.device_id} session={data.session}
+      <SpeakersForm key={JSON.stringify(data.speakers)} deviceId={data.device_id} session={data.session}
                     speakers={data.speakers} onSaved={reload} />
 
       {data.timeline.length === 0
         ? <div className="mt-8"><Empty text="Расшифровки пока нет." /></div>
-        : <Transcript timeline={data.timeline} />}
+        : <Transcript timeline={data.timeline} highlight={highlight} />}
     </PlayerProvider>
   );
 }

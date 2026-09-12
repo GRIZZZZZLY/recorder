@@ -6,7 +6,7 @@ export function PageTitle({ eyebrow, plain, italic }:
   { eyebrow: string; plain: string; italic?: string }) {
   return (
     <header className="mb-8">
-      <p className="text-caption-1-semibold uppercase tracking-[0.12em] text-text-tertiary">
+      <p className="nums text-caption-1-semibold uppercase tracking-[0.12em] text-text-tertiary">
         {eyebrow}
       </p>
       <h1 className="mt-2 font-[family-name:var(--font-literata)] text-display-recorder text-text-primary sm:text-display-recorder-lg">
