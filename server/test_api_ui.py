@@ -163,3 +163,114 @@ def test_speakers_are_saved_as_json(env, monkeypatch):
 def test_api_requires_password(env):
     with TestClient(env.app) as client:
         assert client.get("/api/ui/digest").status_code == 401
+
+
+SUMMARY_WITH_QUESTION = {
+    "summary": "Обсудили смету.",
+    "topics": ["смета для заказчика"],
+    "decisions": [],
+    "facts": [],
+    "tasks": [{"text": "Выслать смету", "owner": "Мария", "due": "пятница",
+               "time": "0:00:01", "quote": "к пятнице выслать смету заказчику"}],
+    "open_questions": [{"text": "Кто смотрит договор", "time": "0:00:05",
+                        "quote": "кто смотрит"}],
+}
+
+
+def test_tasks_filters_and_status_change(env, monkeypatch):
+    prepared(env, monkeypatch)
+    with TestClient(env.app) as client:
+        rows = client.get("/api/ui/tasks?show=open", auth=AUTH).json()
+        assert rows["has_me"] is False and len(rows["tasks"]) == 1
+        task_id = rows["tasks"][0]["task_id"]
+        assert rows["tasks"][0]["due_date"]          # «пятница» разобрана
+        # source приходит объектом, как в /review, а не строкой JSON из базы
+        assert rows["tasks"][0]["source"]["confirmed"] is True
+
+        assert client.post(f"/api/ui/tasks/xiao-01/7/{task_id}", auth=AUTH,
+                           json={"status": "done"}).status_code == 200
+        assert client.get("/api/ui/tasks?show=open", auth=AUTH).json()["tasks"] == []
+        assert len(client.get("/api/ui/tasks?show=all", auth=AUTH).json()["tasks"]) == 1
+
+
+def test_task_status_is_validated(env, monkeypatch):
+    prepared(env, monkeypatch)
+    with TestClient(env.app) as client:
+        task_id = client.get("/api/ui/tasks", auth=AUTH).json()["tasks"][0]["task_id"]
+        assert client.post(f"/api/ui/tasks/xiao-01/7/{task_id}", auth=AUTH,
+                           json={"status": "мусор"}).status_code == 422
+
+
+def test_questions_state_roundtrip(env, monkeypatch):
+    upload(env)
+    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    result = json.loads(json.dumps(SUMMARY_WITH_QUESTION))
+    summary_stub(env, monkeypatch, result)
+    run_all(env)
+    with TestClient(env.app) as client:
+        rows = client.get("/api/ui/questions?show=open", auth=AUTH).json()
+        assert len(rows) == 1
+        question_id = rows[0]["question_id"]
+        client.post(f"/api/ui/questions/xiao-01/7/{question_id}", auth=AUTH,
+                    json={"state": "answered"})
+        assert client.get("/api/ui/questions?show=open", auth=AUTH).json() == []
+        assert len(client.get("/api/ui/questions?show=all", auth=AUTH).json()) == 1
+
+
+def test_projects_list_feed_and_alias(env, monkeypatch):
+    upload(env)
+    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    result = json.loads(json.dumps(SUMMARY_WITH_QUESTION))
+    result["topics"] = ["Posiflora"]
+    summary_stub(env, monkeypatch, result)
+    run_all(env)
+    with TestClient(env.app) as client:
+        assert client.get("/api/ui/projects", auth=AUTH).json()["projects"][0]["name"] == "Posiflora"
+        client.post("/api/ui/projects/aliases", auth=AUTH,
+                    json={"alias": "posiflora", "canonical": "Пози флора"})
+        listing = client.get("/api/ui/projects", auth=AUTH).json()
+        assert listing["projects"][0]["name"] == "Пози флора"
+        assert listing["aliases"] == [{"alias": "posiflora", "canonical": "Пози флора"}]
+        feed = client.get("/api/ui/projects/Posiflora", auth=AUTH).json()
+        assert feed["name"] == "Пози флора" and feed["sessions"][0]["session"] == 7
+
+
+def test_search_returns_segments_not_html(env, monkeypatch):
+    prepared(env, monkeypatch)
+    if not env.db.textnorm.available():
+        pytest.skip("pymorphy3 не установлен")
+    with TestClient(env.app) as client:
+        hits = client.get("/api/ui/search?q=сметы", auth=AUTH).json()
+    assert hits[0]["session"] == 7
+    assert any(part["hit"] for part in hits[0]["segments"])
+    assert "".join(part["text"] for part in hits[0]["segments"]) == hits[0]["text"]
+    assert "<mark>" not in json.dumps(hits, ensure_ascii=False)
+
+
+def test_search_without_query_is_empty(env):
+    with TestClient(env.app) as client:
+        assert client.get("/api/ui/search?q=", auth=AUTH).json() == []
+
+
+def test_project_aliases_route_does_not_collide_with_project_name_route(env, monkeypatch):
+    """/projects/aliases (POST) не должен уходить в обработчик /projects/{name}
+    (GET) с именем проекта «aliases» — методы разные, но порядок объявления
+    маршрутов проверяем явно, а не полагаемся на то, как сейчас матчит Starlette."""
+    prepared(env, monkeypatch)
+    with TestClient(env.app) as client:
+        response = client.post("/api/ui/projects/aliases", auth=AUTH,
+                               json={"alias": "x", "canonical": "Y"})
+        assert response.status_code == 200
+        assert response.json() == {"ok": True}
+        with closing(env.db.connect()) as conn:
+            assert env.db.alias_map(conn)["x"] == "Y"
+
+
+def test_review_and_status_are_exposed(env, monkeypatch):
+    prepared(env, monkeypatch)
+    with TestClient(env.app) as client:
+        review = client.get("/api/ui/review", auth=AUTH).json()
+        status = client.get("/api/ui/status", auth=AUTH).json()
+    assert isinstance(review, list)
+    assert status["transcripts_pending"] == 0
+    assert "failed_parts" in status

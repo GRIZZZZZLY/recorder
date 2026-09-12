@@ -62,3 +62,26 @@ def fts_query(text):
 
 def available():
     return _morph is not None
+
+
+def segments(text, query_lemmas):
+    """Текст кусками: {"text": ..., "hit": True} у слов, чья лемма совпала.
+
+    Подсветку считает сервер, но отдаёт данными: HTML из распознанной речи
+    в интерфейс попадать не должен ни в каком виде.
+    """
+    if not text:
+        return []
+    if not query_lemmas:
+        return [{"text": text, "hit": False}]
+    parts, position = [], 0
+    for match in TOKEN_RE.finditer(text):
+        if lemma(match.group(0)) not in query_lemmas:
+            continue
+        if match.start() > position:
+            parts.append({"text": text[position:match.start()], "hit": False})
+        parts.append({"text": match.group(0), "hit": True})
+        position = match.end()
+    if position < len(text):
+        parts.append({"text": text[position:], "hit": False})
+    return parts

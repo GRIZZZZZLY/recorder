@@ -379,6 +379,15 @@ def search(conn, query, limit=50):
     return results
 
 
+def search_segments(conn, query, limit=50):
+    """Попадания поиска с готовой разбивкой текста на совпавшие куски."""
+    query_lemmas = {textnorm.lemma(token) for token in textnorm.tokens(query)}
+    hits = search(conn, query, limit)
+    for hit in hits:
+        hit["segments"] = textnorm.segments(hit["text"], query_lemmas)
+    return hits
+
+
 # --- саммари -------------------------------------------------------------------
 
 def claim_session_for_summary(conn):

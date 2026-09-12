@@ -4,6 +4,7 @@
 """
 import json
 from contextlib import closing
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -17,6 +18,19 @@ router = APIRouter(prefix="/api/ui")
 class Speakers(BaseModel):
     names: dict[str, str] = {}
     me: int | None = None
+
+
+class TaskStatus(BaseModel):
+    status: Literal["open", "done", "dismissed"]
+
+
+class QuestionState(BaseModel):
+    state: Literal["open", "answered", "dropped"]
+
+
+class Alias(BaseModel):
+    alias: str
+    canonical: str
 
 
 def with_source(tasks):
@@ -111,3 +125,105 @@ def save_speakers(device_id: str, session: int, body: Speakers, _=Depends(owner)
                 continue
             db.set_speaker(conn, device_id, session, speaker, name[:60], body.me == speaker)
     return {"ok": True}
+
+
+@router.get("/tasks")
+def tasks(show: str = "open", session: int | None = None, _=Depends(owner)):
+    with closing(db.connect()) as conn:
+        rows = with_source(db.task_rows(conn, only_open=show != "all", mine=show == "mine",
+                                        overdue=show == "overdue", session=session))
+        return {"tasks": rows, "has_me": bool(db.my_names(conn))}
+
+
+@router.post("/tasks/{device_id}/{session}/{task_id}")
+def set_task(device_id: str, session: int, task_id: str, body: TaskStatus, _=Depends(owner)):
+    with closing(db.connect()) as conn:
+        db.set_task_status(conn, device_id, session, task_id, body.status)
+    return {"ok": True}
+
+
+@router.get("/questions")
+def questions(show: str = "open", _=Depends(owner)):
+    with closing(db.connect()) as conn:
+        rows = db.question_rows(conn, only_open=show != "all")
+    for row in rows:
+        row["day"] = row["day"].isoformat() if row["day"] else None
+    return rows
+
+
+@router.post("/questions/{device_id}/{session}/{question_id}")
+def set_question(device_id: str, session: int, question_id: str,
+                 body: QuestionState, _=Depends(owner)):
+    with closing(db.connect()) as conn:
+        db.set_question_state(conn, device_id, session, question_id, body.state)
+    return {"ok": True}
+
+
+@router.get("/projects")
+def projects(_=Depends(owner)):
+    with closing(db.connect()) as conn:
+        found = db.project_sessions(conn)
+        aliases = db.alias_map(conn)
+    listing = []
+    for name in sorted(found):
+        items = found[name]
+        listing.append({
+            "name": name,
+            "sessions": len(items),
+            "last_day": items[-1]["day"].isoformat() if items[-1]["day"] else None,
+        })
+    return {"projects": listing,
+            "aliases": [{"alias": a, "canonical": c} for a, c in sorted(aliases.items())]}
+
+
+# ВАЖНО: /projects/aliases объявлен раньше /projects/{name}. При одинаковом
+# методе более ранний маршрут забрал бы себе POST/GET на "aliases" как имя
+# проекта; здесь методы разные (POST и GET), но порядок сохраняем как
+# документированное намерение, а не как случайное совпадение.
+@router.post("/projects/aliases")
+def add_alias(body: Alias, _=Depends(owner)):
+    with closing(db.connect()) as conn:
+        db.set_alias(conn, body.alias[:80], body.canonical[:80])
+    return {"ok": True}
+
+
+@router.get("/projects/{name}")
+def project(name: str, _=Depends(owner)):
+    with closing(db.connect()) as conn:
+        found = db.project_sessions(conn)
+        canonical = db.canonical_topic(db.alias_map(conn), name)
+    items = found.get(canonical) or found.get(name) or []
+    return {
+        "name": canonical,
+        "sessions": [{
+            "device_id": item["device_id"], "session": item["session"],
+            "day": item["day"].isoformat() if item["day"] else None,
+            "summary": item["result"].get("summary"),
+            "decisions": item["result"].get("decisions") or [],
+            "tasks": item["result"].get("tasks") or [],
+            "open_questions": item["result"].get("open_questions") or [],
+        } for item in items],
+    }
+
+
+@router.get("/review")
+def review(_=Depends(owner)):
+    with closing(db.connect()) as conn:
+        items = db.review_items(conn)
+    for item in items:
+        item["day"] = item["day"].isoformat() if item["day"] else None
+    return items
+
+
+@router.get("/search")
+def search(q: str = "", _=Depends(owner)):
+    if not q.strip():
+        return []
+    with closing(db.connect()) as conn:
+        return db.search_segments(conn, q)
+
+
+@router.get("/status")
+def status(_=Depends(owner)):
+    with closing(db.connect()) as conn:
+        return db.processing_status(conn)
