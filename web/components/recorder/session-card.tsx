@@ -1,0 +1,24 @@
+import Link from "next/link";
+import type { SessionRow } from "@/lib/api";
+import { formatDay, formatMinutes } from "@/lib/format";
+
+export function SessionCard({ row }: { row: SessionRow }) {
+  const ready = row.summary_status === "done";
+  return (
+    <Link href={`/session/?d=${encodeURIComponent(row.device_id)}&n=${row.session}`}
+          className="block rounded-2xl border border-separator-border bg-background-primary-default p-6 hover:bg-background-primary-hover">
+      <div className="flex items-center justify-between gap-4">
+        <p className="text-headline-medium text-text-primary">
+          Сессия {String(row.session).padStart(4, "0")}
+        </p>
+        <span className="rounded-full border border-separator-border px-3 py-1 text-caption-1-medium text-text-secondary">
+          {ready ? "саммари готово" : "обрабатывается"}
+        </span>
+      </div>
+      <p className="nums mt-2 text-body-2-regular text-text-tertiary">
+        {formatDay(row.day)} · {formatMinutes(row.seconds / 60)} мин · частей {row.parts},
+        расшифровано {row.done_parts}
+      </p>
+    </Link>
+  );
+}
