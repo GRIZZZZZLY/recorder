@@ -15,7 +15,10 @@ export function SourceDot({ source }: { source: Source }) {
     : source.confirmed
       ? "bg-[var(--color-source-confirmed)]"
       : "bg-[var(--color-source-unconfirmed)]";
-  return <span title={title} aria-label={title} className={cx("inline-block size-2 rounded-full", color)} />;
+  return (
+    <span role="img" title={title} aria-label={title}
+          className={cx("inline-block size-2 rounded-full", color)} />
+  );
 }
 
 /** Ссылка на реплику-основание внутри страницы сессии. */

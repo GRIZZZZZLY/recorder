@@ -21,13 +21,17 @@ function due(task: Task) {
 
 export function TaskRow({ task, onChanged }: { task: Task; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  async function change(status: Task["status"]) {
+  async function change(status: Task["status"], title: string) {
     setBusy(true);
     try {
       await apiPost(`/tasks/${encodeURIComponent(task.device_id)}/${task.session}/${task.task_id}`,
                     { status });
+      setError(null);
       onChanged();
+    } catch (err) {
+      setError(`не удалось ${title.toLowerCase()}: ${(err as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -45,8 +49,8 @@ export function TaskRow({ task, onChanged }: { task: Task; onChanged: () => void
       <p className="text-headline-medium text-text-primary">{task.text}</p>
       <p className="mt-2 text-body-2-regular text-text-tertiary">
         {task.owner || "исполнитель не назван"} ·{" "}
-        <span className={cx(task.overdue && "text-[var(--color-source-missing)]")}>{due(task)}</span>{" "}
-        · сессия {String(task.session).padStart(4, "0")}
+        <span className={cx("nums", task.overdue && "text-[var(--color-overdue)]")}>{due(task)}</span>{" "}
+        · сессия <span className="nums">{String(task.session).padStart(4, "0")}</span>
       </p>
       {chips.length > 0 && (
         <p className="mt-1 text-caption-1-medium uppercase tracking-[0.12em] text-text-tertiary">
@@ -60,11 +64,14 @@ export function TaskRow({ task, onChanged }: { task: Task; onChanged: () => void
       <div className="mt-4 flex flex-wrap items-center gap-3">
         {ACTIONS.filter((action) => action.status !== task.status).map((action) => (
           <Button key={action.status} variant="ghost" size="small" disabled={busy}
-                  onClick={() => change(action.status)}>
+                  onClick={() => change(action.status, action.title)}>
             {action.title}
           </Button>
         ))}
       </div>
+      {error && (
+        <p className="mt-2 text-body-2-regular text-[var(--color-overdue)]">{error}</p>
+      )}
     </li>
   );
 }

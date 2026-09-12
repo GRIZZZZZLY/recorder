@@ -48,11 +48,12 @@
   --color-border-focus-ring: #3d5aff;
 }
 
-/* Состояния источника и просрочки. Три цвета, больше не вводить. */
+/* Состояния источника и просрочки. Один цвет — одно имя, больше не вводить. */
 :root {
   --color-source-confirmed: #34d399;
   --color-source-unconfirmed: #fbbf24;
   --color-source-missing: #ff6b5c;
+  --color-overdue: #ff6b5c;
 }
 
 /* Подсветка поиска: лаванда на нави, как mark в референсе. */

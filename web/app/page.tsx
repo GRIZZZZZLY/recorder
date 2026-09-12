@@ -7,15 +7,19 @@ import { TaskRow } from "@/components/recorder/task-row";
 import { Tile } from "@/components/recorder/tile";
 import { useApi } from "@/lib/use-api";
 import type { DigestBody } from "@/lib/api";
-import { formatDay, formatMinutes } from "@/lib/format";
+import { formatDay, formatMinutes, plural } from "@/lib/format";
 
 /** Заголовок собирается из чисел дня; курсивом идёт последний член перечисления. */
 function headline(body: DigestBody): { plain: string; italic: string } {
   const pieces: string[] = [];
-  if (body.day.sessions) pieces.push(`${body.day.sessions} разговора`);
-  if (body.day.new_tasks) pieces.push(`${body.day.new_tasks} задачи`);
+  if (body.day.sessions) {
+    pieces.push(`${body.day.sessions} ${plural(body.day.sessions, "разговор", "разговора", "разговоров")}`);
+  }
+  if (body.day.new_tasks) {
+    pieces.push(`${body.day.new_tasks} ${plural(body.day.new_tasks, "задача", "задачи", "задач")}`);
+  }
   const italic = body.week.review
-    ? `${body.week.review} спорных мест`
+    ? `${body.week.review} ${plural(body.week.review, "спорное место", "спорных места", "спорных мест")}`
     : "ничего спорного";
   return { plain: pieces.length ? `Сегодня: ${pieces.join(", ")}, и` : "Сегодня тихо, а в работе", italic };
 }
