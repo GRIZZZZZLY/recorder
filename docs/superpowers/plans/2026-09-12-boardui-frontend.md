@@ -1669,7 +1669,8 @@ function headline(body: DigestBody): { plain: string; italic: string } {
   const italic = body.week.review
     ? `${body.week.review} спорных мест`
     : "ничего спорного";
-  return { plain: pieces.length ? `Сегодня: ${pieces.join(", ")}, и` : "Сегодня тихо, а в работе", italic };
+  // Запятая перед одиночным «и» в перечислении не ставится.
+  return { plain: pieces.length ? `Сегодня: ${pieces.join(", ")} и` : "Сегодня тихо, а в работе", italic };
 }
 
 export default function DigestPage() {
