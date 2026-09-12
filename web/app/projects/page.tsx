@@ -71,9 +71,11 @@ export default function ProjectsPage() {
               </p>
               <div className="mt-3 flex flex-wrap items-center gap-3">
                 <Input className="min-w-48 flex-1" placeholder="Как прозвучало"
-                       value={alias} onChange={setAlias} />
+                       value={alias}
+                       onChange={(value: string) => { setAlias(value); setSaveError(null); }} />
                 <Input className="min-w-48 flex-1" placeholder="Название проекта"
-                       value={canonical} onChange={setCanonical} />
+                       value={canonical}
+                       onChange={(value: string) => { setCanonical(value); setSaveError(null); }} />
                 <Button variant="primary" size="small" disabled={busy} onClick={save}>
                   Сохранить
                 </Button>

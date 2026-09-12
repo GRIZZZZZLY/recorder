@@ -55,10 +55,10 @@ function Body() {
             <li key={`${item.device_id}-${item.session}`}
                 className="rounded-2xl border border-separator-border bg-background-primary-default p-6">
               <p className="font-[family-name:var(--font-literata)] text-title-3-semibold text-text-primary">
-                {formatDay(item.day)}{" "}
+                <span className="nums">{formatDay(item.day)}</span>{" "}
                 <Link href={`/session/?d=${encodeURIComponent(item.device_id)}&n=${item.session}`}
                       className="text-body-2-medium text-text-tertiary underline-offset-2 hover:underline">
-                  сессия {String(item.session).padStart(4, "0")}
+                  сессия <span className="nums">{String(item.session).padStart(4, "0")}</span>
                 </Link>
               </p>
               <p className="mt-2 text-body-regular leading-6 text-text-secondary">{item.summary}</p>
