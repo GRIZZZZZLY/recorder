@@ -21,7 +21,7 @@ function headline(body: DigestBody): { plain: string; italic: string } {
   const italic = body.week.review
     ? `${body.week.review} ${plural(body.week.review, "спорное место", "спорных места", "спорных мест")}`
     : "ничего спорного";
-  return { plain: pieces.length ? `Сегодня: ${pieces.join(", ")}, и` : "Сегодня тихо, а в работе", italic };
+  return { plain: pieces.length ? `Сегодня: ${pieces.join(", ")} и` : "Сегодня тихо, а в работе", italic };
 }
 
 export default function DigestPage() {
