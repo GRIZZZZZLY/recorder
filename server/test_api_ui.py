@@ -40,7 +40,7 @@ def test_site_is_closed_by_the_same_password(site):
         assert client.get("/_next/app.js").status_code == 401
 
 
-def test_site_without_build_says_so_and_keeps_legacy(env, monkeypatch, tmp_path):
+def test_site_without_build_says_so(env, monkeypatch, tmp_path):
     monkeypatch.setenv("RECORDER_WEB_DIR", str(tmp_path / "нет-такого"))
     import static_site, app as app_module
     importlib.reload(static_site)
@@ -49,7 +49,6 @@ def test_site_without_build_says_so_and_keeps_legacy(env, monkeypatch, tmp_path)
         response = client.get("/", auth=AUTH)
         assert response.status_code == 503
         assert "не собран" in response.text
-        assert client.get("/legacy/", auth=AUTH).status_code == 200
 
 
 def test_site_does_not_serve_files_outside_the_build(site):

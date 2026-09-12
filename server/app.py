@@ -15,7 +15,6 @@ from fastapi.responses import JSONResponse
 import api_ui
 import audio
 import static_site
-import web
 from db import AUDIO_DIR, connect, init_storage
 
 MAX_BYTES = int(os.environ.get("RECORDER_MAX_BYTES", 64 * 1024 * 1024))
@@ -32,10 +31,8 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Recorder", version="1", lifespan=lifespan)
-app.include_router(web.router, prefix="/legacy")
-# Без префикса: это часть протокола плеера, а не legacy-страница, и должна
-# остаться на GET /audio/{device_id}/{session}/{part} для старого и нового
-# фронтенда одинаково. Регистрируется до catch-all — см. конец файла.
+# Часть протокола плеера, должна остаться на GET /audio/{device_id}/{session}/{part}.
+# Регистрируется до catch-all — см. конец файла.
 app.include_router(audio.router)
 
 
