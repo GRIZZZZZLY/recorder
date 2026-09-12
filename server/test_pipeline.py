@@ -531,12 +531,17 @@ def test_web_marks_missing_owner_and_due_instead_of_inventing(env, monkeypatch):
 
 
 def test_audio_supports_range_requests(env):
-    """Safari на iPhone без Range не проигрывает аудио."""
+    """Safari на iPhone без Range не проигрывает аудио. Адрес — часть протокола
+    плеера (и старого интерфейса, и нового фронтенда), переезд под /legacy
+    вместе с остальными страницами владельца сломал бы воспроизведение."""
     upload(env)
     with TestClient(env.app) as client:
-        response = client.get("/legacy/audio/xiao-01/7/1", auth=AUTH, headers={"Range": "bytes=0-43"})
+        response = client.get("/audio/xiao-01/7/1", auth=AUTH, headers={"Range": "bytes=0-43"})
         assert response.status_code == 206
         assert response.content[:4] == b"RIFF"
+        # Старый адрес под /legacy эту же часть отдавать не должен — иначе
+        # регрессию снова не заметят, как в первом раунде.
+        assert client.get("/legacy/audio/xiao-01/7/1", auth=AUTH).status_code != 200
 
 
 def test_audio_path_in_db_is_absolute(env, monkeypatch):
@@ -673,7 +678,28 @@ def test_task_form_does_not_redirect_outside(env, monkeypatch):
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             follow_redirects=False,
         )
-    assert response.headers["location"] == "/tasks"
+    assert response.headers["location"] == "/legacy/tasks"
+
+
+def test_task_form_redirect_without_back_stays_in_legacy(env, monkeypatch):
+    """/legacy — страховка до паритета: без явного back должен остаться в
+    /legacy, а не улететь в catch-all нового фронтенда."""
+    upload(env)
+    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    summary_stub(env, monkeypatch)
+    run_all(env)
+
+    with closing(env.db.connect()) as conn:
+        task_id = env.db.task_rows(conn)[0]["task_id"]
+    with TestClient(env.app) as client:
+        response = client.post(
+            f"/legacy/tasks/xiao-01/7/{task_id}", auth=AUTH,
+            content="status=done",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            follow_redirects=False,
+        )
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/legacy/")
 
 
 # --- вопросы без ответа --------------------------------------------------------

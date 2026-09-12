@@ -12,7 +12,7 @@ from datetime import date
 from urllib.parse import parse_qs, quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 import db
 import textnorm
@@ -20,6 +20,19 @@ from auth import owner
 
 router = APIRouter()
 
+# Страницы владельца смонтированы в app.py под этим префиксом. Ссылки, формы и
+# редиректы внутри интерфейса собираются через BASE: /legacy работает как
+# страховка до паритета нового фронтенда, значит навигация в нём должна
+# оставаться рабочей, а не улетать в catch-all статики.
+BASE = "/legacy"
+
+NAV = (
+    f'<nav><a href="{BASE}/">Записи</a><a href="{BASE}/tasks">Задачи</a>'
+    f'<a href="{BASE}/questions">Вопросы</a>'
+    f'<a href="{BASE}/projects">Проекты</a><a href="{BASE}/review">Спорные</a>'
+    f'<a href="{BASE}/digest">Дайджест</a>'
+    f'<a href="{BASE}/search">Поиск</a><a href="{BASE}/status">Состояние</a></nav>'
+)
 
 PAGE = """<!doctype html>
 <html lang="ru"><head>
@@ -59,9 +72,7 @@ PAGE = """<!doctype html>
   mark {{ background: color-mix(in oklab, currentColor 25%, transparent); color: inherit; border-radius: .2rem; }}
   .spk {{ display: grid; grid-template-columns: auto 1fr auto; gap: .5rem; align-items: center; margin: .3rem 0; }}
 </style></head><body>
-<nav><a href="/">Записи</a><a href="/tasks">Задачи</a><a href="/questions">Вопросы</a>
-<a href="/projects">Проекты</a><a href="/review">Спорные</a><a href="/digest">Дайджест</a>
-<a href="/search">Поиск</a><a href="/status">Состояние</a></nav>
+{nav}
 {body}
 </body></html>"""
 
@@ -99,7 +110,7 @@ SEEK_JS = """<script>
 
 
 def page(title, body, script=""):
-    return HTMLResponse(PAGE.format(title=html.escape(title), body=body + script))
+    return HTMLResponse(PAGE.format(title=html.escape(title), body=body + script, nav=NAV))
 
 
 def esc(value):
@@ -116,7 +127,7 @@ def duration_label(audio_bytes):
 
 
 def search_form(query=""):
-    return (f"<form class='search' action='/search' method='get'>"
+    return (f"<form class='search' action='{BASE}/search' method='get'>"
             f"<input type='search' name='q' value='{esc(query)}' placeholder='Слово или фраза'"
             f" autocomplete='off'><button>Найти</button></form>")
 
@@ -145,7 +156,7 @@ def index(_=Depends(owner)):
     for row in rows:
         state = "саммари готово" if row["summary_status"] == "done" else "обрабатывается"
         body += (
-            f"<a class='card' href='/session/{esc(row['device_id'])}/{row['session']}'>"
+            f"<a class='card' href='{BASE}/session/{esc(row['device_id'])}/{row['session']}'>"
             f"<strong>Сессия {row['session']:04d}</strong><br>"
             f"<span class='muted'>{esc(row['last'])} · {duration_label(row['bytes'])} · "
             f"частей {row['parts']}, расшифровано {row['done_parts']} · {state}</span></a>"
@@ -192,11 +203,11 @@ def search_page(q: str = "", _=Depends(owner)):
         key = (hit["device_id"], hit["session"])
         if key != current:
             current = key
-            body += (f"<h2><a href='/session/{esc(hit['device_id'])}/{hit['session']}'>"
+            body += (f"<h2><a href='{BASE}/session/{esc(hit['device_id'])}/{hit['session']}'>"
                      f"Сессия {hit['session']:04d}</a></h2>")
         anchor = f"u-{hit['part']}-{hit['idx']}"
         body += (
-            f"<p class='u'><a href='/session/{esc(hit['device_id'])}/{hit['session']}#{anchor}'"
+            f"<p class='u'><a href='{BASE}/session/{esc(hit['device_id'])}/{hit['session']}#{anchor}'"
             f" style='text-decoration:none'>"
             f"<span class='t'>{db.format_abs(hit['start_abs'])}</span> "
             f"<span class='who'>{esc(hit['label'])}:</span> "
@@ -230,7 +241,7 @@ def render_summary(raw):
 
     topics = [str(t).strip() for t in (data.get("topics") or []) if str(t).strip()]
     if topics:
-        links = " · ".join(f"<a href='/project/{quote(t)}'>{esc(t)}</a>" for t in topics)
+        links = " · ".join(f"<a href='{BASE}/project/{quote(t)}'>{esc(t)}</a>" for t in topics)
         blocks.append(f"<p class='muted'>Темы: {links}</p>")
 
     for title, key in (("Решения", "decisions"), ("Факты", "facts")):
@@ -271,7 +282,7 @@ def render_speakers(device_id, session, timeline, names):
     none_checked = "" if any(n["is_me"] for n in names.values()) else " checked"
     return (
         f"<h2>Говорящие</h2>"
-        f"<form method='post' action='/session/{esc(device_id)}/{session}/speakers'>"
+        f"<form method='post' action='{BASE}/session/{esc(device_id)}/{session}/speakers'>"
         + "".join(rows)
         + f"<div class='spk'><span></span><span class='muted'>Номера — метки диаризации, не личности."
           f" Исходный транскрипт не меняется.</span>"
@@ -357,20 +368,7 @@ async def save_speakers(device_id: str, session: int, request: Request, _=Depend
                     continue
                 name = (values[0] if values else "")[:60]
                 db.set_speaker(conn, device_id, session, spk, name, me == str(spk))
-    return RedirectResponse(f"/session/{device_id}/{session}", status_code=303)
-
-
-@router.get("/audio/{device_id}/{session}/{part}")
-def audio(device_id: str, session: int, part: int, _=Depends(owner)):
-    with closing(db.connect()) as conn:
-        row = conn.execute(
-            "SELECT audio_path FROM parts WHERE device_id=? AND session=? AND part=?",
-            (device_id, session, part),
-        ).fetchone()
-    if row is None:
-        raise HTTPException(404, "нет такой части")
-    # FileResponse отдаёт Range, без него Safari на iPhone не проигрывает аудио.
-    return FileResponse(row["audio_path"], media_type="audio/wav")
+    return RedirectResponse(f"{BASE}/session/{device_id}/{session}", status_code=303)
 
 
 # --- задачи, вопросы, проекты, спорные места ----------------------------------
@@ -381,7 +379,7 @@ def session_link(device_id, session, source=None, label=None):
     if source and source.get("part") is not None:
         anchor = f"#u-{source['part']}-{source['idx']}"
     text = label or f"Сессия {session:04d}"
-    return f"<a href='/session/{esc(device_id)}/{session}{anchor}'>{esc(text)}</a>"
+    return f"<a href='{BASE}/session/{esc(device_id)}/{session}{anchor}'>{esc(text)}</a>"
 
 
 def day_label(value):
@@ -426,13 +424,13 @@ def tasks_page(show: str = "open", session: int = None, _=Depends(owner)):
                             overdue=show == "overdue", session=session)
         has_me = bool(db.my_names(conn))
 
-    back = f"/tasks?show={show}" + (f"&session={session}" if session is not None else "")
-    body = "<h1>Задачи</h1>" + filter_links(show, TASK_FILTERS, "/tasks")
+    back = f"{BASE}/tasks?show={show}" + (f"&session={session}" if session is not None else "")
+    body = "<h1>Задачи</h1>" + filter_links(show, TASK_FILTERS, f"{BASE}/tasks")
     if show == "mine" and not has_me:
         body += ("<p class='warn'>Ни один говорящий не отмечен как «это я»: "
                  "отметьте себя на странице сессии, иначе «мои» ничего не найдут.</p>")
     if session is not None:
-        body += f"<p class='muted'>Только сессия {session:04d}. <a href='/tasks?show={show}'>Все сессии</a></p>"
+        body += f"<p class='muted'>Только сессия {session:04d}. <a href='{BASE}/tasks?show={show}'>Все сессии</a></p>"
     if not rows:
         return page("Задачи", body + "<p class='muted'>Ничего нет.</p>")
 
@@ -453,7 +451,7 @@ def tasks_page(show: str = "open", session: int = None, _=Depends(owner)):
                 continue
             buttons += (
                 f"<form method='post' style='display:inline'"
-                f" action='/tasks/{esc(task['device_id'])}/{task['session']}/{task['task_id']}'>"
+                f" action='{BASE}/tasks/{esc(task['device_id'])}/{task['session']}/{task['task_id']}'>"
                 f"<input type='hidden' name='status' value='{status}'>"
                 f"<input type='hidden' name='back' value='{esc(back)}'>"
                 f"<button class='link'>{title}</button></form>"
@@ -473,7 +471,7 @@ async def update_task(device_id: str, session: int, task_id: str, request: Reque
                       _=Depends(owner)):
     form = parse_qs((await request.body()).decode("utf-8", errors="replace"))
     status = (form.get("status") or ["done"])[0]
-    back = safe_back((form.get("back") or ["/tasks"])[0], "/tasks")
+    back = safe_back((form.get("back") or [f"{BASE}/tasks"])[0], f"{BASE}/tasks")
     with closing(db.connect()) as conn:
         db.set_task_status(conn, device_id, session, task_id, status)
     return RedirectResponse(back, status_code=303)
@@ -488,7 +486,7 @@ def questions_page(show: str = "open", _=Depends(owner)):
     with closing(db.connect()) as conn:
         rows = db.question_rows(conn, only_open=show == "open")
 
-    body = "<h1>Вопросы без ответа</h1>" + filter_links(show, QUESTION_FILTERS, "/questions")
+    body = "<h1>Вопросы без ответа</h1>" + filter_links(show, QUESTION_FILTERS, f"{BASE}/questions")
     if not rows:
         return page("Вопросы", body + "<p class='muted'>Ничего нет.</p>")
 
@@ -501,9 +499,9 @@ def questions_page(show: str = "open", _=Depends(owner)):
                 continue
             buttons += (
                 f"<form method='post' style='display:inline'"
-                f" action='/questions/{esc(item['device_id'])}/{item['session']}/{item['question_id']}'>"
+                f" action='{BASE}/questions/{esc(item['device_id'])}/{item['session']}/{item['question_id']}'>"
                 f"<input type='hidden' name='state' value='{state}'>"
-                f"<input type='hidden' name='back' value='/questions?show={show}'>"
+                f"<input type='hidden' name='back' value='{BASE}/questions?show={show}'>"
                 f"<button class='link'>{title}</button></form>"
             )
         body += (
@@ -520,7 +518,7 @@ async def update_question(device_id: str, session: int, question_id: str, reques
                           _=Depends(owner)):
     form = parse_qs((await request.body()).decode("utf-8", errors="replace"))
     state = (form.get("state") or ["answered"])[0]
-    back = safe_back((form.get("back") or ["/questions"])[0], "/questions")
+    back = safe_back((form.get("back") or [f"{BASE}/questions"])[0], f"{BASE}/questions")
     with closing(db.connect()) as conn:
         db.set_question_state(conn, device_id, session, question_id, state)
     return RedirectResponse(back, status_code=303)
@@ -538,14 +536,14 @@ def projects_page(_=Depends(owner)):
                  "после обработки следующих записей.</p>")
     for name in sorted(projects):
         items = projects[name]
-        body += (f"<a class='card' href='/project/{quote(name)}'><strong>{esc(name)}</strong><br>"
+        body += (f"<a class='card' href='{BASE}/project/{quote(name)}'><strong>{esc(name)}</strong><br>"
                  f"<span class='muted'>разговоров: {len(items)} · "
                  f"последний {day_label(items[-1]['day'])}</span></a>")
 
     body += (
         "<h2>Псевдонимы</h2>"
         "<p class='muted'>«Пози флора» и «Posiflora» — один проект: сведите их сюда.</p>"
-        "<form method='post' action='/projects/alias' class='search'>"
+        f"<form method='post' action='{BASE}/projects/alias' class='search'>"
         "<input type='text' name='alias' placeholder='Как прозвучало'>"
         "<input type='text' name='canonical' placeholder='Название проекта'>"
         "<button>Сохранить</button></form>"
@@ -562,7 +560,7 @@ async def add_alias(request: Request, _=Depends(owner)):
     with closing(db.connect()) as conn:
         db.set_alias(conn, (form.get("alias") or [""])[0][:80],
                      (form.get("canonical") or [""])[0][:80])
-    return RedirectResponse("/projects", status_code=303)
+    return RedirectResponse(f"{BASE}/projects", status_code=303)
 
 
 @router.get("/project/{name}", response_class=HTMLResponse)

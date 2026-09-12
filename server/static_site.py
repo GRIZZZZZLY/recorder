@@ -30,7 +30,7 @@ def resolve(path):
     base = WEB_DIR.resolve()
     try:
         candidate = (base / path).resolve()
-    except OSError:
+    except (OSError, ValueError):
         return None
     if base != candidate and base not in candidate.parents:
         return None

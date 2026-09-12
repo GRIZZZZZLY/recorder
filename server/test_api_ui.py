@@ -55,3 +55,22 @@ def test_site_without_build_says_so_and_keeps_legacy(env, monkeypatch, tmp_path)
 def test_site_does_not_serve_files_outside_the_build(site):
     with TestClient(site.app) as client:
         assert client.get("/../../server/db.py", auth=AUTH).status_code in (400, 404)
+
+
+def test_resolve_returns_none_instead_of_crashing_on_value_error(site, monkeypatch):
+    """Путь со встроенным NUL валит Path.resolve() с ValueError (на POSIX), не
+    только с OSError — раньше это было необработанным 500. Windows этот кейс
+    не воспроизводит напрямую (resolve() молча пропускает NUL), поэтому
+    ValueError вызывается принудительно — так проверка не зависит от ОС."""
+    import static_site
+    from pathlib import Path
+
+    real_resolve = Path.resolve
+
+    def flaky_resolve(self, *args, **kwargs):
+        if self.name == "boom":
+            raise ValueError("embedded null byte")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", flaky_resolve)
+    assert static_site.resolve("boom") is None
