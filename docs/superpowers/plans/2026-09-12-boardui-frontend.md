@@ -6,7 +6,7 @@
 
 **Architecture:** Next.js 16 со статическим экспортом собирается на машине разработчика в `web/out`; FastAPI отдаёт этот каталог catch-all маршрутом под `Depends(owner)` и добавляет JSON-роуты `/api/ui/*` — тонкие обёртки над существующими функциями `db.py`. Логика (задачи, сроки, спорные места, поиск) не переписывается: она уже в `db.py` и покрыта 50 тестами. Старый интерфейс живёт под `/legacy` до паритета.
 
-**Tech Stack:** Python 3.13, FastAPI, SQLite. Node 24.13.1, Next.js 16.2.x, React 19.2.x, TypeScript 5, Tailwind CSS v4, BoardUI (MIT, исходники в проекте), react-aria-components, @remixicon/react, tailwind-merge.
+**Tech Stack:** Python 3.13, FastAPI, SQLite. Node 24.13.1, Next.js 16.3.x (проверено на 16.3.5), React 19.2.x (проверено на 19.2.8), TypeScript 5, Tailwind CSS v4 (проверено на 4.3.3), BoardUI (MIT, исходники в проекте), react-aria-components, @remixicon/react, tailwind-merge.
 
 **Spec:** `docs/superpowers/specs/2026-09-12-boardui-frontend-design.md`
 
