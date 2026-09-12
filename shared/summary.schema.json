@@ -1,0 +1,74 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "Связный пересказ разговора на русском, 3-8 предложений."
+    },
+    "topics": {
+      "type": "array",
+      "description": "От одного до трёх коротких названий проектов или тем разговора, как они прозвучали.",
+      "items": { "type": "string" }
+    },
+    "decisions": {
+      "type": "array",
+      "description": "Принятые решения. Пусто, если решений не прозвучало.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" },
+          "time": { "type": "string", "description": "Метка времени реплики из транскрипта, Ч:ММ:СС." },
+          "quote": { "type": "string", "description": "Дословный фрагмент реплики, 3-15 слов." }
+        },
+        "required": ["text", "time", "quote"],
+        "additionalProperties": false
+      }
+    },
+    "facts": {
+      "type": "array",
+      "description": "Названные числа, сроки, имена, суммы. Ничего не додумывать.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" },
+          "time": { "type": "string", "description": "Метка времени реплики из транскрипта, Ч:ММ:СС." },
+          "quote": { "type": "string", "description": "Дословный фрагмент реплики, 3-15 слов." }
+        },
+        "required": ["text", "time", "quote"],
+        "additionalProperties": false
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "description": "Задачи. Исполнитель и срок пустые, если не прозвучали вслух.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" },
+          "owner": { "type": "string" },
+          "due": { "type": "string" },
+          "time": { "type": "string", "description": "Метка времени реплики из транскрипта, Ч:ММ:СС." },
+          "quote": { "type": "string", "description": "Дословный фрагмент реплики, 3-15 слов." }
+        },
+        "required": ["text", "owner", "due", "time", "quote"],
+        "additionalProperties": false
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "description": "Вопросы, которые прозвучали, но явного ответа или решения в записи нет.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" },
+          "time": { "type": "string", "description": "Метка времени реплики из транскрипта, Ч:ММ:СС." },
+          "quote": { "type": "string", "description": "Дословный фрагмент реплики, 3-15 слов." }
+        },
+        "required": ["text", "time", "quote"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["summary", "topics", "decisions", "facts", "tasks", "open_questions"],
+  "additionalProperties": false
+}

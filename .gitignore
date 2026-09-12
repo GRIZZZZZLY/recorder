@@ -1,0 +1,21 @@
+# Данные и артефакты, а не исходники.
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Демо-база и тон-файлы пересобираются: python tools/seed_demo.py
+demo-data/
+
+# Снимки до появления git и рабочие каталоги агентов.
+.snapshots/
+.superpowers/
+
+# Фронтенд: зависимости и сборка. web/out едет на VPS через tools/deploy.sh
+# из локального каталога, в истории он только забил бы каждый diff.
+node_modules/
+web/.next/
+web/out/
+
+# Ключи и пароли рядом с кодом не лежат.
+.env
+*.env
