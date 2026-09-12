@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager, closing
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+import api_ui
 import audio
 import static_site
 import web
@@ -152,6 +153,7 @@ def sessions():
     return [dict(row) for row in rows]
 
 
+app.include_router(api_ui.router)
 # Catch-all регистрируется последним из всех: /api/v1/... объявлены декораторами
 # выше в этом же файле, а значит попадают в app.router раньше него — но легко
 # забыть при следующей правке, поэтому регистрация вынесена в самый конец файла.

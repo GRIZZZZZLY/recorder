@@ -74,3 +74,68 @@ def test_resolve_returns_none_instead_of_crashing_on_value_error(site, monkeypat
 
     monkeypatch.setattr(Path, "resolve", flaky_resolve)
     assert static_site.resolve("boom") is None
+
+
+def prepared(env, monkeypatch):
+    """Сессия 7 с расшифровкой, саммари, задачей и вопросом."""
+    upload(env)
+    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    summary_stub(env, monkeypatch)
+    run_all(env)
+    return env
+
+
+def test_digest_gives_day_week_and_recent_sessions(env, monkeypatch):
+    prepared(env, monkeypatch)
+    with TestClient(env.app) as client:
+        body = client.get("/api/ui/digest", auth=AUTH).json()
+    assert body["day"]["sessions"] == 1
+    assert body["week"]["new_tasks"] == 1
+    assert body["recent"][0]["session"] == 7
+    assert body["my_tasks"] == []          # «это я» ещё не отмечен
+    assert body["has_me"] is False
+
+
+def test_sessions_list_has_progress_and_state(env, monkeypatch):
+    prepared(env, monkeypatch)
+    with TestClient(env.app) as client:
+        rows = client.get("/api/ui/sessions", auth=AUTH).json()
+    assert rows[0]["session"] == 7
+    assert rows[0]["parts"] == 1 and rows[0]["done_parts"] == 1
+    assert rows[0]["summary_status"] == "done"
+    assert rows[0]["day"].startswith("20")
+
+
+def test_session_detail_carries_timeline_summary_and_tasks(env, monkeypatch):
+    prepared(env, monkeypatch)
+    with TestClient(env.app) as client:
+        body = client.get("/api/ui/sessions/xiao-01/7", auth=AUTH).json()
+    assert body["summary"]["topics"] == ["смета для заказчика"]
+    assert body["timeline"][0]["label"] == "Говорящий 1"
+    assert body["timeline"][0]["start_abs"] == 1.0
+    assert body["parts"][0]["part"] == 1
+    assert body["tasks"][0]["text"] == "Выслать смету"
+    assert body["speakers"] == [{"speaker": 0, "name": "", "is_me": False},
+                                {"speaker": 1, "name": "", "is_me": False}]
+
+
+def test_session_detail_404_for_unknown_session(env):
+    with TestClient(env.app) as client:
+        assert client.get("/api/ui/sessions/xiao-01/999", auth=AUTH).status_code == 404
+
+
+def test_speakers_are_saved_as_json(env, monkeypatch):
+    prepared(env, monkeypatch)
+    with TestClient(env.app) as client:
+        response = client.post("/api/ui/sessions/xiao-01/7/speakers", auth=AUTH,
+                               json={"names": {"0": "Игорь", "1": "Мария"}, "me": 0})
+        assert response.status_code == 200
+        body = client.get("/api/ui/sessions/xiao-01/7", auth=AUTH).json()
+    assert body["timeline"][0]["label"] == "Игорь"
+    with closing(env.db.connect()) as conn:
+        assert env.db.speaker_names(conn, "xiao-01", 7)[0] == {"name": "Игорь", "is_me": True}
+
+
+def test_api_requires_password(env):
+    with TestClient(env.app) as client:
+        assert client.get("/api/ui/digest").status_code == 401

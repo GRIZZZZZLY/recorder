@@ -729,6 +729,35 @@ def review_items(conn):
     return items
 
 
+def session_rows(conn, limit=None):
+    """Список сессий для интерфейса: свежие первыми.
+
+    SQL жил в странице списка; вынесен сюда, потому что тот же список нужен
+    сводке. Дублировать запрос в двух местах — способ получить две правды.
+    """
+    sql = (
+        "SELECT p.device_id, p.session, COUNT(*) AS parts, SUM(p.bytes) AS bytes,"
+        "       MIN(p.received_at) AS first_at, MAX(p.received_at) AS last_at,"
+        "       (SELECT status FROM summaries s"
+        "         WHERE s.device_id=p.device_id AND s.session=p.session) AS summary_status,"
+        "       (SELECT COUNT(*) FROM transcripts t"
+        "         WHERE t.device_id=p.device_id AND t.session=p.session"
+        "           AND t.status='done') AS done_parts"
+        " FROM parts p GROUP BY p.device_id, p.session"
+        " ORDER BY p.received_at DESC"
+    )
+    if limit is not None:
+        sql += f" LIMIT {int(limit)}"
+    rows = []
+    for row in conn.execute(sql).fetchall():
+        item = dict(row)
+        item["day"] = item["first_at"][:10] if item["first_at"] else None
+        item["seconds"] = max(0, (item["bytes"] or 0)
+                              - WAV_HEADER_BYTES * item["parts"]) / BYTES_PER_SECOND
+        rows.append(item)
+    return rows
+
+
 # --- дайджест ---------------------------------------------------------------------
 
 def digest(conn, days):
