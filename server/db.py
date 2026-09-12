@@ -737,6 +737,10 @@ def session_rows(conn, limit=None):
     """
     sql = (
         "SELECT p.device_id, p.session, COUNT(*) AS parts, SUM(p.bytes) AS bytes,"
+        # Клэмп по части, а не по сумме: часть короче заголовка (битая, обрезанная)
+        # иначе съедала бы чужие байты у соседней части. part_offsets (шкала
+        # реплик) считает так же поэлементно — список сессий обязан совпадать.
+        "       SUM(MAX(p.bytes - ?, 0)) AS clamped_bytes,"
         "       MIN(p.received_at) AS first_at, MAX(p.received_at) AS last_at,"
         "       (SELECT status FROM summaries s"
         "         WHERE s.device_id=p.device_id AND s.session=p.session) AS summary_status,"
@@ -746,14 +750,15 @@ def session_rows(conn, limit=None):
         " FROM parts p GROUP BY p.device_id, p.session"
         " ORDER BY p.received_at DESC"
     )
+    args = [WAV_HEADER_BYTES]
     if limit is not None:
-        sql += f" LIMIT {int(limit)}"
+        sql += " LIMIT ?"
+        args.append(int(limit))
     rows = []
-    for row in conn.execute(sql).fetchall():
+    for row in conn.execute(sql, args).fetchall():
         item = dict(row)
         item["day"] = item["first_at"][:10] if item["first_at"] else None
-        item["seconds"] = max(0, (item["bytes"] or 0)
-                              - WAV_HEADER_BYTES * item["parts"]) / BYTES_PER_SECOND
+        item["seconds"] = (item.pop("clamped_bytes") or 0) / BYTES_PER_SECOND
         rows.append(item)
     return rows
 

@@ -106,6 +106,30 @@ def test_sessions_list_has_progress_and_state(env, monkeypatch):
     assert rows[0]["day"].startswith("20")
 
 
+def test_session_rows_seconds_match_per_part_clamp_like_timeline(env):
+    """session_rows раньше клэмпил один раз на сумму: max(0, SUM(bytes) - 44*parts).
+    part_offsets (шкала реплик) клэмпит каждую часть отдельно и потом суммирует.
+    На части короче WAV_HEADER_BYTES (битые/обрезанные, есть recovered/failed для
+    таких) формулы расходятся: список сессий и шкала должны показывать одно и то же
+    число, поэтому seconds обязан считаться так же поэлементно."""
+    with closing(env.db.connect()) as conn:
+        conn.execute(
+            "INSERT INTO parts (device_id, session, part, bytes, crc32, audio_path)"
+            " VALUES ('xiao-01', 7, 1, 20, '00000000', 'x')")
+        conn.execute(
+            "INSERT INTO parts (device_id, session, part, bytes, crc32, audio_path)"
+            " VALUES ('xiao-01', 7, 2, 32044, '00000000', 'y')")
+        conn.commit()
+        row = env.db.session_rows(conn)[0]
+
+    per_part_total = (max(0, 20 - env.db.WAV_HEADER_BYTES)
+                       + max(0, 32044 - env.db.WAV_HEADER_BYTES))
+    assert row["seconds"] == pytest.approx(per_part_total / env.db.BYTES_PER_SECOND)
+
+    old_formula = max(0, (20 + 32044) - env.db.WAV_HEADER_BYTES * 2) / env.db.BYTES_PER_SECOND
+    assert row["seconds"] != pytest.approx(old_formula)
+
+
 def test_session_detail_carries_timeline_summary_and_tasks(env, monkeypatch):
     prepared(env, monkeypatch)
     with TestClient(env.app) as client:
