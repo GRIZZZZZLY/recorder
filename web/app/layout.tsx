@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, Inter_Tight, Literata } from "next/font/google";
 import "@/styles/globals.css";
 import "@/styles/recorder-theme.css";
+import { Shell } from "@/components/recorder/shell";
 
 // subsets с cyrillic обязателен: интерфейс русский. Сборка падает, если
 // у семейства нет кириллического субсета, — это и есть проверка.
@@ -23,7 +24,9 @@ export const metadata: Metadata = { title: "Диктофон" };
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ru" className={`dark ${inter.variable} ${interTight.variable} ${literata.variable}`}>
-      <body className="bg-background-full text-text-primary">{children}</body>
+      <body className="bg-background-full text-text-primary">
+        <Shell>{children}</Shell>
+      </body>
     </html>
   );
 }
