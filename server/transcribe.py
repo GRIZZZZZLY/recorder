@@ -31,14 +31,20 @@ PARAMS = {
     "smart_format": "true",
 }
 
-# Повтор бессмысленен: ключ, права, оплата, испорченное аудио.
-FATAL_STATUSES = {400, 401, 402, 403, 404}
+# Ключ, права или оплата: лечится руками владельца, поэтому повтор раз в час,
+# а не отказ навсегда. Владелец вписал ключ — части уходят в Deepgram сами.
+ACCOUNT_STATUSES = {401, 402, 403}
+ACCOUNT_RETRY_MINUTES = 60
+# Сам запрос или файл: повторять нечего.
+FATAL_STATUSES = {400, 404}
 
 
 class TranscribeError(Exception):
-    def __init__(self, message, retryable=True):
+    def __init__(self, message, retryable=True, wait_minutes=None):
         super().__init__(message)
         self.retryable = retryable
+        # Пауза, заданная самой ошибкой. None — воркер выбирает по числу попыток.
+        self.wait_minutes = wait_minutes
 
 
 @dataclass
@@ -119,7 +125,8 @@ def parse_payload(payload):
 
 def transcribe_file(path):
     if not API_KEY:
-        raise TranscribeError("не задан DEEPGRAM_API_KEY", retryable=False)
+        raise TranscribeError("не задан DEEPGRAM_API_KEY", retryable=True,
+                              wait_minutes=ACCOUNT_RETRY_MINUTES)
 
     try:
         audio = open(path, "rb").read()
@@ -146,6 +153,11 @@ def transcribe_file(path):
 
     if response.status_code != 200:
         detail = response.text[:300]
+        if response.status_code in ACCOUNT_STATUSES:
+            raise TranscribeError(
+                f"Deepgram отказал {response.status_code}: {detail}", retryable=True,
+                wait_minutes=ACCOUNT_RETRY_MINUTES,
+            )
         if response.status_code in FATAL_STATUSES:
             raise TranscribeError(
                 f"Deepgram отказал {response.status_code}: {detail}", retryable=False

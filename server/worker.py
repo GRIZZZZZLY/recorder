@@ -50,7 +50,7 @@ def run_transcription(conn):
             db.fail_transcript(conn, key, str(error), None)
             log.error("Расшифровка невозможна, %s: %s", key, error)
         else:
-            wait = backoff_minutes(row["attempts"])
+            wait = error.wait_minutes or backoff_minutes(row["attempts"])
             db.fail_transcript(conn, key, str(error), wait)
             log.warning("Расшифровка отложена на %d мин, попытка %d: %s",
                         wait, row["attempts"] + 1, error)

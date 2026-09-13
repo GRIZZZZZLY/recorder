@@ -161,10 +161,13 @@ def test_words_are_trimmed_to_what_ui_needs(env):
 
 
 @pytest.mark.parametrize(
-    "status, retryable",
-    [(401, False), (402, False), (400, False), (429, True), (503, True), (504, True)],
+    "status, retryable, wait",
+    # 401/402/403 — ключ или оплата: лечится руками, повтор раз в час.
+    # 400 — сам файл, повторять нечего. 429/5xx — подождать по нарастающей.
+    [(401, True, 60), (402, True, 60), (403, True, 60), (400, False, None),
+     (429, True, None), (503, True, None), (504, True, None)],
 )
-def test_deepgram_errors_are_classified(env, monkeypatch, status, retryable):
+def test_deepgram_errors_are_classified(env, monkeypatch, status, retryable, wait):
     def reply(request):
         return httpx.Response(status, text="{}")
 
@@ -179,15 +182,36 @@ def test_deepgram_errors_are_classified(env, monkeypatch, status, retryable):
     with pytest.raises(env.transcribe.TranscribeError) as caught:
         env.transcribe.transcribe_file(str(audio))
     assert caught.value.retryable is retryable
+    assert caught.value.wait_minutes == wait
 
 
-def test_missing_key_is_not_retryable(env, monkeypatch):
+def test_missing_key_is_retried_hourly(env, monkeypatch):
+    """Пустой ключ — ошибка настройки, а не файла: владелец впишет ключ,
+    и часть должна уйти в Deepgram сама, без ручного перезапуска."""
     monkeypatch.setattr(env.transcribe, "API_KEY", "")
     audio = env.tmp / "a.wav"
     audio.write_bytes(wav())
     with pytest.raises(env.transcribe.TranscribeError) as caught:
         env.transcribe.transcribe_file(str(audio))
-    assert caught.value.retryable is False
+    assert caught.value.retryable is True
+    assert caught.value.wait_minutes == 60
+
+
+def test_bad_key_keeps_part_pending_for_an_hour(env, monkeypatch):
+    upload(env)
+
+    def bad_key(path):
+        raise env.transcribe.TranscribeError("Deepgram отказал 401", retryable=True,
+                                             wait_minutes=60)
+
+    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", bad_key)
+    with closing(env.db.connect()) as conn:
+        assert env.worker.tick(conn) is True
+        row = conn.execute(
+            "SELECT status, (julianday(next_try_at) - julianday('now')) * 1440 AS wait_min"
+            " FROM transcripts").fetchone()
+    assert row["status"] == "pending"
+    assert 55 < row["wait_min"] <= 60
 
 
 # --- очередь ----------------------------------------------------------------

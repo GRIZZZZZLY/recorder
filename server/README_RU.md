@@ -102,7 +102,7 @@ CLAUDE_CODE_OAUTH_TOKEN=...            # долгоживущий токен, с
 
 ```bash
 pip install -r server/requirements.txt
-cd server && python -m pytest . -q          # 74 проверки
+cd server && python -m pytest . -q          # 78 проверок
 uvicorn app:app --host 127.0.0.1 --port 8081
 python worker.py --once                     # один проход очереди
 ```
