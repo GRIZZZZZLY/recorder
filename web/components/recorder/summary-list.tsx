@@ -1,45 +1,45 @@
 "use client";
 
 import { useSeek } from "@/components/recorder/player";
-import { SourceDot } from "@/components/recorder/source-link";
+import { Card, Row, Section, Time } from "@/components/recorder/list";
+import { Evidence } from "@/components/recorder/ui";
+import { revealUtterance } from "@/lib/reveal";
 import type { SummaryItem } from "@/lib/api";
 
-/** Пункт саммари: время, текст, состояние источника и перемотка на реплику. */
-export function SummaryList({ title, items }: { title: string; items: SummaryItem[] }) {
+/**
+ * Пункты саммари: время, текст и кнопка «основание» — реплика, из которой
+ * пункт взят. Без источника кнопка выключена: слушать нечего.
+ */
+export function SummaryList({ title, items, at }: { title: string; items: SummaryItem[]; at?: number }) {
   const seek = useSeek();
   if (items.length === 0) return null;
 
   return (
-    <section className="mt-8">
-      <h2 className="text-title-3-semibold text-text-primary">{title}</h2>
-      <ul className="mt-3 flex flex-col gap-3">
+    <Section note={`${title} · ${items.length}`} at={at}>
+      <Card className="cascade">
         {items.map((item, index) => (
-          <li key={`${item.time}-${index}`}
-              className="rounded-2xl border border-separator-border bg-background-primary-default p-6">
-            <p className="text-body-regular text-text-primary">
-              <span className="nums mr-2 text-text-tertiary">{item.time}</span>
+          <Row key={`${item.time}-${index}`} className="gap-3.5">
+            <Time className="shrink-0">{item.time}</Time>
+            <span className="min-w-0 flex-1">
               {item.text}
-            </p>
-            {(item.owner !== undefined || item.due !== undefined) && (
-              <p className="mt-1 text-body-2-regular text-text-tertiary">
-                {item.owner || "исполнитель не назван"} · {item.due || "срок не назван"}
-              </p>
-            )}
-            <div className="mt-3 flex items-center gap-2">
-              <SourceDot source={item.source ?? null} />
-              {item.source ? (
-                <button type="button"
-                        className="text-body-2-medium text-text-secondary underline-offset-2 hover:underline"
-                        onClick={() => seek(item.source!.part, item.source!.start)}>
-                  Послушать основание
-                </button>
-              ) : (
-                <span className="text-body-2-regular text-text-tertiary">источник не найден</span>
+              {(item.owner || item.due) && (
+                <span className="block text-note text-text-secondary">
+                  {[item.owner, item.due].filter(Boolean).join(" · ")}
+                </span>
               )}
-            </div>
-          </li>
+            </span>
+            <Evidence
+              disabled={!item.source}
+              title={item.source ? undefined : "источник не найден"}
+              onClick={() => {
+                if (!item.source) return;
+                seek(item.source.part, item.source.start, item.text);
+                revealUtterance(item.source.part, item.source.idx);
+              }}
+            />
+          </Row>
         ))}
-      </ul>
-    </section>
+      </Card>
+    </Section>
   );
 }

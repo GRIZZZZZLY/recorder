@@ -1,10 +1,28 @@
 "use client";
 
-import { PageTitle } from "@/components/recorder/eyebrow";
-import { SessionCard } from "@/components/recorder/session-card";
+import { BookmarkSimple } from "@phosphor-icons/react/dist/ssr";
+import { Card, RowLink, Section, SessionNo } from "@/components/recorder/list";
+import { PageHeader } from "@/components/recorder/page-header";
 import { Empty, Failed, Loading } from "@/components/recorder/states";
+import { thin, Waveform } from "@/components/recorder/waveform";
+import { Dot } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import type { SessionRow } from "@/lib/api";
+import { count, formatDayGroup, formatDuration, formatTime } from "@/lib/format";
+import { sessionHref } from "@/lib/session-link";
+import { STATUS_TEXT, statusTone } from "@/lib/session-status";
+import { cx } from "@/utils/cx";
+
+/** Записи одного дня подряд: список приходит отсортированным, свежие первыми. */
+function byDay(rows: SessionRow[]) {
+  const groups: { day: string | null; rows: SessionRow[] }[] = [];
+  for (const row of rows) {
+    const last = groups[groups.length - 1];
+    if (last && last.day === row.day) last.rows.push(row);
+    else groups.push({ day: row.day, rows: [row] });
+  }
+  return groups;
+}
 
 export default function RecordsPage() {
   const { data, error, loading, reload } = useApi<SessionRow[]>("/sessions");
@@ -12,19 +30,61 @@ export default function RecordsPage() {
   if (error) return <Failed error={error} onRetry={reload} />;
   if (loading || !data) return <Loading />;
 
+  const total = data.reduce((sum, row) => sum + row.seconds, 0);
+
   return (
     <>
-      <PageTitle eyebrow="ДИКТОФОН" plain="Все" italic="записи" />
+      <PageHeader
+        title="Записи"
+        aside={data.length ? `${count(data.length, "сессия", "сессии", "сессий")} · ${formatDuration(total)}` : undefined}
+      />
+
       {data.length === 0 ? (
-        <Empty text="Пока пусто: записей с диктофона ещё не приходило." />
+        <Empty title="Записей ещё нет"
+               text="Диктофон не присылал ни одной части. Проверьте, что устройство в сети." />
       ) : (
-        <ul className="flex flex-col gap-3">
-          {data.map((row) => (
-            <li key={`${row.device_id}-${row.session}`}>
-              <SessionCard row={row} />
-            </li>
-          ))}
-        </ul>
+        byDay(data).map((group, index) => (
+          <Section key={group.day ?? "no-day"} note={formatDayGroup(group.day)} at={index + 1}>
+            <Card className="cascade">
+              {group.rows.map((row) => {
+                const tone = statusTone(row);
+                return (
+                  <RowLink key={`${row.device_id}-${row.session}`}
+                           href={sessionHref(row.device_id, row.session)}>
+                    <SessionNo session={row.session} />
+                    <span className="hidden shrink-0 text-note text-text-secondary sm:block">
+                      {formatTime(row.first_at)}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">
+                      {row.topic || <span className="text-text-secondary">без темы</span>}
+                      <span className="text-text-tertiary">
+                        {" · "}{count(row.parts, "часть", "части", "частей")}
+                        {row.done_parts < row.parts ? `, расшифровано ${row.done_parts}` : ""}
+                      </span>
+                    </span>
+                    {row.marks.length > 0 && (
+                      <span className="flex shrink-0 items-center gap-1 text-note text-text-secondary"
+                            title={`отмечено кнопкой: ${row.marks.length}`}>
+                        <BookmarkSimple size={12} weight="fill" aria-hidden />
+                        {row.marks.length}
+                      </span>
+                    )}
+                    <Waveform values={thin(row.envelope, 50)} height={24}
+                              className="wave-grow hidden w-[220px] shrink-0 lg:flex" />
+                    <span className="shrink-0 text-right text-note text-text-secondary">
+                      {formatDuration(row.seconds)}
+                    </span>
+                    <span className={cx("flex w-[130px] shrink-0 items-center justify-end gap-2 text-note",
+                                        tone === "accent" ? "text-accent-text" : "text-text-secondary")}>
+                      <span className="hidden md:inline">{STATUS_TEXT[tone]}</span>
+                      <Dot tone={tone} title={STATUS_TEXT[tone]} />
+                    </span>
+                  </RowLink>
+                );
+              })}
+            </Card>
+          </Section>
+        ))
       )}
     </>
   );

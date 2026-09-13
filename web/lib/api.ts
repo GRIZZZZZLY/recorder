@@ -87,7 +87,27 @@ export type SessionRow = {
   done_parts: number;
   seconds: number;
   day: string | null;
+  /** Метки базы: "2026-09-12 16:40:07". Первая и последняя часть сессии. */
+  first_at: string | null;
+  last_at: string | null;
+  /** Первая тема саммари — имя разговора в списке. Пусто, пока саммари нет. */
+  topic: string | null;
   summary_status: string | null;
+  /** Метки владельца: секунды от начала сессии. Кнопка на диктофоне. */
+  marks: number[];
+  /** Громкость сессии целиком, 60 значений 0..100. Считана из файлов. */
+  envelope: number[];
+};
+
+/** Метка кнопкой на диктофоне и реплика, прозвучавшая перед ней. */
+export type Mark = {
+  part: number;
+  offset: number;
+  start_abs: number;
+  time: string;
+  source: Source;
+  text: string;
+  label: string;
 };
 
 export type Counts = {

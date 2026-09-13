@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import { PageTitle } from "@/components/recorder/eyebrow";
+import { House, MagnifyingGlass, Waveform } from "@phosphor-icons/react/dist/ssr";
 
 // Без этого файла статический экспорт кладёт в out/404.html стандартную
 // страницу Next: белый фон, английский текст и ни одной ссылки обратно.
@@ -8,32 +8,33 @@ import { PageTitle } from "@/components/recorder/eyebrow";
 export const metadata: Metadata = { title: "Страница не найдена" };
 
 const WAYS = [
-  { href: "/", title: "Сводка дня", hint: "Записи, задачи и спорные места за сегодня" },
-  { href: "/records/", title: "Все записи", hint: "Список сессий с диктофона" },
-  { href: "/search/", title: "Поиск", hint: "Найти по сказанному" },
+  { href: "/", title: "Сводка", icon: House },
+  { href: "/records/", title: "Записи", icon: Waveform },
+  { href: "/search/", title: "Поиск", icon: MagnifyingGlass },
 ];
 
 export default function NotFound() {
   return (
-    <>
-      <PageTitle eyebrow="ДИКТОФОН · 404" plain="Такой страницы" italic="нет" />
-      <p className="max-w-[65ch] text-body-regular text-text-secondary">
-        Ссылка ведёт в никуда: адрес набран с ошибкой либо страница переехала.
-        Записи и задачи на месте — начните с одного из разделов.
-      </p>
-      <ul className="mt-6 flex flex-col gap-3">
-        {WAYS.map((way) => (
-          <li key={way.href}>
+    <div className="flex min-h-[60dvh] items-center">
+      <div className="flex max-w-[460px] flex-col gap-5">
+        <span className="font-mono text-note text-text-tertiary">404</span>
+        <h1 className="text-page-sm text-text-primary sm:text-page">Такой страницы нет</h1>
+        <p className="text-[15px] leading-normal text-text-secondary">
+          Сессии с таким номером не было, или ссылка устарела. Записи никуда не делись.
+        </p>
+        <div className="flex flex-wrap gap-2 pt-1">
+          {WAYS.map(({ href, title, icon: Glyph }) => (
             <Link
-              href={way.href}
-              className="recorder-press block rounded-2xl border border-separator-border bg-background-primary-default p-6 hover:bg-background-primary-hover"
+              key={href}
+              href={href}
+              className="press flex items-center gap-2 rounded-inner bg-hairline px-3.5 py-2 text-row hover:bg-hairline-strong"
             >
-              <p className="text-headline-medium text-text-primary">{way.title}</p>
-              <p className="mt-1 text-body-2-regular text-text-tertiary">{way.hint}</p>
+              <Glyph size={16} aria-hidden />
+              {title}
             </Link>
-          </li>
-        ))}
-      </ul>
-    </>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }

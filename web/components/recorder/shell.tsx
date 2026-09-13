@@ -1,150 +1,212 @@
 "use client";
 
 import { useRef } from "react";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  RiAlertLine, RiCheckboxLine, RiCloseLine, RiFolderLine, RiHome4Line,
-  RiMenuLine, RiMicLine, RiPulseLine, RiQuestionLine, RiSearchLine,
-} from "@remixicon/react";
+  CaretRight, CheckSquare, DotsThreeCircle, Folders, House, MagnifyingGlass,
+  Pulse, Question, Waveform as WaveformIcon, WarningCircle, X,
+} from "@phosphor-icons/react/dist/ssr";
+import type { Icon } from "@phosphor-icons/react";
 import { useApi } from "@/lib/use-api";
 import type { DigestBody } from "@/lib/api";
+import { isLive, useNow } from "@/lib/use-now";
 import { cx } from "@/utils/cx";
 
-const NAV = [
-  { key: "digest", label: "Сводка", icon: RiHome4Line, href: "/" },
-  { key: "records", label: "Записи", icon: RiMicLine, href: "/records/" },
-  { key: "tasks", label: "Задачи", icon: RiCheckboxLine, href: "/tasks/" },
-  { key: "questions", label: "Вопросы", icon: RiQuestionLine, href: "/questions/" },
-  { key: "projects", label: "Проекты", icon: RiFolderLine, href: "/projects/" },
-  { key: "review", label: "Спорные", icon: RiAlertLine, href: "/review/" },
-  { key: "search", label: "Поиск", icon: RiSearchLine, href: "/search/" },
-  { key: "status", label: "Состояние", icon: RiPulseLine, href: "/status/" },
-] as const;
+type Item = { key: string; label: string; short?: string; href: string; icon: Icon };
 
-/** Счётчик у пункта меню. Раньше — Badge из BoardUI, теперь один span. */
-function Count({ tone, children }: { tone: "accent" | "neutral"; children: React.ReactNode }) {
+const NAV: Item[] = [
+  { key: "digest", label: "Сводка", href: "/", icon: House },
+  { key: "records", label: "Записи", href: "/records/", icon: WaveformIcon },
+  { key: "tasks", label: "Задачи", href: "/tasks/", icon: CheckSquare },
+  { key: "questions", label: "Вопросы без ответа", short: "Вопросы", href: "/questions/", icon: Question },
+  { key: "projects", label: "Проекты", href: "/projects/", icon: Folders },
+  { key: "review", label: "Спорные места", short: "Спорные", href: "/review/", icon: WarningCircle },
+  { key: "search", label: "Поиск", href: "/search/", icon: MagnifyingGlass },
+  { key: "status", label: "Состояние", href: "/status/", icon: Pulse },
+];
+
+// Нижняя панель телефона вмещает пять целей; остальные разделы уходят в лист
+// «Ещё» — так же, как это делают почта и заметки на iOS.
+const TABS = ["digest", "records", "tasks", "search"];
+const SHEET = ["questions", "projects", "review", "status"];
+
+/**
+ * Иконка раздела: контур и заливка друг на друге, активная — кроссфейд 120 мс,
+ * а не подмена глифа. `pop` — короткий пружинный «клик» при выборе вкладки.
+ */
+function NavGlyph({ icon: Glyph, size, active, pop }: {
+  icon: Icon;
+  size: number;
+  active: boolean;
+  pop?: boolean;
+}) {
   return (
-    <span className={cx(
-      "nums rounded-full px-2 py-0.5 text-caption-1-medium",
-      tone === "accent"
-        ? "bg-accent-500 text-text-white"
-        : "bg-background-secondary-hover text-text-secondary",
-    )}>
-      {children}
+    <span aria-hidden className={cx("relative flex shrink-0 items-center justify-center", active && pop && "tab-pop")}
+          style={{ width: size, height: size }}>
+      <Glyph size={size} className={cx("absolute transition-opacity duration-120", active ? "opacity-0" : "opacity-100")} />
+      <Glyph size={size} weight="fill" className={cx("absolute transition-opacity duration-120", active ? "opacity-100" : "opacity-0")} />
     </span>
   );
 }
 
-/**
- * Своя боковая панель: у диктофона один владелец, команд и настроек нет.
- *
- * Выдвижная панель на узком экране — нативный <dialog> с showModal(). Он сам
- * даёт фокус-ловушку, закрытие по Escape, inert для фона и ::backdrop; ради
- * этого раньше стоял react-aria-components, целая библиотека на одно меню.
- * Состояние держит сам элемент, поэтому здесь нет useState — только ref.
- */
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
   const { data } = useApi<DigestBody>("/digest");
-  const menu = useRef<HTMLDialogElement>(null);
+  const now = useNow();
+  const sheet = useRef<HTMLDialogElement>(null);
 
-  function isSelected(href: string) {
+  function selected(href: string) {
     return href === "/" ? pathname === "/" : pathname.startsWith(href);
   }
 
-  // Заголовок узкого экрана: пока меню закрыто, название раздела — единственный
-  // указатель, где владелец находится.
-  const current = NAV.find((item) => isSelected(item.href));
-
-  function countFor(key: string) {
+  /** Число у пункта меню; у «Состояния» вместо числа — точка светофора. */
+  function mark(key: string) {
     if (!data) return null;
-    if (key === "tasks" && data.week.my_open_tasks > 0) {
-      return <Count tone="accent">{data.week.my_open_tasks}</Count>;
+    const counts = {
+      tasks: data.week.my_open_tasks,
+      questions: data.week.open_questions,
+      review: data.week.review,
+    }[key];
+    if (counts !== undefined) {
+      return counts > 0 ? <span className="text-micro text-text-tertiary">{counts}</span> : null;
     }
-    if (key === "review" && data.week.review > 0) {
-      return <Count tone="neutral">{data.week.review}</Count>;
+    if (key === "status") {
+      const broken = data.week.failed_parts + data.week.failed_summaries;
+      if (broken > 0) return <span className="size-1.5 rounded-chip bg-accent shadow-glow-accent-soft" />;
+      if (data.week.sessions > 0 && data.day.sessions === 0) return null;
+      return null;
     }
     return null;
   }
 
-  const nav = (
-    <nav className="flex flex-col gap-1 p-3">
-      {NAV.map(({ key, label, icon: Icon, href }) => {
-        const selected = isSelected(href);
-        return (
-          <a
-            key={key}
-            href={href}
-            onClick={() => menu.current?.close()}
-            aria-current={selected ? "page" : undefined}
-            className={cx(
-              "recorder-press flex items-center justify-between gap-2 rounded-2lg p-2 text-body-medium",
-              selected
-                ? "bg-linear-to-b from-accent-500 to-accent-600 text-text-white"
-                : "text-text-secondary hover:bg-background-secondary-hover",
-            )}
-          >
-            <span className="flex items-center gap-2">
-              <Icon className="size-5 shrink-0" aria-hidden />
-              {label}
-            </span>
-            {countFor(key)}
-          </a>
-        );
-      })}
-    </nav>
-  );
+  const live = isLive(data?.recent?.[0]?.last_at, now);
 
   return (
     <div className="flex min-h-dvh">
-      {/* Первая цель Tab: с клавиатуры иначе приходится проходить все восемь
-          пунктов меню на каждой странице. Виден только в фокусе. */}
+      {/* Первая цель Tab: иначе с клавиатуры каждый раз приходится проходить
+          всё меню. Виден только в фокусе. */}
       <a
         href="#content"
-        className="sr-only focus-visible:not-sr-only focus-visible:fixed focus-visible:top-3 focus-visible:left-3 focus-visible:z-60 focus-visible:rounded-2lg focus-visible:bg-background-secondary-default focus-visible:px-4 focus-visible:py-2 focus-visible:text-body-medium focus-visible:text-text-primary"
+        className="sr-only focus-visible:not-sr-only focus-visible:fixed focus-visible:top-3 focus-visible:left-3 focus-visible:z-60 focus-visible:rounded-inner focus-visible:bg-surface-elevated focus-visible:px-4 focus-visible:py-2 focus-visible:text-row"
       >
         К содержимому
       </a>
-      <aside className="hidden w-[260px] shrink-0 border-r border-separator-border bg-background-secondary-default lg:block">
-        {nav}
+
+      <aside className="hidden w-[220px] shrink-0 flex-col gap-0.5 border-r border-hairline px-3 py-5 lg:flex">
+        <div className="flex items-center gap-2.5 px-2.5 pt-1.5 pb-5">
+          <span className={cx("size-2 rounded-chip bg-accent", live && "live-dot")}
+                title={live ? "диктофон пишет" : undefined} />
+          <span className="text-row font-semibold">Диктофон</span>
+        </div>
+        <nav className="flex flex-col gap-0.5">
+          {NAV.map(({ key, label, short, href, icon: Glyph }) => {
+            const current = selected(href);
+            return (
+              <Link
+                key={key}
+                href={href}
+                aria-current={current ? "page" : undefined}
+                className={cx(
+                  "press flex items-center gap-2.5 rounded-inner px-2.5 py-2 text-row",
+                  current
+                    ? "bg-hairline text-text-primary"
+                    : "text-text-secondary hover:bg-white/4 hover:text-text-primary",
+                )}
+              >
+                <NavGlyph icon={Glyph} size={20} active={current} />
+                <span className="flex-1">{short ?? label}</span>
+                {mark(key)}
+              </Link>
+            );
+          })}
+        </nav>
       </aside>
+
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center gap-2 border-b border-separator-border p-3 lg:hidden">
-          <button
-            type="button"
-            aria-label="Открыть меню"
-            onClick={() => menu.current?.showModal()}
-            className="recorder-press rounded-lg p-1.5 text-text-secondary hover:bg-background-secondary-hover"
-          >
-            <RiMenuLine className="size-5" aria-hidden />
-          </button>
-          <span className="text-body-medium text-text-primary">{current?.label ?? "Диктофон"}</span>
-        </header>
-        <main id="content" className="mx-auto w-full max-w-[1200px] px-6 py-8 sm:px-8">
+        <main
+          id="content"
+          className="mx-auto flex w-full max-w-[1200px] flex-col gap-7 px-4 pt-8 pb-28 sm:px-8 lg:px-12 lg:pt-10 lg:pb-14"
+        >
           {children}
         </main>
       </div>
+
+      {/* Нижняя панель телефона. */}
+      <nav aria-label="Разделы"
+           className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-hairline bg-surface/90 px-2 pt-2.5 pb-[max(1rem,env(safe-area-inset-bottom))] backdrop-blur-xl lg:hidden">
+        {TABS.map((key) => {
+          const item = NAV.find((entry) => entry.key === key)!;
+          const current = selected(item.href);
+          const Glyph = item.icon;
+          return (
+            <Link
+              key={key}
+              href={item.href}
+              aria-current={current ? "page" : undefined}
+              className={cx(
+                "press flex flex-col items-center gap-1 rounded-inner py-1 text-[11px]",
+                current ? "text-text-primary" : "text-text-tertiary",
+              )}
+            >
+              <NavGlyph icon={Glyph} size={22} active={current} pop />
+              {item.short ?? item.label}
+            </Link>
+          );
+        })}
+        <button
+          type="button"
+          onClick={() => sheet.current?.showModal()}
+          className={cx(
+            "press flex flex-col items-center gap-1 rounded-inner py-1 text-[11px]",
+            SHEET.some((key) => selected(NAV.find((entry) => entry.key === key)!.href))
+              ? "text-text-primary"
+              : "text-text-tertiary",
+          )}
+        >
+          <DotsThreeCircle size={22} aria-hidden />
+          Ещё
+        </button>
+      </nav>
+
+      {/* Лист «Ещё»: нативный <dialog> даёт фокус-ловушку, Escape, inert для
+          фона и ::backdrop без единой строки состояния. Выезд снизу и затемнение
+          фона описаны в styles/globals.css — открытие 260 мс, закрытие 200 мс. */}
       <dialog
-        ref={menu}
-        aria-label="Меню"
-        // Клик мимо панели приходит на сам элемент dialog (::backdrop — его
-        // псевдоэлемент), клик по содержимому — на потомка. Так закрытие по
-        // фону обходится без слушателя на документе.
-        onClick={(event) => { if (event.target === menu.current) menu.current?.close(); }}
-        className="m-0 h-dvh max-h-none w-[260px] max-w-none border-r border-separator-border bg-background-secondary-default p-0 text-text-primary backdrop:bg-black/50 lg:hidden"
+        ref={sheet}
+        aria-label="Ещё"
+        onClick={(event) => { if (event.target === sheet.current) sheet.current?.close(); }}
+        className="grille mt-auto mb-0 w-full max-w-none rounded-t-card border-0 bg-surface-elevated p-0 text-text-primary shadow-sheet lg:hidden"
       >
-        <div className="flex items-center justify-between p-3">
-          <span className="text-body-medium text-text-primary">Диктофон</span>
-          <button
-            type="button"
-            aria-label="Закрыть меню"
-            onClick={() => menu.current?.close()}
-            className="recorder-press rounded-lg p-1.5 text-text-secondary hover:bg-background-secondary-hover"
-          >
-            <RiCloseLine className="size-5" aria-hidden />
-          </button>
+        <div className="flex flex-col gap-3 px-4 pt-2 pb-[max(2rem,env(safe-area-inset-bottom))]">
+          <span aria-hidden className="mx-auto h-1 w-9 rounded-sm bg-hairline-strong" />
+          <div className="flex items-center justify-between px-0.5 py-1">
+            <span className="text-section">Ещё</span>
+            <button type="button" aria-label="Закрыть" onClick={() => sheet.current?.close()}
+                    className="press rounded-inner p-1 text-text-secondary hover:text-text-primary">
+              <X size={18} aria-hidden />
+            </button>
+          </div>
+          <div className="overflow-hidden rounded-card bg-surface">
+            {SHEET.map((key) => {
+              const item = NAV.find((entry) => entry.key === key)!;
+              const Glyph = item.icon;
+              return (
+                <Link
+                  key={key}
+                  href={item.href}
+                  onClick={() => sheet.current?.close()}
+                  className="press-row flex items-center gap-3 px-3.5 py-3.5 text-[15px] not-first:border-t not-first:border-hairline hover:bg-surface-elevated"
+                >
+                  <Glyph size={20} className="text-text-secondary" aria-hidden />
+                  <span className="flex-1">{item.label}</span>
+                  {mark(key)}
+                  <CaretRight size={14} className="text-text-tertiary" aria-hidden />
+                </Link>
+              );
+            })}
+          </div>
         </div>
-        {nav}
       </dialog>
     </div>
   );

@@ -1,9 +1,13 @@
 "use client";
 
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
+import { Pause, Play } from "@phosphor-icons/react/dist/ssr";
+import { thin, Waveform } from "@/components/recorder/waveform";
+import type { Mark } from "@/lib/api";
 import { formatClock } from "@/lib/format";
+import { cx } from "@/utils/cx";
 
-type SeekFn = (part: number, seconds: number) => void;
+type SeekFn = (part: number, seconds: number, label?: string) => void;
 
 const SeekContext = createContext<SeekFn>(() => {});
 
@@ -12,30 +16,45 @@ export function useSeek() {
 }
 
 /**
- * Плеер закреплён снизу по центру — место, где в референсе живёт чат-виджет.
- * Один элемент audio на страницу: параллельно играющие части путают.
+ * Плавающий плеер сессии — единственная карточка с тенью во всём интерфейсе.
+ *
+ * Один элемент <audio> на страницу: параллельно играющие части путают. Своя
+ * кнопка и своя волна вместо `controls` — нативный виджет в тёмной теме
+ * выглядит чужим, а главное, не умеет показывать, какая это часть из скольких.
  */
-export function PlayerProvider({ deviceId, session, children }:
-  { deviceId: string; session: number; children: React.ReactNode }) {
+export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes = {}, children }: {
+  deviceId: string;
+  session: number;
+  parts: number;
+  /** Метки кнопкой: засечки на волне той части, которая сейчас открыта. */
+  marks?: Mark[];
+  /** Громкость по номеру части: волна плеера рисует ту, что играет. */
+  envelopes?: Record<number, number[]>;
+  children: React.ReactNode;
+}) {
   const audio = useRef<HTMLAudioElement>(null);
   // Слушатель loadedmetadata предыдущей, ещё не догрузившейся части —
   // при быстром переключении отменяем его, иначе сработают все подряд.
   const pending = useRef<AbortController | null>(null);
   const [part, setPart] = useState<number | null>(null);
+  const [label, setLabel] = useState<string>("");
   const [position, setPosition] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [playing, setPlaying] = useState(false);
   const [blocked, setBlocked] = useState(false);
 
-  const seek = useCallback<SeekFn>((nextPart, seconds) => {
+  const seek = useCallback<SeekFn>((nextPart, seconds, nextLabel) => {
     const element = audio.current;
     if (!element) return;
     pending.current?.abort();
-    const source = `/audio/${encodeURIComponent(deviceId)}/${session}/${nextPart}`;
+    if (nextLabel !== undefined) setLabel(nextLabel);
     if (part !== nextPart) {
-      element.src = source;
+      element.src = `/audio/${encodeURIComponent(deviceId)}/${session}/${nextPart}`;
       setPart(nextPart);
     }
     const start = () => {
       element.currentTime = seconds;
+      setPosition(seconds);
       // Автовоспроизведение может быть запрещено браузером — тогда молча
       // ничего не происходит, если не сообщить об этом явно.
       element.play().then(() => setBlocked(false)).catch(() => setBlocked(true));
@@ -51,27 +70,91 @@ export function PlayerProvider({ deviceId, session, children }:
 
   const value = useMemo(() => seek, [seek]);
 
+  function toggle() {
+    const element = audio.current;
+    if (!element || part === null) return;
+    if (element.paused) element.play().then(() => setBlocked(false)).catch(() => setBlocked(true));
+    else element.pause();
+  }
+
+  /** Клик по волне перематывает внутри части — привычнее, чем ползунок. */
+  function scrub(event: React.MouseEvent<HTMLDivElement>) {
+    const element = audio.current;
+    if (!element || !duration) return;
+    const box = event.currentTarget.getBoundingClientRect();
+    element.currentTime = ((event.clientX - box.left) / box.width) * duration;
+  }
+
+  const idle = part === null;
+
   return (
     <SeekContext.Provider value={value}>
-      {/* Отступ снизу принадлежит плееру, а не транскрипту: пока он стоял на
-          транскрипте, страница без расшифровки заканчивалась под карточкой
-          плеера и кнопка «Сохранить» в форме говорящих была закрыта. */}
-      <div className="pb-40">{children}</div>
-      <div className="fixed inset-x-0 bottom-0 z-20 mx-auto w-full max-w-[360px] px-4 pb-4">
-        <div className="rounded-2xl border border-separator-border bg-background-primary-default p-4 shadow-player">
-          <p className="text-caption-1-medium uppercase tracking-[0.12em] text-text-tertiary">
-            {part === null ? "часть не выбрана" : `часть ${String(part).padStart(2, "0")}`}
-            <span className="nums"> · {formatClock(position)}</span>
-          </p>
-          {blocked && (
-            <p className="mt-1 text-body-2-regular text-text-tertiary">
-              нажмите ▶, браузер не разрешил автозапуск
-            </p>
+      {/* Отступ снизу принадлежит плееру: иначе последняя реплика прячется
+          под его карточкой. */}
+      <div className="pb-32">{children}</div>
+
+      <div className={cx(
+        "player-in grille fixed right-3 bottom-24 left-3 z-20 flex items-center gap-3 rounded-card bg-surface-elevated px-3 py-2.5 shadow-player",
+        "lg:right-12 lg:bottom-7 lg:left-[268px] lg:gap-4 lg:px-4 lg:py-3.5",
+      )}>
+        <button
+          type="button"
+          onClick={toggle}
+          disabled={idle}
+          aria-label={playing ? "Пауза" : "Играть"}
+          className={cx(
+            "press relative flex size-9 shrink-0 items-center justify-center rounded-chip bg-fill text-canvas disabled:opacity-40 lg:size-10",
+            // Свечение — пока идёт звук; пауза гасит.
+            playing && "shadow-glow-fill",
           )}
-          <audio ref={audio} controls preload="none" className="mt-2 w-full"
-                 onPlay={() => setBlocked(false)}
-                 onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime)} />
+        >
+          {/* Обе иконки лежат друг на друге: смена play ↔ pause — кроссфейд за
+              120 мс, а не подмена глифа между кадрами. */}
+          <Pause size={14} weight="fill" aria-hidden
+                 className={cx("absolute transition-opacity duration-120", playing ? "opacity-100" : "opacity-0")} />
+          <Play size={14} weight="fill" aria-hidden
+                className={cx("absolute transition-opacity duration-120", playing ? "opacity-0" : "opacity-100")} />
+        </button>
+
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+          <div className="flex justify-between gap-3 text-note">
+            <span className="truncate">
+              {idle ? "Нажмите «основание» или реплику" : label || "Фрагмент записи"}
+              {blocked ? <span className="text-text-secondary"> · браузер не разрешил автозапуск</span> : null}
+            </span>
+            <span className="shrink-0 text-text-secondary">
+              {idle ? `частей ${parts}` : `часть ${String(part).padStart(2, "0")} / ${String(parts).padStart(2, "0")}`}
+            </span>
+          </div>
+          <div onClick={scrub} className={cx("relative h-6 lg:h-8", !idle && "cursor-pointer")}>
+            <Waveform
+              values={thin(envelopes[part ?? 0] ?? [], 100)}
+              height={idle ? 12 : 28}
+              played={duration ? position / duration : 0}
+              className="w-full"
+            />
+            {/* Засечки меток этой части: место, где владелец нажал кнопку. */}
+            {duration > 0 && marks.filter((mark) => mark.part === part).map((mark) => (
+              <span key={mark.offset} aria-hidden
+                    className="absolute top-0 bottom-0 w-px bg-fill"
+                    style={{ left: `${Math.min(100, (mark.offset / duration) * 100)}%` }} />
+            ))}
+          </div>
         </div>
+
+        <div className="hidden shrink-0 font-mono text-note text-text-secondary sm:block">
+          <span className="text-text-primary">{formatClock(position)}</span> / {formatClock(duration)}
+        </div>
+
+        <audio
+          ref={audio}
+          preload="none"
+          onPlay={() => { setPlaying(true); setBlocked(false); }}
+          onPause={() => setPlaying(false)}
+          onEnded={() => setPlaying(false)}
+          onLoadedMetadata={(event) => setDuration(event.currentTarget.duration || 0)}
+          onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime)}
+        />
       </div>
     </SeekContext.Provider>
   );

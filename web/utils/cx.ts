@@ -12,17 +12,15 @@ import { extendTailwindMerge } from "tailwind-merge";
  * Добавили или переименовали стиль в globals.css — поправьте здесь.
  */
 const TEXT_STYLES = [
-  "caption-1-medium",
-  "caption-1-semibold",
-  "body-2-regular",
-  "body-2-medium",
-  "body-regular",
-  "body-medium",
-  "headline-medium",
-  "title-3-semibold",
-  "title-1-medium",
-  "display-recorder",
-  "display-recorder-lg",
+  "page",
+  "page-sm",
+  "stat",
+  "stat-sm",
+  "section",
+  "card-title",
+  "row",
+  "note",
+  "micro",
 ];
 
 const twMerge = extendTailwindMerge({
