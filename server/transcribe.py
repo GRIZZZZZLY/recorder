@@ -68,14 +68,47 @@ def plain_text(payload):
     return (_first_alternative(payload).get("transcript") or "").strip()
 
 
+def _sentences(payload):
+    """Реплики из предложений абзацев.
+
+    Замерено на живой записи 13 сентября 2026: готовая нарезка Deepgram
+    (`results.utterances`) режет по паузе, поэтому фраза с запинкой рвётся на
+    три строки, а быстрый вопрос-ответ слепляется в одну строку с чужим
+    говорящим. Предложения абзацев держат оба случая: «Что смотрела?» и «На
+    YouTube песни всякие.» достались разным номерам, как и было сказано.
+
+    Говорящий лежит у абзаца, у предложения его нет.
+    """
+    paragraphs = (
+        _first_alternative(payload).get("paragraphs") or {}
+    ).get("paragraphs") or []
+    result = []
+    for paragraph in paragraphs:
+        speaker = paragraph.get("speaker")
+        for sentence in paragraph.get("sentences") or []:
+            said = (sentence.get("text") or "").strip()
+            if said:
+                result.append({
+                    "s": float(sentence.get("start") or 0.0),
+                    "e": float(sentence.get("end") or 0.0),
+                    "spk": speaker,
+                    "text": said,
+                })
+    return result
+
+
 def extract_utterances(payload):
     """Реплики с говорящим и временем. Без диаризации — одна реплика на часть.
 
     Номер говорящего — метка диаризации, а не личность. Имена подставляются
     позже из ручной разметки владельца.
     """
+    result = _sentences(payload)
+    if result:
+        return result
+
+    # Абзацев нет: старый ответ или язык без их поддержки. Берём нарезку по паузам.
     utterances = payload.get("results", {}).get("utterances") or []
-    result = []
     for item in utterances:
         said = (item.get("transcript") or "").strip()
         if said:

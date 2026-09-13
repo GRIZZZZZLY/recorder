@@ -33,17 +33,43 @@ def wav(seconds=1, marker=0):
     return bytes(h) + payload
 
 
-def deepgram_reply(utterances, duration=600.0):
-    """Ответ Deepgram в документированной форме. utterances: [(start, speaker, text)]."""
+def deepgram_reply(utterances, duration=600.0, paragraphs=None):
+    """Ответ Deepgram в документированной форме.
+
+    utterances: [(start, speaker, text)] — грубая нарезка по паузам.
+    paragraphs: [(start, speaker, [текст, ...])] — абзацы с предложениями.
+    По умолчанию абзацы повторяют реплики: так ведёт себя короткая запись,
+    где обе нарезки совпадают. paragraphs=False убирает их совсем.
+    """
+    if paragraphs is None:
+        paragraphs = [(start, spk, [text]) for start, spk, text in utterances]
+    alternative = {
+        "transcript": " ".join(t for _, _, t in utterances),
+        "confidence": 0.98,
+        "words": [{"word": "надо", "punctuated_word": "Надо", "confidence": 0.93,
+                   "start": 1.2, "end": 1.6, "speaker": 0}],
+    }
+    if paragraphs is not False:
+        alternative["paragraphs"] = {"paragraphs": [
+            {
+                "start": start,
+                "end": start + 3.0,
+                "speaker": spk,
+                "num_words": sum(len(t.split()) for t in texts),
+                # Предложение своего говорящего не несёт: он у абзаца.
+                # Последнее предложение кончается вместе с абзацем, как у Deepgram.
+                "sentences": [
+                    {"text": text, "start": start + index,
+                     "end": start + 3.0 if index == len(texts) - 1 else start + index + 1.0}
+                    for index, text in enumerate(texts)
+                ],
+            }
+            for start, spk, texts in paragraphs
+        ]}
     return {
         "metadata": {"request_id": "req-1", "duration": duration, "channels": 1},
         "results": {
-            "channels": [{"alternatives": [{
-                "transcript": " ".join(t for _, _, t in utterances),
-                "confidence": 0.98,
-                "words": [{"word": "надо", "punctuated_word": "Надо", "confidence": 0.93,
-                           "start": 1.2, "end": 1.6, "speaker": 0}],
-            }]}],
+            "channels": [{"alternatives": [alternative]}],
             "utterances": [
                 {"start": s, "end": s + 3.0, "channel": 0, "transcript": t, "speaker": spk}
                 for s, spk, t in utterances
@@ -141,6 +167,36 @@ def summary_stub(env, monkeypatch, result=None):
 
 # --- разбор ответа Deepgram -------------------------------------------------
 
+def test_replies_come_from_sentences_not_utterances(env):
+    """Нарезка по паузам рвёт фразу с запинкой и слепляет быстрый диалог.
+    Предложения абзацев держат и то, и другое, поэтому берутся они."""
+    payload = deepgram_reply(
+        # Как Deepgram нарезал бы по паузам: фраза порвана, диалог слеплен.
+        [(6.7, 0, "Чем занимался"), (8.2, 0, "в"), (9.2, 0, "моего отсутствия?"),
+         (18.3, 0, "Что смотрела? На YouTube песни всякие.")],
+        paragraphs=[(6.7, 0, ["Чем занимался в моего отсутствия?"]),
+                    (18.3, 0, ["Что смотрела?"]),
+                    (19.4, 1, ["На YouTube песни всякие."])],
+    )
+    replies = env.transcribe.extract_utterances(payload)
+    assert [r["text"] for r in replies] == [
+        "Чем занимался в моего отсутствия?",
+        "Что смотрела?",
+        "На YouTube песни всякие.",
+    ]
+    # Говорящий берётся у абзаца: у предложения его нет.
+    assert [r["spk"] for r in replies] == [0, 0, 1]
+    assert replies[0]["s"] == 6.7
+
+
+def test_without_paragraphs_utterances_are_used(env):
+    """Абзацев может не быть: язык, настройка, старый ответ. Реплики остаются."""
+    payload = deepgram_reply([(1.0, 0, "Одна реплика.")], paragraphs=False)
+    replies = env.transcribe.extract_utterances(payload)
+    assert [r["text"] for r in replies] == ["Одна реплика."]
+    assert replies[0]["spk"] == 0
+
+
 def test_utterances_keep_time_speaker_and_text(env):
     t = env.transcribe.parse_payload(deepgram_reply([(1.2, 1, "привет")]))
     assert t.utterances == [{"s": 1.2, "e": 4.2, "spk": 1, "text": "привет"}]
@@ -148,8 +204,10 @@ def test_utterances_keep_time_speaker_and_text(env):
     assert t.duration_sec == 600.0
 
 
-def test_without_utterances_whole_part_is_one_utterance(env):
-    payload = deepgram_reply([(0, 0, "сплошной текст")])
+def test_without_any_segmentation_whole_part_is_one_utterance(env):
+    """Ни абзацев, ни нарезки по паузам: часть становится одной репликой
+    без говорящего, а не теряется."""
+    payload = deepgram_reply([(0, 0, "сплошной текст")], paragraphs=False)
     payload["results"]["utterances"] = []
     t = env.transcribe.parse_payload(payload)
     assert t.utterances == [{"s": 0.0, "e": 600.0, "spk": None, "text": "сплошной текст"}]
