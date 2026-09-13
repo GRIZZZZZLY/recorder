@@ -151,15 +151,15 @@ WantedBy=multi-user.target
 
 ## nginx
 
-На VPS уже работает nginx с сертификатами Let's Encrypt на четырёх именах. Нужен ещё один поддомен и блок:
+Сайт диктофона: `https://esp-recorder.duckdns.org:8443` (имя заведено в Duck DNS 13 сентября 2026). Порт 443 на этом VPS занят маршрутизацией VPN по имени сервера, блок с `listen 443` не поднимается; остальные сайты сервера живут на 8443/8444/7443. Конфигурацию пишет `tools/vps-finish-setup.sh`, вот её суть:
 
 ```nginx
 server {
-    listen 443 ssl;
-    server_name recorder.rocketlunch.dpdns.org;
+    listen 8443 ssl;
+    server_name esp-recorder.duckdns.org;
 
-    ssl_certificate     /etc/letsencrypt/live/recorder.rocketlunch.dpdns.org/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/recorder.rocketlunch.dpdns.org/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/esp-recorder.duckdns.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/esp-recorder.duckdns.org/privkey.pem;
 
     # Часть записи весит около 19 МБ. Значение по умолчанию 1 МБ обрежет загрузку.
     client_max_body_size 64m;

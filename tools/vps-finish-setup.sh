@@ -18,6 +18,15 @@ put() {
   fi
 }
 
+# Порт 443 на этом VPS занят: nginx раздаёт по нему чужой трафик VPN по имени
+# сервера, и блок с listen 443 не поднимается (nginx оставляет старую
+# конфигурацию). Остальные сайты сервера живут на 8443/8444/7443, диктофон тоже.
+PORT="$(value RECORDER_PUBLIC_PORT)"
+if [ -z "$PORT" ]; then
+  PORT=8443
+  put RECORDER_PUBLIC_PORT "$PORT"
+fi
+
 NAME="$(value RECORDER_PUBLIC_NAME)"
 if [ -z "$NAME" ]; then
   read -r -p "Имя сайта, как создали в Duck DNS (например my-recorder.duckdns.org): " NAME
@@ -85,11 +94,11 @@ sudo tee /etc/nginx/sites-available/recorder >/dev/null <<EOF
 server {
     listen 80;
     server_name $NAME;
-    return 301 https://\$host\$request_uri;
+    return 301 https://\$host:$PORT\$request_uri;
 }
 
 server {
-    listen 443 ssl;
+    listen $PORT ssl;
     server_name $NAME;
 
     ssl_certificate     /etc/letsencrypt/live/$NAME/fullchain.pem;
@@ -110,10 +119,20 @@ server {
 EOF
 sudo ln -sf /etc/nginx/sites-available/recorder /etc/nginx/sites-enabled/recorder
 sudo nginx -t 2>&1 | tail -1
+# reload молча оставляет старую конфигурацию, если порт занят: считаем новые
+# строки emerg в логе, старые от прошлых попыток не в счёт.
+BEFORE="$(sudo grep -c emerg /var/log/nginx/error.log || true)"
 sudo systemctl reload nginx
+sleep 1
+AFTER="$(sudo grep -c emerg /var/log/nginx/error.log || true)"
+if [ "$AFTER" != "$BEFORE" ]; then
+  echo "nginx не принял конфигурацию:"; sudo grep emerg /var/log/nginx/error.log | tail -2
+  exit 1
+fi
 
 echo
 echo "Готово. Проверка снаружи:"
-curl -s -o /dev/null -w "  сайт без пароля: HTTP %{http_code} (ожидается 401)\n" "https://$NAME/"
-echo "  открыть на телефоне: https://$NAME/  логин owner"
+curl -s -o /dev/null -w "  сайт без пароля: HTTP %{http_code} (ожидается 401)\n" "https://$NAME:$PORT/"
+echo "  открыть на телефоне: https://$NAME:$PORT/  логин owner"
+echo "  адрес для прошивки: server_url=https://$NAME:$PORT"
 echo "  токен диктофона для прошивки: sudo grep DEVICE_TOKEN $ENV"
