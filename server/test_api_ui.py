@@ -323,6 +323,17 @@ def test_password_once_leaves_a_month_long_cookie(env):
         assert client.get("/api/ui/digest").status_code == 401
 
 
+def test_cookie_is_marked_secure_behind_nginx(env):
+    """uvicorn работает без --proxy-headers и сам видит http, поэтому без разбора
+    заголовка от nginx метка уходила бы без флага Secure."""
+    with TestClient(env.app) as client:
+        forwarded = client.get("/api/ui/digest", auth=AUTH,
+                               headers={"X-Forwarded-Proto": "https"})
+        assert "Secure" in forwarded.headers["set-cookie"]
+        client.cookies.clear()
+        assert "Secure" not in client.get("/api/ui/digest", auth=AUTH).headers["set-cookie"]
+
+
 def test_review_and_status_are_exposed(env, monkeypatch):
     prepared(env, monkeypatch)
     with TestClient(env.app) as client:

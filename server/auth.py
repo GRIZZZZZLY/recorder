@@ -40,6 +40,12 @@ def _valid_until(cookie: str | None) -> int:
     return expires if hmac.compare_digest(signature, _sign(expires)) else 0
 
 
+def _scheme(request: Request) -> str:
+    """Заголовку верим, потому что снаружи к приложению не подключиться: uvicorn
+    слушает 127.0.0.1, а заголовок переписывает nginx на каждом запросе."""
+    return request.headers.get("x-forwarded-proto", request.url.scheme)
+
+
 def _issue(request: Request, response: Response) -> None:
     """Метка на месяц: иначе Safari на телефоне спрашивает пароль после каждого
     своего перезапуска."""
@@ -48,8 +54,10 @@ def _issue(request: Request, response: Response) -> None:
         COOKIE_NAME, f"{expires}.{_sign(expires)}",
         max_age=COOKIE_SECONDS, httponly=True, samesite="lax",
         # Secure только на https: по http браузер метку не вернёт, и локальная
-        # проверка сломается на ровном месте.
-        secure=request.url.scheme == "https",
+        # проверка сломается на ровном месте. Схему берём из заголовка nginx —
+        # uvicorn запущен без --proxy-headers, и сам по себе за прокси он видит
+        # http даже там, где снаружи https.
+        secure=_scheme(request) == "https",
     )
 
 
