@@ -1,16 +1,36 @@
 #!/usr/bin/env bash
 # Завершение установки на VPS, запускает владелец один раз:
 #   ssh -t config1 bash /opt/recorder/tools/vps-finish-setup.sh
-# Спрашивает ключ Deepgram и пароль владельца (ввод скрыт), пишет их в
-# /etc/recorder/recorder.env, запускает службы, выпускает сертификат и
-# включает nginx. Повторный запуск безопасен: заполненное не спрашивает.
+# Спрашивает имя сайта, ключ Deepgram и пароль владельца (секреты вводятся
+# скрыто), пишет их в /etc/recorder/recorder.env, запускает службы, выпускает
+# сертификат и включает nginx. Повторный запуск безопасен: заполненное не
+# спрашивает.
 set -euo pipefail
 
 ENV=/etc/recorder/recorder.env
-NAME=recorder.rocketlunch.dpdns.org
 
-value() { sudo grep -E "^$1=" "$ENV" | cut -d= -f2-; }
-put() { sudo sed -i "s|^$1=.*|$1=$2|" "$ENV"; }
+value() { sudo grep -E "^$1=" "$ENV" | cut -d= -f2- || true; }
+put() {
+  if sudo grep -qE "^$1=" "$ENV"; then
+    sudo sed -i "s|^$1=.*|$1=$2|" "$ENV"
+  else
+    echo "$1=$2" | sudo tee -a "$ENV" >/dev/null
+  fi
+}
+
+NAME="$(value RECORDER_PUBLIC_NAME)"
+if [ -z "$NAME" ]; then
+  read -r -p "Имя сайта, как создали в Duck DNS (например my-recorder.duckdns.org): " NAME
+  NAME="${NAME#http://}"; NAME="${NAME#https://}"; NAME="${NAME%/}"
+  case "$NAME" in
+    *.*) ;;
+    *) echo "Нужно полное имя с точкой, например my-recorder.duckdns.org. Ничего не записано."; exit 1 ;;
+  esac
+  put RECORDER_PUBLIC_NAME "$NAME"
+  echo "Имя сайта записано: $NAME"
+else
+  echo "Имя сайта уже есть: $NAME"
+fi
 
 if [ -z "$(value DEEPGRAM_API_KEY)" ]; then
   read -r -s -p "Ключ Deepgram (ввод не виден, Enter в конце): " KEY; echo
@@ -30,20 +50,33 @@ else
   echo "Пароль владельца уже есть, не спрашиваю."
 fi
 
-sudo systemctl enable --now recorder-api recorder-worker >/dev/null
+sudo systemctl enable --now recorder-api recorder-worker >/dev/null 2>&1
 sudo systemctl restart recorder-api recorder-worker
 sleep 2
 systemctl is-active recorder-api recorder-worker | paste -sd' ' | sed 's/^/Службы: /'
 
-if ! getent hosts "$NAME" >/dev/null; then
+MY_IP="$(curl -s -4 ifconfig.me || true)"
+RESOLVED="$(getent ahostsv4 "$NAME" | awk 'NR==1{print $1}' || true)"
+if [ -z "$RESOLVED" ]; then
   echo
   echo "Имя $NAME пока никуда не указывает."
-  echo "Добавьте в dpdns запись A: $NAME -> $(curl -s -4 ifconfig.me), затем запустите эту команду ещё раз."
+  echo "Проверьте в Duck DNS, что домен создан и current ip = $MY_IP, подождите пять минут и запустите эту команду ещё раз."
   echo "Службы уже работают, секреты записаны."
   exit 0
 fi
+if [ -n "$MY_IP" ] && [ "$RESOLVED" != "$MY_IP" ]; then
+  echo
+  echo "Имя $NAME указывает на $RESOLVED, а этот сервер — $MY_IP."
+  echo "Поправьте current ip в Duck DNS на $MY_IP и запустите эту команду ещё раз."
+  exit 0
+fi
 
+# Порт 80 нужен для проверки Let's Encrypt. До сертификата сайт не отвечает ничем.
 if [ ! -d "/etc/letsencrypt/live/$NAME" ]; then
+  printf 'server {\n    listen 80;\n    server_name %s;\n    location / { return 404; }\n}\n' "$NAME" \
+    | sudo tee /etc/nginx/sites-available/recorder >/dev/null
+  sudo ln -sf /etc/nginx/sites-available/recorder /etc/nginx/sites-enabled/recorder
+  sudo nginx -t >/dev/null && sudo systemctl reload nginx
   sudo certbot certonly --nginx -d "$NAME" --non-interactive --agree-tos --keep-until-expiring \
     --register-unsafely-without-email 2>&1 | tail -3
 fi
