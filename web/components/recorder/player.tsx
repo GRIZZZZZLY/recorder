@@ -53,7 +53,10 @@ export function PlayerProvider({ deviceId, session, children }:
 
   return (
     <SeekContext.Provider value={value}>
-      {children}
+      {/* Отступ снизу принадлежит плееру, а не транскрипту: пока он стоял на
+          транскрипте, страница без расшифровки заканчивалась под карточкой
+          плеера и кнопка «Сохранить» в форме говорящих была закрыта. */}
+      <div className="pb-40">{children}</div>
       <div className="fixed inset-x-0 bottom-0 z-20 mx-auto w-full max-w-[360px] px-4 pb-4">
         <div className="rounded-2xl border border-separator-border bg-background-primary-default p-4 shadow-player">
           <p className="text-caption-1-medium uppercase tracking-[0.12em] text-text-tertiary">

@@ -1,5 +1,5 @@
 import { RiRefreshLine } from "@remixicon/react";
-import { Button } from "@/components/base/buttons/button";
+import { Button } from "@/components/recorder/ui";
 import { AuthError } from "@/lib/api";
 
 /** Скелетон: три полосы вместо прыжка пустой страницы. */
@@ -26,7 +26,7 @@ export function Failed({ error, onRetry }: { error: Error; onRetry: () => void }
       </p>
       <p className="mt-1 text-body-2-regular text-text-tertiary">{error.message}</p>
       {!auth && (
-        <Button className="mt-4" variant="secondary" size="small"
+        <Button className="mt-4" variant="secondary"
                 leadingIcon={RiRefreshLine} onClick={onRetry}>
           Повторить
         </Button>

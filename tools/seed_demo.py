@@ -21,11 +21,29 @@ DEVICE = "xiao-01"
 PART_SECONDS = 40   # короткие «части», чтобы тон было слышно, а шкала — видно
 
 
-def tone_wav(seconds, hz):
-    """Тихий синус: слышно, что проигрыватель работает."""
-    frames = [struct.pack("<h", int(6000 * math.sin(2 * math.pi * hz * i / SAMPLE_RATE)))
-              for i in range(SAMPLE_RATE * seconds)]
-    payload = b"".join(frames)
+def tone_second(hz, amplitude):
+    """Секунда синуса. Частота целая, поэтому повтор стыкуется бесшовно."""
+    return b"".join(
+        struct.pack("<h", int(amplitude * math.sin(2 * math.pi * hz * i / SAMPLE_RATE)))
+        for i in range(SAMPLE_RATE)
+    )
+
+
+def tone_wav(seconds, hz, spans=()):
+    """Тихий синус: слышно, что проигрыватель работает.
+
+    `spans` — отрезки «речи» в секундах. Внутри них тон громкий, снаружи почти
+    тишина, поэтому огибающая демо-записи показывает настоящие всплески, а не
+    ровную линию: сервер считает её из этого же файла и ничего не выдумывает.
+    """
+    loud = tone_second(hz, 6000)
+    soft = tone_second(hz, 300)
+    speech = set()
+    for start, end in spans:
+        speech.update(range(int(start), int(end) + 1))
+    payload = b"".join(loud if i in speech else soft for i in range(seconds))
+    if not spans:
+        payload = loud * seconds
     h = bytearray(44)
     h[0:4] = b"RIFF"
     struct.pack_into("<I", h, 4, 36 + len(payload))
@@ -100,23 +118,43 @@ PART2_WORDS = [
 ]
 
 
+# Время выгрузки по сессиям — сегодня по местным часам, чтобы лента дня на
+# сводке была не пустой и блоки не лежали друг на друге. received_at хранится
+# в UTC, как пишет сервер, поэтому местное время переводится перед записью.
+SESSION_TIMES = {7: (9, 40), 8: (12, 15), 9: (15, 30), 10: (13, 5)}
+
+
+def received_at(session, part):
+    from datetime import datetime, timedelta, timezone
+    hour, minute = SESSION_TIMES.get(session, (10, 0))
+    local = datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+    local += timedelta(seconds=PART_SECONDS * (part - 1))
+    return local.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def add_part(dbm, conn, session, part, utterances, *, recovered=0, failed=False,
-             seconds=PART_SECONDS, deepgram_seconds=None, words=None):
-    audio = tone_wav(seconds, 380 + part * 60)
+             seconds=PART_SECONDS, deepgram_seconds=None, words=None, marks=()):
+    audio = tone_wav(seconds, 380 + part * 60,
+                     [(u["s"], u["e"]) for u in utterances])
     name = f"{DEVICE}_S{session:04d}_P{part:02d}.wav"
     path = dbm.AUDIO_DIR / name
     path.write_bytes(audio)
 
     conn.execute(
         "INSERT OR REPLACE INTO parts (device_id, session, part, bytes, crc32,"
-        " recovered, audio_path, received_at) VALUES (?,?,?,?,?,?,?,"
-        " datetime('now','-2 hours'))",
-        (DEVICE, session, part, len(audio), f"{part:08x}", recovered, str(path)),
+        " recovered, audio_path, received_at) VALUES (?,?,?,?,?,?,?,?)",
+        (DEVICE, session, part, len(audio), f"{part:08x}", recovered, str(path),
+         received_at(session, part)),
     )
     conn.execute(
         "INSERT OR IGNORE INTO transcripts (device_id, session, part) VALUES (?,?,?)",
         (DEVICE, session, part),
     )
+    dbm.save_marks(conn, DEVICE, session, part, marks)
+    # Та же огибающая, что посчитал бы приёмник: тон ровный, поэтому волна
+    # демо-записи ровная — это честно, громкость в ней и правда не меняется.
+    import envelope
+    envelope.store(conn, DEVICE, session, part, path)
     conn.commit()
     if failed:
         dbm.fail_transcript(conn, (DEVICE, session, part),
@@ -143,8 +181,10 @@ def main():
         conn.commit()
 
         # Сессия 7: две части, имена заданы, саммари с источниками.
-        add_part(db, conn, 7, 1, PART1)
-        add_part(db, conn, 7, 2, PART2, recovered=1, words=PART2_WORDS)
+        # Метки — нажатия кнопки на диктофоне: решение по бюджету и дата
+        # встречи. Смещения — секунды от начала своей части.
+        add_part(db, conn, 7, 1, PART1, marks=[21.0])
+        add_part(db, conn, 7, 2, PART2, recovered=1, words=PART2_WORDS, marks=[16.0, 24.0])
         db.set_speaker(conn, DEVICE, 7, 0, "Игорь", True)
         db.set_speaker(conn, DEVICE, 7, 1, "Мария", False)
         timeline, _ = db.session_timeline(conn, DEVICE, 7)
@@ -160,6 +200,17 @@ def main():
         # Сессия 8: расшифровано, саммари ещё нет.
         add_part(db, conn, 8, 1, [utt(3, 8, 0, "Короткая заметка на утро, проверить почту.")])
 
+        # Сессия 10: полчаса разговора двумя частями. Нужна ленте дня: на ней
+        # видно настоящий блок в 40 px на час, а не минимальную заглушку, как у
+        # коротких демо-сессий выше. Аудио настоящее, 28,8 МБ тона.
+        add_part(db, conn, 10, 1, [
+            utt(30, 90, 0, "Начали планёрку, прошлись по статусам."),
+            utt(240, 300, 1, "По интеграции всё готово, ждём доступы."),
+        ], seconds=900, marks=[255.0])
+        add_part(db, conn, 10, 2, [
+            utt(60, 120, 0, "Решили: релиз переносим на понедельник."),
+        ], seconds=900, marks=[70.0])
+
         # Сессия 9: часть 2 не расшифровалась, часть 3 пропущена — видно на /status.
         add_part(db, conn, 9, 1, [utt(2, 7, 0, "Первая часть разобрана нормально.")])
         add_part(db, conn, 9, 2, [], failed=True)
@@ -167,8 +218,9 @@ def main():
                  deepgram_seconds=25.0)   # расхождение длительности
         conn.commit()
 
-    print("Готово: 0007 (саммари, источники, имена), 0008 (ждёт саммари),"
-          " 0009 (сбой, пропуск части, расхождение длительности)")
+    print("Готово: 0007 (саммари, источники, имена, метки), 0008 (ждёт саммари),"
+          " 0009 (сбой, пропуск части, расхождение длительности),"
+          " 0010 (полчаса на ленте дня, метки)")
 
 
 if __name__ == "__main__":

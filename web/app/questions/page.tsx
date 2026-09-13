@@ -2,7 +2,7 @@
 
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Button } from "@/components/base/buttons/button";
+import { Button } from "@/components/recorder/ui";
 import { Filters } from "@/components/recorder/filters";
 import { PageTitle } from "@/components/recorder/eyebrow";
 import { ListenLink, SourceDot } from "@/components/recorder/source-link";
@@ -56,7 +56,7 @@ function QuestionRow({ question, onChanged }: { question: Question; onChanged: (
       </div>
       <div className="mt-4 flex flex-wrap gap-3">
         {ACTIONS.filter((action) => action.state !== question.state).map((action) => (
-          <Button key={action.state} variant="ghost" size="small" disabled={busy}
+          <Button key={action.state} variant="ghost" disabled={busy}
                   onClick={() => change(action.state, action.title)}>
             {action.title}
           </Button>

@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 
 import duedate
+import envelope
 import textnorm
 
 # Путь приводится к абсолютному сразу: в базу попадает audio_path, а приёмник,
@@ -43,6 +44,9 @@ CREATE TABLE IF NOT EXISTS parts (
     crc32       TEXT    NOT NULL,
     recovered   INTEGER NOT NULL DEFAULT 0,
     audio_path  TEXT    NOT NULL,
+    -- Огибающая громкости: JSON [0..100], одно число на две секунды звука.
+    -- Считается один раз при приёме (envelope.py). NULL — не посчитана.
+    envelope    TEXT,
     received_at TEXT    NOT NULL DEFAULT (datetime('now')),
     -- Одна часть сессии одного устройства существует ровно в одном экземпляре.
     -- Это и есть идемпотентность: повтор упрётся сюда, а не создаст дубль.
@@ -126,6 +130,19 @@ CREATE TABLE IF NOT EXISTS question_states (
     PRIMARY KEY (device_id, session, question_id)
 );
 
+-- Метки владельца: нажатие кнопки на диктофоне во время записи. offset —
+-- секунды от начала своей части, как их посчитала прошивка; абсолютное время
+-- сессии выводится при чтении из размеров частей, как и у реплик.
+-- Метка принадлежит части, а не сессии: часть приходит отдельным запросом,
+-- и повторная отправка не должна плодить дубли — отсюда ключ по offset.
+CREATE TABLE IF NOT EXISTS marks (
+    device_id TEXT    NOT NULL,
+    session   INTEGER NOT NULL,
+    part      INTEGER NOT NULL,
+    offset    REAL    NOT NULL,
+    PRIMARY KEY (device_id, session, part, offset)
+);
+
 -- «Пози флора» и «Posiflora» — один проект. Ключ нормализован, отображаемое
 -- имя проекта хранится как написал владелец.
 CREATE TABLE IF NOT EXISTS project_aliases (
@@ -160,6 +177,12 @@ def init_storage():
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     with closing(connect()) as conn:
         conn.executescript(SCHEMA)
+        # CREATE TABLE IF NOT EXISTS не добавляет колонки в уже существующую
+        # таблицу. Единственная миграция на сегодня: огибающая у частей,
+        # принятых до её появления, останется NULL — интерфейс это переживёт.
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(parts)")}
+        if "envelope" not in columns:
+            conn.execute("ALTER TABLE parts ADD COLUMN envelope TEXT")
         conn.commit()
 
 
@@ -337,20 +360,125 @@ def session_timeline(conn, device_id, session):
 
 
 def session_transcript(conn, device_id, session):
-    """Текст для модели и для страницы: абсолютное время, имена, границы частей."""
+    """Текст для модели и для страницы: абсолютное время, имена, границы частей.
+
+    Метки владельца вставлены отдельными строками на своём месте в разговоре:
+    модель должна видеть, что человек нажал кнопку именно здесь.
+    """
     timeline, failed = session_timeline(conn, device_id, session)
+    marks = session_marks(conn, device_id, session)
     parts = sorted({u["part"] for u in timeline} | set(failed))
     blocks = []
     for part in parts:
         if part in failed:
             blocks.append(f"[часть {part:02d}: расшифровка не удалась]")
             continue
-        lines = [f"[часть {part:02d}]"]
-        for u in timeline:
-            if u["part"] == part:
-                lines.append(f"[{format_abs(u['start_abs'])}] {u['label']}: {u['text']}")
-        blocks.append("\n".join(lines))
+        rows = [(u["start_abs"], f"[{format_abs(u['start_abs'])}] {u['label']}: {u['text']}")
+                for u in timeline if u["part"] == part]
+        rows += [(m["start_abs"], f"[{m['time']}] [метка владельца]")
+                 for m in marks if m["part"] == part]
+        rows.sort(key=lambda row: row[0])
+        blocks.append("\n".join([f"[часть {part:02d}]"] + [line for _, line in rows]))
     return "\n\n".join(blocks)
+
+
+def save_marks(conn, device_id, session, part, offsets):
+    """Метки одной части. Повтор той же части ничего не дублирует."""
+    conn.executemany(
+        "INSERT OR IGNORE INTO marks (device_id, session, part, offset) VALUES (?,?,?,?)",
+        [(device_id, session, part, round(float(offset), 2)) for offset in offsets],
+    )
+
+
+def session_envelopes(conn, buckets):
+    """{(устройство, сессия): [0..100]} — громкость сессии целиком.
+
+    Части склеиваются по порядку и сжимаются до `buckets` столбиков: списку и
+    ленте дня нужна форма, а не все девятьсот чисел получасовой части.
+    Непосчитанная часть (NULL) заменяется ровной линией своей длины — дыра в
+    середине выглядела бы как тишина, которой не было.
+    """
+    found = {}
+    for row in conn.execute(
+        "SELECT device_id, session, part, bytes, envelope FROM parts"
+        " ORDER BY device_id, session, part"
+    ):
+        key = (row["device_id"], row["session"])
+        if row["envelope"]:
+            values = json.loads(row["envelope"])
+        else:
+            seconds = max(0, row["bytes"] - WAV_HEADER_BYTES) / BYTES_PER_SECOND
+            values = [envelope.FLOOR] * max(1, round(seconds / envelope.BUCKET_SECONDS))
+        found.setdefault(key, []).extend(values)
+    return {key: envelope.resample(values, buckets) for key, values in found.items()}
+
+
+def mark_offsets(conn):
+    """{(устройство, сессия): [секунды от начала сессии]} — для списков.
+
+    Двумя запросами и без разбора транскриптов: списку сессий нужны только
+    места меток на шкале, а session_marks ради текста реплики читает и парсит
+    все реплики сессии — на списке это была бы работа за весь архив сразу.
+    """
+    bases = {}
+    cursor = {}
+    for row in conn.execute(
+        "SELECT device_id, session, part, bytes FROM parts"
+        " ORDER BY device_id, session, part"
+    ):
+        key = (row["device_id"], row["session"])
+        bases[(*key, row["part"])] = cursor.get(key, 0.0)
+        cursor[key] = cursor.get(key, 0.0) + max(0, row["bytes"] - WAV_HEADER_BYTES) / BYTES_PER_SECOND
+
+    found = {}
+    for row in conn.execute(
+        "SELECT device_id, session, part, offset FROM marks"
+        " ORDER BY device_id, session, part, offset"
+    ):
+        key = (row["device_id"], row["session"])
+        base = bases.get((*key, row["part"]))
+        if base is None:      # метка без своей части: аудио удалили руками
+            continue
+        found.setdefault(key, []).append(base + row["offset"])
+    return found
+
+
+def session_marks(conn, device_id, session):
+    """Метки сессии на абсолютной шкале, с ближайшей репликой как источником.
+
+    Ближайшая — последняя начавшаяся до метки внутри той же части: кнопку жмут
+    после того, как прозвучало важное, а не до. Соседняя часть не годится даже
+    если её реплика ближе по времени: смещение метки посчитала прошивка от
+    начала своей части, и выйти за её пределы оно может только по ошибке.
+    Реплики может не быть (часть не расшифрована или упала) — тогда источник
+    пустой, и метка всё равно показывается.
+    """
+    offsets = part_offsets(conn, device_id, session)
+    rows = conn.execute(
+        "SELECT part, offset FROM marks WHERE device_id=? AND session=?"
+        " ORDER BY part, offset", (device_id, session),
+    ).fetchall()
+    if not rows:
+        return []
+
+    timeline, _ = session_timeline(conn, device_id, session)
+    marks = []
+    for row in rows:
+        start_abs = offsets.get(row["part"], 0.0) + row["offset"]
+        before = [u for u in timeline
+                  if u["part"] == row["part"] and u["start_abs"] <= start_abs + 0.5]
+        near = before[-1] if before else None
+        marks.append({
+            "part": row["part"],
+            "offset": row["offset"],
+            "start_abs": start_abs,
+            "time": format_abs(start_abs),
+            "source": {"part": near["part"], "idx": near["idx"],
+                       "start": near["start"], "start_abs": near["start_abs"]} if near else None,
+            "text": near["text"] if near else "",
+            "label": near["label"] if near else "",
+        })
+    return marks
 
 
 # --- поиск --------------------------------------------------------------------
@@ -753,6 +881,11 @@ def session_rows(conn, limit=None):
         "       MIN(p.received_at) AS first_at, MAX(p.received_at) AS last_at,"
         "       (SELECT status FROM summaries s"
         "         WHERE s.device_id=p.device_id AND s.session=p.session) AS summary_status,"
+        # Первая тема саммари — имя разговора в списке: «Смета по офису»
+        # читается, «сессия 0042» нет. Достаём через json_extract, а не тянем
+        # весь result: саммари весит килобайты, а нужна одна строка.
+        "       (SELECT json_extract(s.result, '$.topics[0]') FROM summaries s"
+        "         WHERE s.device_id=p.device_id AND s.session=p.session) AS topic,"
         "       (SELECT COUNT(*) FROM transcripts t"
         "         WHERE t.device_id=p.device_id AND t.session=p.session"
         "           AND t.status='done') AS done_parts"
@@ -763,11 +896,18 @@ def session_rows(conn, limit=None):
     if limit is not None:
         sql += " LIMIT ?"
         args.append(int(limit))
+    marks = mark_offsets(conn)
+    # 60 столбиков: больше не разглядеть ни в строке списка, ни в блоке ленты.
+    envelopes = session_envelopes(conn, 60)
     rows = []
     for row in conn.execute(sql, args).fetchall():
         item = dict(row)
         item["day"] = item["first_at"][:10] if item["first_at"] else None
         item["seconds"] = (item.pop("clamped_bytes") or 0) / BYTES_PER_SECOND
+        item["envelope"] = envelopes.get((item["device_id"], item["session"]), [])
+        # Метки отдаются секундами от начала сессии: списку нужно их число,
+        # ленте дня — засечки на своих местах.
+        item["marks"] = marks.get((item["device_id"], item["session"]), [])
         rows.append(item)
     return rows
 

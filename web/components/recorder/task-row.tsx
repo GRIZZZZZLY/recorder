@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Button } from "@/components/base/buttons/button";
+import { Button } from "@/components/recorder/ui";
 import { ListenLink, SourceDot } from "@/components/recorder/source-link";
 import { apiPost, type Task } from "@/lib/api";
 import { formatDay } from "@/lib/format";
@@ -63,7 +63,7 @@ export function TaskRow({ task, onChanged }: { task: Task; onChanged: () => void
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-3">
         {ACTIONS.filter((action) => action.status !== task.status).map((action) => (
-          <Button key={action.status} variant="ghost" size="small" disabled={busy}
+          <Button key={action.status} variant="ghost" disabled={busy}
                   onClick={() => change(action.status, action.title)}>
             {action.title}
           </Button>

@@ -1,8 +1,5 @@
 "use client";
 
-import {
-  Table, TableBody, TableCell, TableColumn, TableHeader, TableRow,
-} from "@/components/base/table/table";
 import { PageTitle } from "@/components/recorder/eyebrow";
 import { Empty, Failed, Loading } from "@/components/recorder/states";
 import { Tile } from "@/components/recorder/tile";
@@ -29,18 +26,40 @@ function Rows({ title, hint, head, rows }: {
       <h2 className="text-title-3-semibold text-text-primary">{title}</h2>
       {hint ? <p className="mt-1 text-body-2-regular text-text-tertiary">{hint}</p> : null}
       {rows.length === 0 ? <div className="mt-3"><Empty text="Нет." /></div> : (
-        <Table aria-label={title} size="sm" containerClassName="mt-3 rounded-2xl border border-separator-border">
-          <TableHeader>
-            {head.map((cell) => <TableColumn key={cell} isRowHeader={cell === head[0]}>{cell}</TableColumn>)}
-          </TableHeader>
-          <TableBody>
-            {rows.map((row, index) => (
-              <TableRow key={index}>
-                {row.map((cell, cellIndex) => <TableCell key={cellIndex} className="nums">{cell}</TableCell>)}
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+        // overflow-x-auto: тексты ошибок Deepgram длинные, на телефоне таблица
+        // шире экрана — прокручивается она, а не страница.
+        <div className="mt-3 overflow-x-auto rounded-2xl border border-separator-border">
+          <table className="w-full text-left">
+            <caption className="sr-only">{title}</caption>
+            <thead>
+              <tr className="border-b border-separator-border">
+                {head.map((cell) => (
+                  <th key={cell} scope="col"
+                      className="px-4 py-2 text-caption-1-medium uppercase tracking-[0.12em] text-text-tertiary">
+                    {cell}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, index) => (
+                <tr key={index} className="border-b border-separator-border last:border-0">
+                  {row.map((cell, cellIndex) =>
+                    cellIndex === 0 ? (
+                      <th key={cellIndex} scope="row"
+                          className="nums px-4 py-2 text-body-2-medium font-medium text-text-primary">
+                        {cell}
+                      </th>
+                    ) : (
+                      <td key={cellIndex} className="nums px-4 py-2 text-body-2-regular text-text-secondary">
+                        {cell}
+                      </td>
+                    ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );

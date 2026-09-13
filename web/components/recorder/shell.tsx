@@ -1,13 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useRef } from "react";
 import { usePathname } from "next/navigation";
 import {
   RiAlertLine, RiCheckboxLine, RiCloseLine, RiFolderLine, RiHome4Line,
   RiMenuLine, RiMicLine, RiPulseLine, RiQuestionLine, RiSearchLine,
 } from "@remixicon/react";
-import { Dialog, Modal, ModalOverlay } from "react-aria-components";
-import { Badge } from "@/components/base/badges/badge";
 import { useApi } from "@/lib/use-api";
 import type { DigestBody } from "@/lib/api";
 import { cx } from "@/utils/cx";
@@ -23,30 +21,48 @@ const NAV = [
   { key: "status", label: "Состояние", icon: RiPulseLine, href: "/status/" },
 ] as const;
 
+/** Счётчик у пункта меню. Раньше — Badge из BoardUI, теперь один span. */
+function Count({ tone, children }: { tone: "accent" | "neutral"; children: React.ReactNode }) {
+  return (
+    <span className={cx(
+      "nums rounded-full px-2 py-0.5 text-caption-1-medium",
+      tone === "accent"
+        ? "bg-accent-500 text-text-white"
+        : "bg-background-secondary-hover text-text-secondary",
+    )}>
+      {children}
+    </span>
+  );
+}
+
 /**
- * Своя боковая панель вместо DashboardSidebar из BoardUI: тот безусловно
- * тянет меню команды, меню пользователя и модалку настроек (свойства их не
- * отключают) — у диктофона один владелец, команд и настроек нет.
+ * Своя боковая панель: у диктофона один владелец, команд и настроек нет.
  *
- * Выдвижная панель на узком экране собрана на ModalOverlay/Modal/Dialog из
- * react-aria-components (уже зависимость BoardUI, не новая) — они дают
- * фокус-ловушку, закрытие по Escape, автофокус в панель и возврат фокуса на
- * кнопку-открывашку, а фону — inert через ariaHideOutside «из коробки».
- * aria-modal RAC сознательно не ставит (баг Safari в iframe), нам это не
- * грозит — добавлен вручную через ref.
+ * Выдвижная панель на узком экране — нативный <dialog> с showModal(). Он сам
+ * даёт фокус-ловушку, закрытие по Escape, inert для фона и ::backdrop; ради
+ * этого раньше стоял react-aria-components, целая библиотека на одно меню.
+ * Состояние держит сам элемент, поэтому здесь нет useState — только ref.
  */
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
   const { data } = useApi<DigestBody>("/digest");
-  const [open, setOpen] = useState(false);
+  const menu = useRef<HTMLDialogElement>(null);
 
-  function badgeFor(key: string) {
+  function isSelected(href: string) {
+    return href === "/" ? pathname === "/" : pathname.startsWith(href);
+  }
+
+  // Заголовок узкого экрана: пока меню закрыто, название раздела — единственный
+  // указатель, где владелец находится.
+  const current = NAV.find((item) => isSelected(item.href));
+
+  function countFor(key: string) {
     if (!data) return null;
     if (key === "tasks" && data.week.my_open_tasks > 0) {
-      return <Badge color="primary">{data.week.my_open_tasks}</Badge>;
+      return <Count tone="accent">{data.week.my_open_tasks}</Count>;
     }
     if (key === "review" && data.week.review > 0) {
-      return <Badge color="neutral">{data.week.review}</Badge>;
+      return <Count tone="neutral">{data.week.review}</Count>;
     }
     return null;
   }
@@ -54,15 +70,15 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const nav = (
     <nav className="flex flex-col gap-1 p-3">
       {NAV.map(({ key, label, icon: Icon, href }) => {
-        const selected = href === "/" ? pathname === "/" : pathname.startsWith(href);
+        const selected = isSelected(href);
         return (
           <a
             key={key}
             href={href}
-            onClick={() => setOpen(false)}
+            onClick={() => menu.current?.close()}
             aria-current={selected ? "page" : undefined}
             className={cx(
-              "flex items-center justify-between gap-2 rounded-2lg p-2 text-body-medium",
+              "recorder-press flex items-center justify-between gap-2 rounded-2lg p-2 text-body-medium",
               selected
                 ? "bg-linear-to-b from-accent-500 to-accent-600 text-text-white"
                 : "text-text-secondary hover:bg-background-secondary-hover",
@@ -72,7 +88,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               <Icon className="size-5 shrink-0" aria-hidden />
               {label}
             </span>
-            {badgeFor(key)}
+            {countFor(key)}
           </a>
         );
       })}
@@ -81,6 +97,14 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-dvh">
+      {/* Первая цель Tab: с клавиатуры иначе приходится проходить все восемь
+          пунктов меню на каждой странице. Виден только в фокусе. */}
+      <a
+        href="#content"
+        className="sr-only focus-visible:not-sr-only focus-visible:fixed focus-visible:top-3 focus-visible:left-3 focus-visible:z-60 focus-visible:rounded-2lg focus-visible:bg-background-secondary-default focus-visible:px-4 focus-visible:py-2 focus-visible:text-body-medium focus-visible:text-text-primary"
+      >
+        К содержимому
+      </a>
       <aside className="hidden w-[260px] shrink-0 border-r border-separator-border bg-background-secondary-default lg:block">
         {nav}
       </aside>
@@ -89,37 +113,39 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <button
             type="button"
             aria-label="Открыть меню"
-            onClick={() => setOpen(true)}
-            className="rounded-lg p-1.5 text-text-secondary hover:bg-background-secondary-hover"
+            onClick={() => menu.current?.showModal()}
+            className="recorder-press rounded-lg p-1.5 text-text-secondary hover:bg-background-secondary-hover"
           >
             <RiMenuLine className="size-5" aria-hidden />
           </button>
-          <span className="text-body-medium text-text-primary">Диктофон</span>
+          <span className="text-body-medium text-text-primary">{current?.label ?? "Диктофон"}</span>
         </header>
-        <main className="mx-auto w-full max-w-[1200px] px-6 py-8 sm:px-8">{children}</main>
+        <main id="content" className="mx-auto w-full max-w-[1200px] px-6 py-8 sm:px-8">
+          {children}
+        </main>
       </div>
-      <ModalOverlay
-        isOpen={open}
-        onOpenChange={setOpen}
-        isDismissable
-        className="fixed inset-0 z-50 flex bg-black/50 lg:hidden"
+      <dialog
+        ref={menu}
+        aria-label="Меню"
+        // Клик мимо панели приходит на сам элемент dialog (::backdrop — его
+        // псевдоэлемент), клик по содержимому — на потомка. Так закрытие по
+        // фону обходится без слушателя на документе.
+        onClick={(event) => { if (event.target === menu.current) menu.current?.close(); }}
+        className="m-0 h-dvh max-h-none w-[260px] max-w-none border-r border-separator-border bg-background-secondary-default p-0 text-text-primary backdrop:bg-black/50 lg:hidden"
       >
-        <Modal className="relative h-full w-[260px] outline-none">
-          <Dialog
-            aria-label="Меню"
-            ref={(el) => el?.setAttribute("aria-modal", "true")}
-            className="flex h-full flex-col border-r border-separator-border bg-background-secondary-default outline-none"
+        <div className="flex items-center justify-between p-3">
+          <span className="text-body-medium text-text-primary">Диктофон</span>
+          <button
+            type="button"
+            aria-label="Закрыть меню"
+            onClick={() => menu.current?.close()}
+            className="recorder-press rounded-lg p-1.5 text-text-secondary hover:bg-background-secondary-hover"
           >
-            <div className="flex items-center justify-between p-3">
-              <span className="text-body-medium text-text-primary">Диктофон</span>
-              <button type="button" aria-label="Закрыть меню" onClick={() => setOpen(false)}>
-                <RiCloseLine className="size-5 text-text-secondary" aria-hidden />
-              </button>
-            </div>
-            {nav}
-          </Dialog>
-        </Modal>
-      </ModalOverlay>
+            <RiCloseLine className="size-5" aria-hidden />
+          </button>
+        </div>
+        {nav}
+      </dialog>
     </div>
   );
 }

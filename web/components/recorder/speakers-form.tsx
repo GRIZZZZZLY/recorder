@@ -1,12 +1,28 @@
 "use client";
 
 import { useState } from "react";
-import { Button } from "@/components/base/buttons/button";
-import { Input } from "@/components/base/input/input";
-import { Radio, RadioGroup } from "@/components/base/radio/radio";
+import { Button, Input } from "@/components/recorder/ui";
 import { apiPost } from "@/lib/api";
 
 type Speaker = { speaker: number; name: string; is_me: boolean };
+
+/** Выбор «это я»: нативная радиокнопка с подписью-обёрткой. */
+function Me({ value, current, onChange, children }:
+  { value: string; current: string; onChange: (value: string) => void; children: React.ReactNode }) {
+  return (
+    <label className="flex items-center gap-2 text-body-regular text-text-secondary">
+      <input
+        type="radio"
+        name="me"
+        value={value}
+        checked={current === value}
+        onChange={() => onChange(value)}
+        className="size-4 accent-accent-500"
+      />
+      {children}
+    </label>
+  );
+}
 
 export function SpeakersForm({ deviceId, session, speakers, onSaved }:
   { deviceId: string; session: number; speakers: Speaker[]; onSaved: () => void }) {
@@ -41,8 +57,8 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
       <p className="mt-1 text-body-2-regular text-text-tertiary">
         Номера — метки диаризации, не личности. Исходный транскрипт не меняется.
       </p>
-      <RadioGroup className="mt-3 flex flex-col gap-3" value={me} onChange={setMe}
-                  aria-label="Кто из говорящих — это я">
+      <fieldset className="mt-3 flex flex-col gap-3">
+        <legend className="sr-only">Кто из говорящих — это я</legend>
         {speakers.map((speaker) => (
           <div key={speaker.speaker} className="flex flex-wrap items-center gap-3">
             <span className="w-32 text-body-2-regular text-text-tertiary">
@@ -52,12 +68,12 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
                    value={names[String(speaker.speaker)] ?? ""}
                    onChange={(value: string) =>
                      setNames((old) => ({ ...old, [String(speaker.speaker)]: value }))} />
-            <Radio value={String(speaker.speaker)}>это я</Radio>
+            <Me value={String(speaker.speaker)} current={me} onChange={setMe}>это я</Me>
           </div>
         ))}
-        <Radio value="">меня нет</Radio>
-      </RadioGroup>
-      <Button className="mt-4" variant="primary" size="small" disabled={busy} onClick={save}>
+        <Me value="" current={me} onChange={setMe}>меня нет</Me>
+      </fieldset>
+      <Button className="mt-4" variant="primary" disabled={busy} onClick={save}>
         Сохранить
       </Button>
       {error && (

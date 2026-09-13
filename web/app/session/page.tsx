@@ -41,7 +41,7 @@ function Transcript({ timeline, highlight }: { timeline: Utterance[]; highlight:
   }, [timeline]);
 
   return (
-    <section className="mt-8 pb-40">
+    <section className="mt-8">
       <h2 className="text-title-3-semibold text-text-primary">Транскрипт</h2>
       <p className="mt-1 text-body-2-regular text-text-tertiary">
         Нажмите на реплику, чтобы послушать.
@@ -57,7 +57,9 @@ function Transcript({ timeline, highlight }: { timeline: Utterance[]; highlight:
               <button key={id} type="button" id={id}
                       onClick={() => seek(u.part, u.start)}
                       className={cx(
-                        "w-full rounded-xl px-3 py-2 text-left hover:bg-background-secondary-default target:bg-background-secondary-default",
+                        // scroll-my-24: прокрутка к реплике по якорю иначе
+                        // прижимает её вплотную к верхнему краю окна.
+                        "recorder-press w-full scroll-my-24 rounded-xl px-3 py-2 text-left hover:bg-background-secondary-default target:bg-background-secondary-default",
                         // Подстраховка на случай, если :target не сработает после
                         // программной прокрутки: подсвечиваем ту же реплику состоянием.
                         highlight === id && "bg-background-secondary-default",
@@ -129,7 +131,7 @@ function Body() {
             <p className="mt-3 flex flex-wrap gap-2">
               {data.summary.topics.map((topic) => (
                 <Link key={topic} href={`/project/?name=${encodeURIComponent(topic)}`}
-                      className="rounded-full border border-separator-border px-3 py-1 text-caption-1-medium text-text-secondary hover:border-border-button-hover">
+                      className="recorder-press rounded-full border border-separator-border px-3 py-1 text-caption-1-medium text-text-secondary hover:border-border-button-hover">
                   {topic}
                 </Link>
               ))}

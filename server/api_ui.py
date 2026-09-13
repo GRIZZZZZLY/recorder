@@ -72,7 +72,8 @@ def sessions(_=Depends(owner)):
 def session_detail(device_id: str, session: int, _=Depends(owner)):
     with closing(db.connect()) as conn:
         parts = conn.execute(
-            "SELECT p.part, p.recovered, t.status AS transcript_status, t.last_error"
+            "SELECT p.part, p.recovered, p.received_at, p.envelope,"
+            "       t.status AS transcript_status, t.last_error"
             " FROM parts p LEFT JOIN transcripts t"
             "   ON t.device_id=p.device_id AND t.session=p.session AND t.part=p.part"
             " WHERE p.device_id=? AND p.session=? ORDER BY p.part",
@@ -85,6 +86,7 @@ def session_detail(device_id: str, session: int, _=Depends(owner)):
             "SELECT result, status, last_error FROM summaries"
             " WHERE device_id=? AND session=?", (device_id, session)).fetchone()
         timeline, failed = db.session_timeline(conn, device_id, session)
+        marks = db.session_marks(conn, device_id, session)
         names = db.speaker_names(conn, device_id, session)
         speakers = sorted({u["speaker"] for u in timeline if u["speaker"] is not None})
         tasks = with_source(db.task_rows(conn, only_open=False, session=session))
@@ -101,12 +103,18 @@ def session_detail(device_id: str, session: int, _=Depends(owner)):
 
     return {
         "device_id": device_id, "session": session, "day": day.isoformat(),
-        "parts": [dict(p) for p in parts],
+        # Время первой части — час начала разговора в шапке страницы.
+        "first_at": min(p["received_at"] for p in parts),
+        # Огибающая части — волна в плеере. Не посчитана (старая часть или
+        # нечитаемый файл) — пустой список, плеер нарисует ровную линию.
+        "parts": [{**dict(p), "envelope": json.loads(p["envelope"]) if p["envelope"] else []}
+                  for p in parts],
         "failed_parts": failed,
         "summary": summary,
         "summary_status": summary_row["status"] if summary_row else "pending",
         "summary_error": summary_row["last_error"] if summary_row else None,
         "timeline": timeline,
+        "marks": marks,
         "speakers": [{"speaker": s,
                       "name": names.get(s, {}).get("name", ""),
                       "is_me": bool(names.get(s, {}).get("is_me"))} for s in speakers],

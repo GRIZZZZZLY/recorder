@@ -142,6 +142,34 @@ def test_session_detail_carries_timeline_summary_and_tasks(env, monkeypatch):
                                 {"speaker": 1, "name": "", "is_me": False}]
 
 
+def test_marks_land_on_session_scale_with_nearest_reply(env, monkeypatch):
+    """Метка кнопкой: абсолютное время сессии и реплика, прозвучавшая до неё."""
+    upload(env, part=1, marks=[5.5])
+    upload(env, part=2, marker=1, marks=[2.0])
+    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    summary_stub(env, monkeypatch)
+    run_all(env)
+
+    with TestClient(env.app) as client:
+        body = client.get("/api/ui/sessions/xiao-01/7", auth=AUTH).json()
+        rows = client.get("/api/ui/sessions", auth=AUTH).json()
+
+    first, second = body["marks"]
+    # Первая часть — одна секунда звука, значит вторая начинается с 1,0.
+    assert (first["start_abs"], second["start_abs"]) == (5.5, 3.0)
+    # Источник — последняя реплика до метки и только из её собственной части:
+    # реплика соседней части здесь ближе по времени, но брать её нельзя.
+    assert first["text"] == "Беру на себя, пришлю в четверг."
+    assert first["source"]["part"] == 1
+    assert second["text"] == "Ещё надо проверить договор с подрядчиком."
+    assert second["source"]["part"] == 2
+    assert rows[0]["marks"] == [5.5, 3.0]
+
+    with closing(env.db.connect()) as conn:
+        # Модель видит метку строкой на её месте в разговоре.
+        assert "[метка владельца]" in env.db.session_transcript(conn, "xiao-01", 7)
+
+
 def test_session_detail_404_for_unknown_session(env):
     with TestClient(env.app) as client:
         assert client.get("/api/ui/sessions/xiao-01/999", auth=AUTH).status_code == 404

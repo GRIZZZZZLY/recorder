@@ -72,7 +72,7 @@ export default function DigestPage() {
           {data.recent.map((row) => (
             <li key={`${row.device_id}-${row.session}`}>
               <Link href={sessionHref(row.device_id, row.session)}
-                    className="block rounded-2xl border border-separator-border bg-background-primary-default p-6 hover:bg-background-primary-hover">
+                    className="recorder-press block rounded-2xl border border-separator-border bg-background-primary-default p-6 hover:bg-background-primary-hover">
                 <p className="text-headline-medium text-text-primary">
                   Сессия {String(row.session).padStart(4, "0")}
                 </p>

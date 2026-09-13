@@ -55,7 +55,7 @@ function Body() {
           {data.sessions.map((item) => (
             <li key={`${item.device_id}-${item.session}`}
                 className="rounded-2xl border border-separator-border bg-background-primary-default p-6">
-              <p className="font-[family-name:var(--font-literata)] text-title-3-semibold text-text-primary">
+              <p className="font-serif text-title-3-semibold text-text-primary">
                 <span className="nums">{formatDay(item.day)}</span>{" "}
                 <Link href={sessionHref(item.device_id, item.session)}
                       className="text-body-2-medium text-text-tertiary underline-offset-2 hover:underline">

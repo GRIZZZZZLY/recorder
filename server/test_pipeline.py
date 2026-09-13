@@ -81,20 +81,19 @@ def env(tmp_path, monkeypatch):
     return bundle
 
 
-def upload(env, session=7, part=1, marker=0, seconds=1):
+def upload(env, session=7, part=1, marker=0, seconds=1, marks=None):
     body = wav(seconds=seconds, marker=marker)
+    headers = {
+        "Authorization": f"Bearer {TOKEN}",
+        "X-Device-Id": "xiao-01",
+        "X-Session": str(session),
+        "X-Part": str(part),
+        "X-Crc32": f"{zlib.crc32(body) & 0xFFFFFFFF:08x}",
+    }
+    if marks:
+        headers["X-Marks"] = ",".join(str(offset) for offset in marks)
     with TestClient(env.app) as client:
-        return client.post(
-            "/api/v1/upload",
-            content=body,
-            headers={
-                "Authorization": f"Bearer {TOKEN}",
-                "X-Device-Id": "xiao-01",
-                "X-Session": str(session),
-                "X-Part": str(part),
-                "X-Crc32": f"{zlib.crc32(body) & 0xFFFFFFFF:08x}",
-            },
-        )
+        return client.post("/api/v1/upload", content=body, headers=headers)
 
 
 PART_TEXTS = {

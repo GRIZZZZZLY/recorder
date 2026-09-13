@@ -2,10 +2,9 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Button } from "@/components/base/buttons/button";
-import { Input } from "@/components/base/input/input";
 import { PageTitle } from "@/components/recorder/eyebrow";
 import { Empty, Failed, Loading } from "@/components/recorder/states";
+import { Button, Input } from "@/components/recorder/ui";
 import { apiPost } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { formatDay, plural } from "@/lib/format";
@@ -53,7 +52,7 @@ export default function ProjectsPage() {
                 {data.projects.map((project) => (
                   <li key={project.name}>
                     <Link href={`/project/?name=${encodeURIComponent(project.name)}`}
-                          className="block rounded-2xl border border-separator-border bg-background-primary-default p-6 hover:bg-background-primary-hover">
+                          className="recorder-press block rounded-2xl border border-separator-border bg-background-primary-default p-6 hover:bg-background-primary-hover">
                       <p className="text-headline-medium text-text-primary">{project.name}</p>
                       <p className="nums mt-1 text-body-2-regular text-text-tertiary">
                         {project.sessions} {plural(project.sessions, "разговор", "разговора", "разговоров")} · последний {formatDay(project.last_day)}
@@ -76,7 +75,7 @@ export default function ProjectsPage() {
                 <Input className="min-w-48 flex-1" placeholder="Название проекта"
                        value={canonical}
                        onChange={(value: string) => { setCanonical(value); setSaveError(null); }} />
-                <Button variant="primary" size="small" disabled={busy} onClick={save}>
+                <Button variant="primary" disabled={busy} onClick={save}>
                   Сохранить
                 </Button>
               </div>
