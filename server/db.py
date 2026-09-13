@@ -47,6 +47,10 @@ CREATE TABLE IF NOT EXISTS parts (
     -- Огибающая громкости: JSON [0..100], одно число на две секунды звука.
     -- Считается один раз при приёме (envelope.py). NULL — не посчитана.
     envelope    TEXT,
+    -- Сколько частей диктофон закрыл в этой сессии при STOP (X-Session-Parts).
+    -- NULL — не объявлено: часть восстановлена после сбоя или прошивка старая.
+    -- Когда пришло столько частей, саммари не ждёт тишины.
+    expected_parts INTEGER,
     received_at TEXT    NOT NULL DEFAULT (datetime('now')),
     -- Одна часть сессии одного устройства существует ровно в одном экземпляре.
     -- Это и есть идемпотентность: повтор упрётся сюда, а не создаст дубль.
@@ -178,11 +182,12 @@ def init_storage():
     with closing(connect()) as conn:
         conn.executescript(SCHEMA)
         # CREATE TABLE IF NOT EXISTS не добавляет колонки в уже существующую
-        # таблицу. Единственная миграция на сегодня: огибающая у частей,
-        # принятых до её появления, останется NULL — интерфейс это переживёт.
+        # таблицу. У частей, принятых до появления колонки, останется NULL —
+        # интерфейс и очередь это переживают.
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(parts)")}
-        if "envelope" not in columns:
-            conn.execute("ALTER TABLE parts ADD COLUMN envelope TEXT")
+        for name, kind in (("envelope", "TEXT"), ("expected_parts", "INTEGER")):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE parts ADD COLUMN {name} {kind}")
         conn.commit()
 
 
@@ -520,7 +525,8 @@ def search_segments(conn, query, limit=50):
 
 def claim_session_for_summary(conn):
     """Сессия, готовая к саммари: все части расшифрованы или окончательно
-    провалены, новых частей давно не было, саммари нет или оно устарело."""
+    провалены, саммари нет или оно устарело, и сессия закончена — либо пришли
+    все объявленные диктофоном части, либо новых частей давно не было."""
     conn.execute(
         "INSERT OR IGNORE INTO summaries (device_id, session)"
         " SELECT DISTINCT device_id, session FROM parts"
@@ -534,9 +540,14 @@ def claim_session_for_summary(conn):
         "   AND NOT EXISTS (SELECT 1 FROM transcripts u"
         "                   WHERE u.device_id = s.device_id AND u.session = s.session"
         "                     AND u.status = 'pending')"
-        "   AND NOT EXISTS (SELECT 1 FROM parts p"
-        "                   WHERE p.device_id = s.device_id AND p.session = s.session"
-        f"                    AND p.received_at > datetime('now', '-{SESSION_QUIET_MINUTES} minutes'))"
+        "   AND (NOT EXISTS (SELECT 1 FROM parts p"
+        "                    WHERE p.device_id = s.device_id AND p.session = s.session"
+        f"                     AND p.received_at > datetime('now', '-{SESSION_QUIET_MINUTES} minutes'))"
+        # Без объявления MAX даёт NULL, сравнение ложно, остаётся тишина.
+        "        OR (SELECT COUNT(*) FROM parts p"
+        "            WHERE p.device_id = s.device_id AND p.session = s.session)"
+        "           >= (SELECT MAX(p.expected_parts) FROM parts p"
+        "               WHERE p.device_id = s.device_id AND p.session = s.session))"
         " GROUP BY s.device_id, s.session"
         " HAVING ready_parts > s.parts_covered"
         " ORDER BY s.session LIMIT 1"

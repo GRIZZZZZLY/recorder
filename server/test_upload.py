@@ -25,7 +25,8 @@ def wav(seconds=1, marker=0):
     return bytes(h) + payload
 
 
-def headers(body, session=7, part=1, crc=None, device="xiao-01", recovered="0", marks=None):
+def headers(body, session=7, part=1, crc=None, device="xiao-01", recovered="0", marks=None,
+            session_parts=None):
     sent = {
         "Authorization": f"Bearer {TOKEN}",
         "Content-Type": "application/octet-stream",
@@ -37,6 +38,8 @@ def headers(body, session=7, part=1, crc=None, device="xiao-01", recovered="0", 
     }
     if marks is not None:
         sent["X-Marks"] = marks
+    if session_parts is not None:
+        sent["X-Session-Parts"] = session_parts
     return sent
 
 
@@ -169,6 +172,31 @@ def test_broken_marks_header_is_rejected(client):
                                headers=headers(body, marks=value))
         assert response.status_code == 400, value
     # Отказ не оставил ни строки, ни файла: часть остаётся на карте диктофона.
+    import db as db_module
+    with db_module.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM parts").fetchone()[0] == 0
+
+
+def test_declared_part_count_is_stored(client):
+    """X-Session-Parts: сколько частей диктофон закрыл при STOP. Без заголовка — NULL."""
+    body = wav()
+    assert client.post("/api/v1/upload", content=body,
+                       headers=headers(body, part=1, session_parts="3")).status_code == 201
+    assert client.post("/api/v1/upload", content=wav(marker=2),
+                       headers=headers(wav(marker=2), session=8, part=1)).status_code == 201
+    import db as db_module
+    with db_module.connect() as conn:
+        rows = conn.execute(
+            "SELECT session, expected_parts FROM parts ORDER BY session").fetchall()
+    assert [tuple(row) for row in rows] == [(7, 3), (8, None)]
+
+
+def test_broken_part_count_is_rejected(client):
+    body = wav()
+    for part, value in ((1, "abc"), (1, "0"), (1, "100"), (5, "3")):
+        response = client.post("/api/v1/upload", content=body,
+                               headers=headers(body, part=part, session_parts=value))
+        assert response.status_code == 400, (part, value)
     import db as db_module
     with db_module.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM parts").fetchone()[0] == 0

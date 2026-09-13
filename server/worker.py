@@ -21,13 +21,15 @@ import transcribe
 log = logging.getLogger("worker")
 
 IDLE_SLEEP_SEC = 20
-# Провал расшифровки отодвигается всё дальше, но не дальше суток.
+# Временный сбой отодвигает попытку всё дальше, но не дальше суток, и никогда
+# не закрывает работу: лежащий Deepgram или пропавший интернет — не повод
+# бросать часть. Навсегда закрывает только неисправимое: битое аудио, нет ключа.
 RETRY_MINUTES = [1, 5, 30, 120, 600, 1440]
-MAX_ATTEMPTS = len(RETRY_MINUTES)
 
 
 def backoff_minutes(attempts):
-    return RETRY_MINUTES[min(attempts, MAX_ATTEMPTS - 1)]
+    """Пауза после сбоя по числу уже сделанных попыток: первая — минута."""
+    return RETRY_MINUTES[min(attempts, len(RETRY_MINUTES) - 1)]
 
 
 def run_transcription(conn):
@@ -42,18 +44,16 @@ def run_transcription(conn):
     try:
         result = transcribe.transcribe_file(row["audio_path"])
     except transcribe.TranscribeError as error:
-        attempts = row["attempts"] + 1
         # Аудио остаётся на месте в любом случае: неудачная расшифровка
         # не повод терять запись.
         if not error.retryable:
             db.fail_transcript(conn, key, str(error), None)
             log.error("Расшифровка невозможна, %s: %s", key, error)
-        elif attempts >= MAX_ATTEMPTS:
-            db.fail_transcript(conn, key, f"{error} (попыток: {attempts})", None)
-            log.error("Расшифровка сдалась после %d попыток: %s", attempts, error)
         else:
-            db.fail_transcript(conn, key, str(error), backoff_minutes(attempts))
-            log.warning("Расшифровка отложена, попытка %d: %s", attempts, error)
+            wait = backoff_minutes(row["attempts"])
+            db.fail_transcript(conn, key, str(error), wait)
+            log.warning("Расшифровка отложена на %d мин, попытка %d: %s",
+                        wait, row["attempts"] + 1, error)
         return True
 
     db.save_transcript(
@@ -93,7 +93,6 @@ def run_summary(conn):
     try:
         result = summarize.summarize(text)
     except summarize.SummaryError as error:
-        attempts = row["attempts"] + 1
         message = str(error)
         # Транскрипт остаётся доступным в любом случае: сбой саммари не должен
         # прятать уже готовый текст.
@@ -101,12 +100,14 @@ def run_summary(conn):
             # Истёкший токен лечится руками. Пробуем раз в час, чтобы лог не тонул.
             db.fail_summary(conn, device_id, session, f"нужен вход: {message}", 60)
             log.error("Саммари остановлено, нужен вход заново: %s", message)
-        elif not error.retryable or attempts >= MAX_ATTEMPTS:
+        elif not error.retryable:
             db.fail_summary(conn, device_id, session, message, 1440)
             log.error("Саммари не получилось: %s", message)
         else:
-            db.fail_summary(conn, device_id, session, message, backoff_minutes(attempts))
-            log.warning("Саммари отложено, попытка %d: %s", attempts, message)
+            wait = backoff_minutes(row["attempts"])
+            db.fail_summary(conn, device_id, session, message, wait)
+            log.warning("Саммари отложено на %d мин, попытка %d: %s",
+                        wait, row["attempts"] + 1, message)
         return True
 
     # Каждый вывод привязывается к реплике. Неподтверждённая цитата остаётся

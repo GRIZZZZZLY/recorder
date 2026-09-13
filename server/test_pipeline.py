@@ -81,7 +81,7 @@ def env(tmp_path, monkeypatch):
     return bundle
 
 
-def upload(env, session=7, part=1, marker=0, seconds=1, marks=None):
+def upload(env, session=7, part=1, marker=0, seconds=1, marks=None, session_parts=None):
     body = wav(seconds=seconds, marker=marker)
     headers = {
         "Authorization": f"Bearer {TOKEN}",
@@ -92,6 +92,8 @@ def upload(env, session=7, part=1, marker=0, seconds=1, marks=None):
     }
     if marks:
         headers["X-Marks"] = ",".join(str(offset) for offset in marks)
+    if session_parts is not None:
+        headers["X-Session-Parts"] = str(session_parts)
     with TestClient(env.app) as client:
         return client.post("/api/v1/upload", content=body, headers=headers)
 
@@ -290,6 +292,74 @@ def test_auth_failure_in_summary_is_reported_not_retried_fast(env, monkeypatch):
             (row["next_try_at"],),
         ).fetchone()[0]
         assert gap >= 50
+
+
+def test_transient_failure_first_retry_is_one_minute(env, monkeypatch):
+    """Первый повтор через минуту, а не через пять: сбой сети чаще всего короткий."""
+    upload(env)
+
+    def network_down(path):
+        raise env.transcribe.TranscribeError("сеть", retryable=True)
+
+    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", network_down)
+    with closing(env.db.connect()) as conn:
+        assert env.worker.tick(conn) is True
+        row = conn.execute(
+            "SELECT status, attempts,"
+            " (julianday(next_try_at) - julianday('now')) * 1440 AS wait_min"
+            " FROM transcripts").fetchone()
+    assert row["status"] == "pending"
+    assert row["attempts"] == 1
+    assert 0.5 < row["wait_min"] <= 1.0
+
+
+def test_transient_failure_is_retried_forever(env, monkeypatch):
+    """Пропавший интернет или лежащий Deepgram — не повод бросать часть навсегда.
+    После любого числа попыток она остаётся в очереди, не чаще раза в сутки."""
+    upload(env)
+
+    def network_down(path):
+        raise env.transcribe.TranscribeError("сеть", retryable=True)
+
+    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", network_down)
+    with closing(env.db.connect()) as conn:
+        env.worker.tick(conn)
+        conn.execute("UPDATE transcripts SET attempts=99,"
+                     " next_try_at=datetime('now', '-1 minute')")
+        conn.commit()
+        assert env.worker.tick(conn) is True
+        row = conn.execute(
+            "SELECT status, attempts,"
+            " (julianday(next_try_at) - julianday('now')) * 1440 AS wait_min"
+            " FROM transcripts").fetchone()
+    assert row["status"] == "pending"
+    assert row["attempts"] == 100
+    assert 1000 < row["wait_min"] <= 1440
+
+
+def test_declared_complete_session_is_summarized_without_waiting(env, monkeypatch):
+    """Диктофон сказал, сколько частей в сессии. Все пришли — тишину не ждём."""
+    monkeypatch.setattr(env.db, "SESSION_QUIET_MINUTES", 12)
+    upload(env, part=1, session_parts=2)
+    upload(env, part=2, marker=2, session_parts=2)
+    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    summary_stub(env, monkeypatch)
+    run_all(env)
+    with closing(env.db.connect()) as conn:
+        assert conn.execute("SELECT status FROM summaries").fetchone()[0] == "done"
+
+
+def test_declared_incomplete_session_still_waits_for_quiet(env, monkeypatch):
+    """Объявлено две части, пришла одна: как раньше, ждём тишины."""
+    monkeypatch.setattr(env.db, "SESSION_QUIET_MINUTES", 12)
+    upload(env, part=1, session_parts=2)
+    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    summary_stub(env, monkeypatch)
+    run_all(env)
+    with closing(env.db.connect()) as conn:
+        done = conn.execute(
+            "SELECT COUNT(*) FROM summaries WHERE status='done'").fetchone()[0]
+    assert done == 0
 
 
 def test_unrecoverable_part_does_not_block_session_summary(env, monkeypatch):

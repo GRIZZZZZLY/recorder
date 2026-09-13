@@ -87,6 +87,7 @@ async def upload(
     x_crc32: str = Header(None),
     x_recovered: str = Header("0"),
     x_marks: str = Header(None),
+    x_session_parts: str = Header(None),
 ):
     if not DEVICE_TOKEN or authorization != f"Bearer {DEVICE_TOKEN}":
         raise HTTPException(401, "неверный токен устройства")
@@ -101,6 +102,11 @@ async def upload(
         raise HTTPException(400, "X-Crc32: ожидается 8 шестнадцатеричных цифр")
 
     marks = _marks_header(x_marks)
+    # Сколько частей в сессии, если диктофон знает. Меньше номера этой части
+    # быть не может — такое значение означает ошибку прошивки, отказ 400.
+    expected_parts = None
+    if x_session_parts is not None and x_session_parts.strip():
+        expected_parts = _int_header(x_session_parts, "X-Session-Parts", part, 99)
 
     declared = _int_header(
         request.headers.get("content-length"), "Content-Length", 1, MAX_BYTES
@@ -167,9 +173,9 @@ async def upload(
         tmp_path.replace(final_path)
         conn.execute(
             "INSERT INTO parts (device_id, session, part, bytes, crc32, recovered,"
-            " audio_path) VALUES (?,?,?,?,?,?,?)",
+            " audio_path, expected_parts) VALUES (?,?,?,?,?,?,?,?)",
             (x_device_id, session, part, received, actual_crc, recovered,
-             str(final_path)),
+             str(final_path), expected_parts),
         )
         save_marks(conn, x_device_id, session, part, marks)
         # Огибающая считается сразу: файл уже на диске и ещё горячий в кэше.

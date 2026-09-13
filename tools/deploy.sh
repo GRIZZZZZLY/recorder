@@ -21,11 +21,18 @@ npm run typecheck
 npm run build
 
 cd "$ROOT"
-rsync -av --delete \
-  --exclude='__pycache__' \
-  server/ "$HOST:$TARGET/server/"
-rsync -av --delete shared/ "$HOST:$TARGET/shared/"
-rsync -av --delete web/out/ "$HOST:$TARGET/web/out/"
+# rsync есть на VPS, но не в Git Bash на Windows: там та же выкладка идёт
+# tar-ом по ssh. Целевые каталоги перед распаковкой очищаются, как --delete.
+if command -v rsync >/dev/null; then
+  rsync -a --delete --exclude='__pycache__' --exclude='.pytest_cache' server/ "$HOST:$TARGET/server/"
+  rsync -a --delete shared/ "$HOST:$TARGET/shared/"
+  rsync -a --delete tools/ "$HOST:$TARGET/tools/"
+  rsync -a --delete web/out/ "$HOST:$TARGET/web/out/"
+else
+  ssh "$HOST" "rm -rf '$TARGET/server' '$TARGET/shared' '$TARGET/tools' '$TARGET/web/out' && mkdir -p '$TARGET/web'"
+  tar czf - --exclude='__pycache__' --exclude='.pytest_cache' server shared tools web/out \
+    | ssh "$HOST" "tar xzf - -C '$TARGET' && chmod +x '$TARGET'/tools/*.sh"
+fi
 
 echo "Выложено. Перезапустить службы:"
 echo "  ssh $HOST 'sudo systemctl restart recorder-api recorder-worker'"
