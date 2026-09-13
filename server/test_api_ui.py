@@ -1,6 +1,7 @@
 """Проверки JSON-API и отдачи собранного фронтенда."""
 import importlib
 import json
+import time
 from contextlib import closing
 
 import pytest
@@ -300,6 +301,26 @@ def test_project_aliases_route_does_not_collide_with_project_name_route(env, mon
         assert response.json() == {"ok": True}
         with closing(env.db.connect()) as conn:
             assert env.db.alias_map(conn)["x"] == "Y"
+
+
+def test_password_once_leaves_a_month_long_cookie(env):
+    """Safari на телефоне забывает логин Basic при перезапуске, поэтому после
+    удачного входа выдаётся подписанная метка, и пароль больше не спрашивают."""
+    import auth
+    with TestClient(env.app) as client:
+        assert client.get("/api/ui/digest", auth=AUTH).status_code == 200
+        assert auth.COOKIE_NAME in client.cookies
+        # Пароля в запросе нет: пускает метка.
+        assert client.get("/api/ui/digest").status_code == 200
+
+        client.cookies.clear()
+        client.cookies.set(auth.COOKIE_NAME, f"{int(time.time()) + 3600}.00ff")
+        assert client.get("/api/ui/digest").status_code == 401
+
+        stale = int(time.time()) - 1
+        client.cookies.clear()
+        client.cookies.set(auth.COOKIE_NAME, f"{stale}.{auth._sign(stale)}")
+        assert client.get("/api/ui/digest").status_code == 401
 
 
 def test_review_and_status_are_exposed(env, monkeypatch):
