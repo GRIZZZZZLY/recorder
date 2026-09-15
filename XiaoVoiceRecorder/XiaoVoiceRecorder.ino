@@ -361,7 +361,9 @@ void stopRecording(StopReason reason) {
                 g_writer.marks(), clean ? "yes" : "NO", g_writer.endCreated() ? "yes" : "no",
                 static_cast<unsigned long>(g_ring.dropped() / cfg::FRAME_BYTES));
 
-  g_nextSessionId = g_writer.sessionId() + 1;
+  // Через тот же helper, а не просто +1: после сессии 9999 номера кончились,
+  // и следующий START обязан отказать, а не сделать пятизначное имя.
+  g_nextSessionId = session::nextSessionId(g_writer.sessionId(), g_writer.sessionId());
   cleanupSentParts();
   armUpload();
 }

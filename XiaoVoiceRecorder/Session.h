@@ -197,7 +197,18 @@ class Writer {
   // свои метки.
   bool markAt(uint32_t ringHead) {
     if (!m_recording) return false;
-    const uint32_t pos = ringHead - m_ringBase;
+    // Нажатие могло случиться до начала этой сессии: на переходе через предел
+    // частей прошивка успевает закрыть одну сессию и открыть другую, пока
+    // событие кнопки ждёт разбора. Тогда ближайшая правда — самое начало
+    // новой сессии, а не мусорный номер части от переполнения разности.
+    const int32_t delta = static_cast<int32_t>(ringHead - m_ringBase);
+    uint32_t pos = delta > 0 ? static_cast<uint32_t>(delta) : 0;
+    // Позиция за пределом сессии означает то же самое с другой стороны:
+    // звук уйдёт в следующую сессию, а метка остаётся в последней части этой.
+    const uint32_t lastPartStart = static_cast<uint32_t>(cfg.maxParts - 1) * cfg.partMaxBytes;
+    if (pos > lastPartStart + cfg.partMaxBytes - 1) {
+      pos = lastPartStart + cfg.partMaxBytes - 1;
+    }
     const uint16_t part = static_cast<uint16_t>(pos / cfg.partMaxBytes) + 1;
     const uint32_t offset = pos % cfg.partMaxBytes;
 

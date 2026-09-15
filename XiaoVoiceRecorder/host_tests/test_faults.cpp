@@ -252,6 +252,73 @@ static void test_session_numbers_run_out_instead_of_wrapping_onto_old_audio() {
   CHECK(session::nextSessionId(0, 9999) == 0);
 }
 
+// Тот же сценарий, но так, как он идёт в живой прошивке: после каждой
+// остановки номер следующей сессии считается helper-ом, а не просто +1.
+// Иначе после сессии 9999 получилось бы пятизначное имя, под которое формат
+// файла не рассчитан, а сервер ключует части по номеру сессии.
+static void test_after_stopping_session_9999_the_next_start_is_refused() {
+  uint16_t next = session::nextSessionId(9998, 9998);
+  CHECK(next == 9999);
+
+  Rig r;
+  r.capture(2000);
+  CHECK(r.writer.start(next));
+  CHECK(r.drain());
+  CHECK(r.writer.stop(true));
+  CHECK(r.fs.has("/REC9999_P01.WAV"));
+  CHECK(r.fs.has("/REC9999_N01.END"));
+
+  // Так это делает stopRecording(): не sessionId() + 1.
+  next = session::nextSessionId(r.writer.sessionId(), r.writer.sessionId());
+  CHECK(next == 0);  // startRecording() при нуле отказывает
+
+  // И после перезагрузки ответ тот же: карта помнит 9999.
+  CHECK(session::nextSessionId(0, session::maxSessionOnCard(r.fs)) == 0);
+}
+
+static void test_mark_pressed_just_before_the_session_rolled_over() {
+  // Предел частей: прошивка закрывает сессию и открывает следующую, пока
+  // событие кнопки ещё ждёт разбора. Метка не должна уйти в мусорный номер
+  // части от переполнения разности.
+  Rig r;
+  r.writer.cfg.maxParts = 2;
+  r.capture(8000);
+  CHECK(r.writer.start(7));
+  // Кнопку нажали в самом начале сессии 7, а событие ждёт разбора.
+  const uint32_t headAtPress = r.ring.head();
+
+  r.capture(30000);
+  CHECK(r.drain());
+  CHECK(r.writer.partLimitReached());
+  CHECK(r.writer.stop(true));
+  CHECK(r.writer.start(8));                 // новая сессия, ringBase уехал вперёд
+  CHECK(r.writer.ringBase() > headAtPress); // нажатие осталось позади её начала
+
+  const uint32_t headBeforeRollover = headAtPress;
+
+  CHECK(r.writer.markAt(headBeforeRollover));
+  // Ближайшая правда — самое начало новой сессии.
+  CHECK(r.fs.has("/REC0008_P01.MRK"));
+  const std::vector<uint8_t> &m = r.fs.files["/REC0008_P01.MRK"];
+  CHECK(std::string(m.begin(), m.end()) == "0.00\n");
+  // Мусорных номеров частей не появилось.
+  for (const auto &entry : r.fs.files) {
+    CHECK(entry.first.size() <= 18);
+  }
+}
+
+static void test_mark_beyond_the_part_limit_stays_in_the_last_part() {
+  Rig r;
+  r.writer.cfg.maxParts = 2;
+  r.writer.cfg.partMaxBytes = 32000;
+  r.capture(10000);
+  CHECK(r.writer.start(7));
+  // Положение далеко за пределом сессии: звук туда уже не попадёт.
+  CHECK(r.writer.markAt(r.writer.ringBase() + 32000 * 10));
+  CHECK(r.fs.has("/REC0007_P02.MRK"));     // последняя часть этой сессии
+  CHECK(!r.fs.has("/REC0007_P11.MRK"));
+}
+
 // --- долгая эксплуатация ---------------------------------------------------------
 
 static void test_five_hundred_sessions_do_not_lose_a_byte() {
@@ -390,6 +457,9 @@ int main() {
   test_recovery_twice_in_a_row_is_safe();
   test_recovered_part_recovered_again_after_a_second_power_loss();
   test_session_numbers_run_out_instead_of_wrapping_onto_old_audio();
+  test_after_stopping_session_9999_the_next_start_is_refused();
+  test_mark_pressed_just_before_the_session_rolled_over();
+  test_mark_beyond_the_part_limit_stays_in_the_last_part();
   test_five_hundred_sessions_do_not_lose_a_byte();
   test_thousands_of_parts_in_one_session_stop_at_the_limit();
   test_a_full_card_never_eats_unconfirmed_audio();
