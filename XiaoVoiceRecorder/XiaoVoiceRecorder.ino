@@ -8,6 +8,8 @@
 #include "Button.h"
 #include "PartMath.h"
 #include "RingBuffer.h"
+#include "SdStorage.h"
+#include "Session.h"
 #include "Types.h"
 #include "UploadPolicy.h"
 
@@ -34,8 +36,12 @@
  * ни TLS, ни кнопку. Всё остальное — кооперативно в loop(), приоритет
  * RECORDING > SD WRITE > BUTTON > UPLOAD.
  *
- * Ничего из этого не проверено на настоящей плате. Что можно, проверено на
- * хосте (host_tests/), остальное ждёт XIAO: см. README_RU.md.
+ * Этот файл — клей между железом и логикой. Сама логика записи (части,
+ * метки, STOP с .END, восстановление, очистка) живёт в Session.h и проверена
+ * на хосте с хранилищем в памяти. Здесь — только Arduino: пины, Serial, I2S,
+ * FreeRTOS, NVS.
+ *
+ * Ничего из этого не проверено на настоящей плате. См. README_RU.md.
  */
 
 namespace cfg {
@@ -44,10 +50,7 @@ constexpr uint32_t SERIAL_BAUD = 115200;
 constexpr int PDM_CLK_PIN = 42;
 constexpr int PDM_DATA_PIN = 41;
 constexpr uint32_t SAMPLE_RATE = partmath::SAMPLE_RATE;
-constexpr uint16_t BITS_PER_SAMPLE = 16;
-constexpr uint16_t CHANNELS = 1;
 constexpr size_t FRAME_BYTES = partmath::FRAME_BYTES;
-constexpr size_t WAV_HEADER_BYTES = partmath::WAV_HEADER_BYTES;
 
 constexpr int SD_SCK_PIN = 7;
 constexpr int SD_MISO_PIN = 8;
@@ -74,15 +77,9 @@ constexpr uint32_t RING_FALLBACK_BYTES = 64 * 1024;
 // Чтение микрофона блокирует до полного куска: 1024 байта = 32 мс. DMA ядра
 // держит 6 x 240 кадров = 90 мс, кусок должен быть заметно короче.
 constexpr size_t MIC_READ_BYTES = 1024;
-// Запись на карту из буфера кусками; больше — меньше накладных расходов FAT,
-// меньше — короче каждая блокировка loop().
-constexpr size_t SD_WRITE_BYTES = 8192;
-constexpr int SD_WRITES_PER_LOOP = 4;
-constexpr uint32_t FILE_FLUSH_INTERVAL_MS = 1000;
 constexpr uint32_t STATUS_INTERVAL_MS = 5000;
 
-constexpr uint16_t MAX_PARTS = partmath::MAX_PARTS;
-constexpr uint16_t MAX_SESSIONS = 9999;
+constexpr uint16_t MAX_SESSIONS = session::MAX_SESSIONS;
 
 // Встроенная кнопка BOOT на GPIO0 с внешней подтяжкой: REC без пайки.
 // Удержание при сбросе всё так же уводит в загрузчик.
@@ -106,21 +103,19 @@ constexpr const char *NVS_NAMESPACE = "recorder";
 constexpr bool UPLOAD_DURING_RECORDING = false;
 
 // Диагностика для дня приезда платы. Не показатели продукта: числа для
-// измерений, печатаются по команде d.
+// измерений, печатаются по команде d. Счётчики записи живут в Writer.
 struct Diag {
   uint32_t captured_samples = 0;
-  uint32_t written_samples = 0;
-  uint32_t dropped_samples = 0;
   uint32_t mic_short_reads = 0;   // микрофон вернул меньше, чем просили
-  uint32_t sd_write_max_ms = 0;
-  uint32_t sd_write_errors = 0;
   uint32_t buffer_high_watermark = 0;
-  uint32_t part_switch_max_ms = 0;
   uint32_t upload_bytes = 0;
   uint32_t upload_duration_ms = 0;
   uint32_t upload_preempted = 0;
 };
 Diag g_diag;
+
+static uint32_t nowMs() { return static_cast<uint32_t>(millis()); }
+static void serialLog(const char *line) { Serial.println(line); }
 
 I2SClass g_mic;
 RingBuffer g_ring;
@@ -130,21 +125,16 @@ TaskHandle_t g_captureTask = nullptr;
 volatile bool g_captureRunning = false;
 volatile bool g_micFault = false;
 
-File g_recordFile;
+SdStorage g_sd;
+session::Writer g_writer(g_sd, g_ring, nowMs, serialLog);
+
 DeviceState g_state = ST_FAULT;
 bool g_audioReady = false;
 bool g_sdReady = false;
 int g_sdCsPin = -1;
-uint32_t g_dataBytes = 0;        // байт PCM в текущей части
-uint32_t g_sessionBytes = 0;     // байт PCM, записанных за сессию (все части)
 uint32_t g_recordStartedMs = 0;
-uint32_t g_lastFlushMs = 0;
 uint32_t g_lastStatusMs = 0;
-uint16_t g_sessionId = 0;
-uint16_t g_partIndex = 0;
 uint16_t g_nextSessionId = 1;    // посчитан заранее, START не ходит по каталогу
-uint16_t g_marksInSession = 0;
-String g_currentPath;
 Preferences g_sessionPrefs;
 
 ButtonDecoder g_button(cfg::BUTTON_DEBOUNCE_MS, cfg::LONG_PRESS_MS);
@@ -164,84 +154,6 @@ void feedbackSetup();
 void feedbackService(DeviceState state);
 void feedbackEvent(const char *name);
 bool setFeedbackPin(const String &key, const String &value);
-
-// --- WAV ------------------------------------------------------------------------
-
-void writeLe16(uint8_t *dst, uint16_t value) {
-  dst[0] = static_cast<uint8_t>(value & 0xFF);
-  dst[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
-}
-
-void writeLe32(uint8_t *dst, uint32_t value) {
-  dst[0] = static_cast<uint8_t>(value & 0xFF);
-  dst[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
-  dst[2] = static_cast<uint8_t>((value >> 16) & 0xFF);
-  dst[3] = static_cast<uint8_t>((value >> 24) & 0xFF);
-}
-
-uint16_t readLe16(const uint8_t *src) {
-  return static_cast<uint16_t>(src[0]) | (static_cast<uint16_t>(src[1]) << 8);
-}
-
-uint32_t readLe32(const uint8_t *src) {
-  return static_cast<uint32_t>(src[0]) |
-         (static_cast<uint32_t>(src[1]) << 8) |
-         (static_cast<uint32_t>(src[2]) << 16) |
-         (static_cast<uint32_t>(src[3]) << 24);
-}
-
-void buildWavHeader(uint8_t header[44], uint32_t pcmDataBytes) {
-  memset(header, 0, 44);
-  const uint32_t byteRate = cfg::SAMPLE_RATE * cfg::CHANNELS * (cfg::BITS_PER_SAMPLE / 8);
-  const uint16_t blockAlign = cfg::CHANNELS * (cfg::BITS_PER_SAMPLE / 8);
-
-  memcpy(header + 0, "RIFF", 4);
-  writeLe32(header + 4, 36 + pcmDataBytes);
-  memcpy(header + 8, "WAVE", 4);
-  memcpy(header + 12, "fmt ", 4);
-  writeLe32(header + 16, 16);
-  writeLe16(header + 20, 1);
-  writeLe16(header + 22, cfg::CHANNELS);
-  writeLe32(header + 24, cfg::SAMPLE_RATE);
-  writeLe32(header + 28, byteRate);
-  writeLe16(header + 32, blockAlign);
-  writeLe16(header + 34, cfg::BITS_PER_SAMPLE);
-  memcpy(header + 36, "data", 4);
-  writeLe32(header + 40, pcmDataBytes);
-}
-
-bool writeWavHeader(File &file, uint32_t pcmDataBytes) {
-  uint8_t header[44];
-  buildWavHeader(header, pcmDataBytes);
-  if (!file.seek(0)) {
-    return false;
-  }
-  return file.write(header, sizeof(header)) == sizeof(header);
-}
-
-// Принимает только файл, который писала эта прошивка: канонические 44 байта
-// и наш формат PCM. Возвращает размер данных, заявленный в заголовке.
-bool readOurWavHeader(File &file, uint32_t &declaredDataBytes) {
-  uint8_t h[cfg::WAV_HEADER_BYTES];
-  if (!file.seek(0)) {
-    return false;
-  }
-  if (file.read(h, sizeof(h)) != static_cast<int>(sizeof(h))) {
-    return false;
-  }
-  if (memcmp(h + 0, "RIFF", 4) != 0 || memcmp(h + 8, "WAVE", 4) != 0 ||
-      memcmp(h + 12, "fmt ", 4) != 0 || memcmp(h + 36, "data", 4) != 0) {
-    return false;
-  }
-  if (readLe16(h + 20) != 1 ||
-      readLe16(h + 22) != cfg::CHANNELS ||
-      readLe32(h + 24) != cfg::SAMPLE_RATE ||
-      readLe16(h + 34) != cfg::BITS_PER_SAMPLE) {
-    return false;
-  }
-  declaredDataBytes = readLe32(h + 40);
-  return true;
-}
 
 // --- микрофон и кольцевой буфер ------------------------------------------------------
 
@@ -358,48 +270,6 @@ bool initSd() {
   return false;
 }
 
-// File::name() returns a bare name on some cores and a full path on others.
-String baseName(File &file) {
-  const String name = file.name();
-  const int slash = name.lastIndexOf('/');
-  return slash >= 0 ? name.substring(slash + 1) : name;
-}
-
-// /REC0007_P03.WAV — сессия 7, часть 3. Часть пишется как .TMP и получает
-// .WAV только после чистого закрытия; сбой — .BAD; восстановленная — _R.WAV.
-String partPath(uint16_t session, uint16_t part, const char *ext) {
-  char buf[32];
-  snprintf(buf, sizeof(buf), "/REC%04u_P%02u.%s", session, part, ext);
-  return String(buf);
-}
-
-String endPath(uint16_t session, uint16_t parts) {
-  char buf[32];
-  snprintf(buf, sizeof(buf), "/REC%04u_N%02u.END", session, parts);
-  return String(buf);
-}
-
-// Наибольший номер сессии на карте. Один проход по каталогу вместо 9999 exists().
-uint16_t maxSessionOnCard() {
-  uint16_t maxSeen = 0;
-  File root = SD.open("/");
-  if (!root || !root.isDirectory()) {
-    return 0;
-  }
-  for (File f = root.openNextFile(); f; f = root.openNextFile()) {
-    const String name = baseName(f);
-    if (name.startsWith("REC") && name.length() >= 7) {
-      const uint16_t n = static_cast<uint16_t>(name.substring(3, 7).toInt());
-      if (n > maxSeen) {
-        maxSeen = n;
-      }
-    }
-    f.close();
-  }
-  root.close();
-  return maxSeen;
-}
-
 // Номер следующей сессии: больше всего на карте и всего, что уже выдавали
 // (NVS). Иначе после автоудаления старых .SENT номер мог бы повториться, а
 // сервер ключует части по (устройство, сессия, часть) и ответил бы 409.
@@ -407,157 +277,17 @@ void refreshNextSessionId() {
   g_sessionPrefs.begin(cfg::NVS_NAMESPACE, true);
   const uint16_t issued = static_cast<uint16_t>(g_sessionPrefs.getUShort("last_session", 0));
   g_sessionPrefs.end();
-  const uint16_t onCard = g_sdReady ? maxSessionOnCard() : 0;
+  const uint16_t onCard = g_sdReady ? session::maxSessionOnCard(g_sd) : 0;
   g_nextSessionId = (issued > onCard ? issued : onCard) + 1;
 }
 
-void rememberSessionId(uint16_t session) {
+void rememberSessionId(uint16_t sessionId) {
   g_sessionPrefs.begin(cfg::NVS_NAMESPACE, false);
-  g_sessionPrefs.putUShort("last_session", session);
+  g_sessionPrefs.putUShort("last_session", sessionId);
   g_sessionPrefs.end();
 }
 
-// Оставшийся .TMP значит, что питание пропало во время записи: заголовок
-// заявляет ноль байт. Чиним заголовок по реальному размеру и помечаем часть
-// восстановленной. Выживает только то, что дошло до карты.
-void recoverUnfinishedRecordings() {
-  File root = SD.open("/");
-  if (!root || !root.isDirectory()) {
-    Serial.println("[recover] Cannot open root directory.");
-    return;
-  }
-
-  // Переименовывать во время обхода каталога небезопасно: сначала список.
-  constexpr int MAX_REPAIRS = 16;
-  String names[MAX_REPAIRS];
-  uint32_t sizes[MAX_REPAIRS];
-  int found = 0;
-
-  for (File f = root.openNextFile(); f; f = root.openNextFile()) {
-    if (f.isDirectory()) {
-      f.close();
-      continue;
-    }
-    const String name = baseName(f);
-    if (name.startsWith("REC") && name.endsWith(".TMP") && found < MAX_REPAIRS) {
-      const uint32_t total = static_cast<uint32_t>(f.size());
-      uint32_t audio = total > cfg::WAV_HEADER_BYTES ? total - cfg::WAV_HEADER_BYTES : 0;
-      audio -= audio % cfg::FRAME_BYTES;
-      names[found] = name;
-      sizes[found] = audio;
-      ++found;
-    }
-    f.close();
-  }
-  root.close();
-
-  if (found == 0) {
-    Serial.println("[recover] No unfinished parts.");
-    return;
-  }
-
-  for (int i = 0; i < found; ++i) {
-    const String tmpPath = "/" + names[i];
-    File f = SD.open(tmpPath.c_str(), "r+");  // FILE_WRITE обнулил бы файл
-    if (!f) {
-      Serial.printf("[recover] ERROR: cannot reopen %s\n", tmpPath.c_str());
-      continue;
-    }
-    uint32_t declared = 0;
-    const bool ours = readOurWavHeader(f, declared);
-    const bool ok = ours && writeWavHeader(f, sizes[i]);
-    f.flush();
-    f.close();
-
-    if (!ok) {
-      Serial.printf("[recover] SKIP %s (%s)\n", tmpPath.c_str(),
-                    ours ? "header rewrite failed" : "not our PCM format");
-      continue;
-    }
-
-    String recoveredPath = tmpPath;
-    recoveredPath.replace(".TMP", "_R.WAV");
-    const bool renamed = SD.rename(tmpPath.c_str(), recoveredPath.c_str());
-    Serial.printf("[recover] %s -> %s | %lu audio bytes | renamed=%s\n",
-                  tmpPath.c_str(), recoveredPath.c_str(),
-                  static_cast<unsigned long>(sizes[i]), renamed ? "yes" : "NO");
-  }
-}
-
-// --- запись -------------------------------------------------------------------------------
-
-bool openPart() {
-  g_currentPath = partPath(g_sessionId, g_partIndex, "TMP");
-  g_recordFile = SD.open(g_currentPath.c_str(), FILE_WRITE);
-  if (!g_recordFile) {
-    Serial.printf("[rec] ERROR: cannot create %s\n", g_currentPath.c_str());
-    return false;
-  }
-  uint8_t header[cfg::WAV_HEADER_BYTES];
-  buildWavHeader(header, 0);
-  if (g_recordFile.write(header, sizeof(header)) != sizeof(header)) {
-    Serial.println("[rec] ERROR: cannot write WAV header.");
-    g_recordFile.close();
-    return false;
-  }
-  g_dataBytes = 0;
-  g_lastFlushMs = millis();
-  return true;
-}
-
-// Закрывает открытую часть. Только чистое закрытие даёт имя .WAV; всё
-// остальное — .BAD, чтобы битая часть никогда не выглядела готовой.
-bool closePart(bool healthy) {
-  g_recordFile.flush();
-  const bool headerOk = writeWavHeader(g_recordFile, g_dataBytes);
-  g_recordFile.flush();
-  g_recordFile.close();
-
-  const bool ok = healthy && headerOk;
-  String finalPath = g_currentPath;
-  finalPath.replace(".TMP", ok ? ".WAV" : ".BAD");
-  const bool renamed = SD.rename(g_currentPath.c_str(), finalPath.c_str());
-  g_sessionBytes += g_dataBytes;
-
-  Serial.printf("[rec] %s %s | %lu audio bytes | header=%s | renamed=%s\n",
-                ok ? "PART OK" : "PART FAILED",
-                renamed ? finalPath.c_str() : g_currentPath.c_str(),
-                static_cast<unsigned long>(g_dataBytes),
-                headerOk ? "ok" : "BAD",
-                renamed ? "yes" : "NO");
-  return ok && renamed;
-}
-
-// Метка: смещение в секундах от начала своей части. Позиция «сейчас» —
-// всё, что записано за сессию, плюс то, что ещё лежит в буфере и будет
-// записано следом. Если это уже за границей части, метка достанется
-// следующей, куда и попадёт сам звук.
-bool writeMark() {
-  // Части вращаются ровно на PART_MAX_BYTES, поэтому номер части — чистая
-  // арифметика от позиции в сессии.
-  const uint32_t pos = g_sessionBytes + g_dataBytes + g_ring.available();
-  const uint16_t part = partmath::partForPosition(pos);
-  const uint32_t offsetBytes = partmath::offsetInPart(pos);
-
-  char text[24];
-  const int len = partmath::formatMark(text, sizeof(text) - 1, offsetBytes);
-  text[len] = '\n';
-
-  const String path = partPath(g_sessionId, part, "MRK");
-  File f = SD.open(path.c_str(), FILE_APPEND);
-  if (!f) {
-    Serial.printf("[mark] ERROR: cannot open %s\n", path.c_str());
-    return false;
-  }
-  const bool ok = f.write(reinterpret_cast<const uint8_t *>(text), len + 1) ==
-                  static_cast<size_t>(len + 1);
-  f.flush();  // нажатие должно пережить пропадание питания сразу после него
-  f.close();
-  text[len] = '\0';
-  ++g_marksInSession;
-  Serial.printf("[mark] %s <- %s (%u в сессии)\n", path.c_str(), text, g_marksInSession);
-  return ok;
-}
+// --- запись: клей вокруг session::Writer -------------------------------------------------
 
 bool startRecording() {
   if (g_state == ST_RECORDING) {
@@ -579,85 +309,19 @@ bool startRecording() {
     preemptUpload();
   }
 
-  g_sessionId = g_nextSessionId;
-  g_partIndex = 1;
-  g_sessionBytes = 0;
-  g_marksInSession = 0;
-  g_ring.resetStats();
-  // Всё, что буфер держит сейчас, — предзапись: становится началом части 1.
-  g_ring.resync();
-  const uint32_t preRoll = g_ring.available();
-
-  if (!openPart()) {
+  if (!g_writer.start(g_nextSessionId)) {
     feedbackEvent("error");
     return false;
   }
-  rememberSessionId(g_sessionId);
+  rememberSessionId(g_writer.sessionId());
 
   g_recordStartedMs = millis();
   g_lastStatusMs = g_recordStartedMs;
   g_state = ST_RECORDING;
   feedbackEvent("start");
   Serial.printf("[rec] START session %04u -> %s | предзапись %.1f с\n",
-                g_sessionId, g_currentPath.c_str(), partmath::seconds(preRoll));
-  return true;
-}
-
-// Одна запись из буфера на карту: не больше SD_WRITE_BYTES и не дальше
-// границы части. Возвращает false при ошибке карты.
-bool writeChunkFromRing(uint32_t limit) {
-  static uint8_t chunk[cfg::SD_WRITE_BYTES];
-  uint32_t want = limit < sizeof(chunk) ? limit : sizeof(chunk);
-  const uint32_t room = partmath::roomInPart(g_dataBytes);
-  if (want > room) {
-    want = room;
-  }
-  want = partmath::wholeFrames(want);
-  if (want == 0) {
-    return true;
-  }
-  const uint32_t got = g_ring.pop(chunk, want);
-  if (got == 0) {
-    return true;
-  }
-
-  const uint32_t t0 = millis();
-  const size_t written = g_recordFile.write(chunk, got);
-  const uint32_t dt = millis() - t0;
-  if (dt > g_diag.sd_write_max_ms) {
-    g_diag.sd_write_max_ms = dt;
-  }
-
-  // Считаем то, что реально дошло до карты, чтобы заголовок описывал файл.
-  const uint32_t kept = partmath::wholeFrames(static_cast<uint32_t>(written));
-  g_dataBytes += kept;
-  g_diag.written_samples += kept / cfg::FRAME_BYTES;
-  if (written != got) {
-    ++g_diag.sd_write_errors;
-    Serial.printf("[rec] ERROR: SD write incomplete (%u of %u bytes).\n",
-                  static_cast<unsigned>(written), static_cast<unsigned>(got));
-    return false;
-  }
-  return true;
-}
-
-bool rotatePart() {
-  const uint32_t t0 = millis();
-  if (!closePart(true)) {
-    Serial.println("[rec] ERROR: could not finish part.");
-    return false;
-  }
-  ++g_partIndex;
-  if (!openPart()) {
-    Serial.println("[rec] ERROR: could not open next part.");
-    return false;
-  }
-  const uint32_t dt = millis() - t0;
-  if (dt > g_diag.part_switch_max_ms) {
-    g_diag.part_switch_max_ms = dt;
-  }
-  Serial.printf("[rec] NEXT PART -> %s (%lu ms)\n", g_currentPath.c_str(),
-                static_cast<unsigned long>(dt));
+                g_writer.sessionId(), g_writer.currentPath(),
+                partmath::seconds(g_writer.preRollBytes()));
   return true;
 }
 
@@ -665,66 +329,27 @@ void stopRecording(StopReason reason) {
   if (g_state != ST_RECORDING) {
     return;
   }
-  bool healthy = reason == STOP_NORMAL;
-
-  // Дописываем ровно то, что накопилось к моменту нажатия. Задача захвата
-  // продолжает писать в буфер: это уже предзапись для следующей сессии.
-  uint32_t pending = healthy ? g_ring.available() : 0;
-  while (pending > 0 && healthy) {
-    if (partmath::roomInPart(g_dataBytes) == 0) {
-      if (g_partIndex >= cfg::MAX_PARTS) {
-        Serial.println("[rec] Part limit: tail of the buffer is not stored.");
-        break;
-      }
-      if (!rotatePart()) {
-        healthy = false;
-        break;
-      }
-    }
-    const uint32_t before = g_dataBytes;
-    if (!writeChunkFromRing(pending)) {
-      healthy = false;
-      break;
-    }
-    if (g_dataBytes == before) {
-      break;  // буфер не отдал ни байта: не крутимся вечно
-    }
-    pending -= (g_dataBytes - before);
-  }
-
-  closePart(healthy);
+  // .END появляется только если каждая часть закрылась чисто: ошибка на
+  // последней делает её .BAD, и сервер не получит ложного «сессия закончена».
+  const bool clean = g_writer.stop(reason == STOP_NORMAL);
   g_state = ST_ARMED;
-
-  if (healthy) {
-    // Число частей должно пережить перезагрузку до отправки: пустой файл с
-    // числом в имени, содержимое не читается (shared/protocol.md).
-    const String end = endPath(g_sessionId, g_partIndex);
-    File f = SD.open(end.c_str(), FILE_WRITE);
-    if (f) {
-      f.close();
-    } else {
-      Serial.printf("[rec] WARNING: cannot create %s\n", end.c_str());
-    }
-    feedbackEvent("stop");
-  } else {
-    feedbackEvent("error");
-  }
+  feedbackEvent(clean ? "stop" : "error");
 
   const uint32_t elapsedSec = (millis() - g_recordStartedMs) / 1000;
-  Serial.printf("[rec] STOP session %04u | %u parts | %lu s | %lu audio bytes | marks %u | dropped %lu samples\n",
-                g_sessionId, g_partIndex,
+  Serial.printf("[rec] STOP session %04u | %u parts | %lu s | %lu audio bytes | marks %u | "
+                "clean=%s end=%s | dropped %lu samples\n",
+                g_writer.sessionId(), g_writer.partIndex(),
                 static_cast<unsigned long>(elapsedSec),
-                static_cast<unsigned long>(g_sessionBytes),
-                g_marksInSession,
+                static_cast<unsigned long>(g_writer.sessionBytes()),
+                g_writer.marks(), clean ? "yes" : "NO", g_writer.endCreated() ? "yes" : "no",
                 static_cast<unsigned long>(g_ring.dropped() / cfg::FRAME_BYTES));
 
-  g_nextSessionId = g_sessionId + 1;
+  g_nextSessionId = g_writer.sessionId() + 1;
   cleanupSentParts();
   armUpload();
 }
 
-// Переливает буфер на карту ограниченными порциями и вращает части ровно
-// на границе PART_MAX_BYTES. Вызывается из loop() каждый оборот.
+// Вызывается из loop() каждый оборот: слив буфера, ротация, ошибки карты.
 void serviceRecording() {
   if (g_state != ST_RECORDING) {
     return;
@@ -735,44 +360,29 @@ void serviceRecording() {
     g_state = ST_FAULT;
     return;
   }
-
-  for (int i = 0; i < cfg::SD_WRITES_PER_LOOP && g_ring.available() >= cfg::SD_WRITE_BYTES; ++i) {
-    if (partmath::roomInPart(g_dataBytes) == 0) {
-      if (g_partIndex >= cfg::MAX_PARTS) {
-        Serial.println("[rec] Part limit reached for this session. Stopping cleanly.");
-        stopRecording(STOP_NORMAL);
-        return;
-      }
-      if (!rotatePart()) {
-        stopRecording(STOP_WRITE_ERROR);
-        return;
-      }
-    }
-    if (!writeChunkFromRing(cfg::SD_WRITE_BYTES)) {
-      stopRecording(STOP_WRITE_ERROR);
-      return;
-    }
+  if (!g_writer.service()) {
+    stopRecording(STOP_WRITE_ERROR);
+    return;
   }
-
-  const uint32_t now = millis();
-  if (now - g_lastFlushMs >= cfg::FILE_FLUSH_INTERVAL_MS) {
-    g_recordFile.flush();
-    g_lastFlushMs = now;
+  if (g_writer.partLimitReached()) {
+    Serial.println("[rec] Part limit reached for this session. Stopping cleanly.");
+    stopRecording(STOP_NORMAL);
+    return;
   }
 
   const uint32_t hwm = g_ring.highWatermark();
   if (hwm > g_diag.buffer_high_watermark) {
     g_diag.buffer_high_watermark = hwm;
   }
-  g_diag.dropped_samples = g_ring.dropped() / cfg::FRAME_BYTES;
 
+  const uint32_t now = millis();
   if (now - g_lastStatusMs >= cfg::STATUS_INTERVAL_MS) {
     const uint32_t sec = (now - g_recordStartedMs) / 1000;
     Serial.printf("[rec] session %04u part %02u | %lu s | %.2f MB | ring %lu B | dropped %lu\n",
-                  g_sessionId, g_partIndex, static_cast<unsigned long>(sec),
-                  (g_sessionBytes + g_dataBytes) / (1024.0f * 1024.0f),
+                  g_writer.sessionId(), g_writer.partIndex(), static_cast<unsigned long>(sec),
+                  (g_writer.sessionBytes() + g_writer.partBytes()) / (1024.0f * 1024.0f),
                   static_cast<unsigned long>(g_ring.available()),
-                  static_cast<unsigned long>(g_diag.dropped_samples));
+                  static_cast<unsigned long>(g_ring.dropped() / cfg::FRAME_BYTES));
     g_lastStatusMs = now;
   }
 }
@@ -794,11 +404,7 @@ void onShortPress() {
       startRecording();
       break;
     case ST_RECORDING:
-      if (writeMark()) {
-        feedbackEvent("mark");
-      } else {
-        feedbackEvent("error");
-      }
+      feedbackEvent(g_writer.mark() ? "mark" : "error");
       break;
     case ST_FAULT:
       feedbackEvent("error");
@@ -828,6 +434,10 @@ void handleButton() {
   }
 }
 
+static void printFileEntry(const char *name, uint32_t size, void *) {
+  Serial.printf("  %-24s %10lu bytes\n", name, static_cast<unsigned long>(size));
+}
+
 void printCardFiles() {
   if (!g_sdReady) {
     Serial.println("[sd] Card is not mounted.");
@@ -837,23 +447,11 @@ void printCardFiles() {
     Serial.println("[sd] Not while recording.");
     return;
   }
-  File root = SD.open("/");
-  if (!root || !root.isDirectory()) {
-    Serial.println("[sd] Cannot open root directory.");
-    return;
-  }
   Serial.println("[sd] Files:");
-  for (File file = root.openNextFile(); file; file = root.openNextFile()) {
-    if (!file.isDirectory()) {
-      Serial.printf("  %-24s %10llu bytes\n", file.name(),
-                    static_cast<unsigned long long>(file.size()));
-    }
-    file.close();
-  }
-  root.close();
+  g_sd.listRoot(printFileEntry, nullptr);
   Serial.printf("[sd] total %llu MB, used %llu MB\n",
-                static_cast<unsigned long long>(SD.totalBytes() / (1024ULL * 1024ULL)),
-                static_cast<unsigned long long>(SD.usedBytes() / (1024ULL * 1024ULL)));
+                static_cast<unsigned long long>(g_sd.totalBytes() >> 20),
+                static_cast<unsigned long long>(g_sd.usedBytes() >> 20));
 }
 
 const char *stateName(DeviceState s) {
@@ -880,8 +478,9 @@ void printStatus() {
                 g_ringInPsram ? "PSRAM" : "heap",
                 partmath::seconds(g_ring.capacity()));
   if (g_state == ST_RECORDING) {
-    Serial.printf("Sess:  %04u, part %02u, marks %u\n", g_sessionId, g_partIndex, g_marksInSession);
-    Serial.printf("File:  %s\n", g_currentPath.c_str());
+    Serial.printf("Sess:  %04u, part %02u, marks %u\n", g_writer.sessionId(),
+                  g_writer.partIndex(), g_writer.marks());
+    Serial.printf("File:  %s\n", g_writer.currentPath());
   } else {
     Serial.printf("Next:  session %04u\n", g_nextSessionId);
   }
@@ -904,14 +503,15 @@ void printStatus() {
 }
 
 void printDiag() {
+  const session::WriterStats &w = g_writer.stats();
   Serial.println("--- DIAG (числа для измерений, не показатели продукта) ---");
   Serial.printf("captured_samples      %lu\n", static_cast<unsigned long>(g_diag.captured_samples));
-  Serial.printf("written_samples       %lu\n", static_cast<unsigned long>(g_diag.written_samples));
+  Serial.printf("written_samples       %lu\n", static_cast<unsigned long>(w.written_samples));
   Serial.printf("dropped_samples       %lu\n", static_cast<unsigned long>(g_ring.dropped() / cfg::FRAME_BYTES));
   Serial.printf("mic_short_reads       %lu\n", static_cast<unsigned long>(g_diag.mic_short_reads));
-  Serial.printf("sd_write_max_ms       %lu\n", static_cast<unsigned long>(g_diag.sd_write_max_ms));
-  Serial.printf("sd_write_errors       %lu\n", static_cast<unsigned long>(g_diag.sd_write_errors));
-  Serial.printf("part_switch_max_ms    %lu\n", static_cast<unsigned long>(g_diag.part_switch_max_ms));
+  Serial.printf("sd_write_max_ms       %lu\n", static_cast<unsigned long>(w.sd_write_max_ms));
+  Serial.printf("sd_write_errors       %lu\n", static_cast<unsigned long>(w.sd_write_errors));
+  Serial.printf("part_switch_max_ms    %lu\n", static_cast<unsigned long>(w.part_switch_max_ms));
   Serial.printf("buffer_high_watermark %lu of %lu\n",
                 static_cast<unsigned long>(g_ring.highWatermark()),
                 static_cast<unsigned long>(g_ring.capacity()));
@@ -1049,7 +649,7 @@ void setup() {
   const bool ringOk = allocateRing();
   g_sdReady = initSd();
   if (g_sdReady) {
-    recoverUnfinishedRecordings();
+    session::recoverUnfinished(g_sd, serialLog);
     cleanupSentParts();
   }
   refreshNextSessionId();
@@ -1080,7 +680,7 @@ void loop() {
   feedbackService(g_state);
   // Отдаём такт планировщику: задача захвата и idle-задача (watchdog) должны
   // получать время. В записи с полным буфером не спим, чтобы догнать.
-  if (g_state != ST_RECORDING || g_ring.available() < cfg::SD_WRITE_BYTES) {
+  if (g_state != ST_RECORDING || g_ring.available() < session::Writer::CHUNK_CAP) {
     delay(1);
   }
 }

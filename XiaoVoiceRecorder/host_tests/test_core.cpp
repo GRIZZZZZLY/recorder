@@ -4,6 +4,7 @@
 //
 // Это проверка алгоритмов, а не железа: DMA микрофона, скорость SD,
 // одновременная запись с Wi-Fi здесь не проверяются и проверяться не могут.
+#define RING_BUFFER_TESTING
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -110,29 +111,22 @@ static void test_ring_counts_overrun_as_dropped_when_recording() {
 }
 
 static void test_ring_survives_counter_wraparound() {
-  // Счётчики 32-битные и переполняются через 4 ГБ. Имитируем: 2^32 - 5 байт
-  // уже прошло, добавляем ещё — маска должна дать те же позиции.
+  // Счётчики 32-битные и переполняются через 4 ГБ звука. Ставим их к краю и
+  // проверяем, что маска даёт те же позиции, а разность head-tail не ломается.
   uint8_t storage[16], in[24], out[16];
   RingBuffer ring;
   ring.init(storage, 16);
-  // Прокрутим счётчики почти до конца через большие push; каждый push
-  // не больше ёмкости, поэтому для скорости двигаем их напрямую ─ у класса
-  // нет такого API, значит эмулируем: 2^32 = 268435456 * 16, кратно ёмкости,
-  // поэтому позиция после 2^32-16 байт равна нулю. Пушим 2^28 раз по 16.
-  uint8_t block[16];
-  fill(block, 16, 0);
-  for (uint32_t i = 0; i < (1u << 28) - 1; ++i) ring.push(block, 16);
-  CHECK(ring.head() == 0xFFFFFFF0u);
-  ring.resync();
-  ring.discardAll();
+  ring.testSetCounters(0xFFFFFFF0u, 0xFFFFFFF0u);
   fill(in, 24, 100);
-  ring.push(in, 12);   // head -> 0xFFFFFFFC
+  ring.push(in, 12);       // head -> 0xFFFFFFFC
   ring.push(in + 12, 12);  // head переполняется -> 0x00000008
   CHECK(ring.head() == 8u);
   CHECK(ring.available() == 16);
   ring.resync();
   CHECK(ring.pop(out, 16) == 16);
   CHECK(sequential(out, 16, 108));
+  CHECK(ring.available() == 0);
+  CHECK(ring.dropped() == 0);
 }
 
 // --- ButtonDecoder -------------------------------------------------------------
@@ -291,13 +285,20 @@ static void test_cleanup_touches_only_sent() {
   CHECK(!isSentPart("REC0007_P01.BAD"));
   CHECK(!isSentPart("REC0007_P01.CONFLICT"));
   CHECK(!isSentPart("REC0007_P01.REJECT"));
-  CHECK(!isSentPart("REC0007_P01_R.SENT"));  // длина другая: восстановленная
+  CHECK(isSentPart("REC0007_P01_R.SENT"));   // восстановленная тоже подтверждена
+  CHECK(!isSentPart("REC0007_P01_X.SENT"));
+  CHECK(!isSentPart("REC0007_N08.SENT"));
   CHECK(!isSentPart("REC0007_N08.END"));
   char mrk[32];
   marksNameFor("REC0007_P01.SENT", mrk, sizeof(mrk));
   CHECK(strcmp(mrk, "REC0007_P01.MRK") == 0);
+  // Метки пишутся до сбоя как P01.MRK; восстановленная _R-часть ищет их же.
   marksNameFor("REC0007_P01_R.WAV", mrk, sizeof(mrk));
-  CHECK(strcmp(mrk, "REC0007_P01_R.MRK") == 0);
+  CHECK(strcmp(mrk, "REC0007_P01.MRK") == 0);
+  marksNameFor("REC0007_P01_R.SENT", mrk, sizeof(mrk));
+  CHECK(strcmp(mrk, "REC0007_P01.MRK") == 0);
+  marksNameFor("REC0007_P01.WAV", mrk, sizeof(mrk));
+  CHECK(strcmp(mrk, "REC0007_P01.MRK") == 0);
 }
 
 int main() {

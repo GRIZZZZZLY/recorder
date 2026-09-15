@@ -157,15 +157,23 @@ inline int marksHeader(const char *text, char *out, size_t outSize) {
 }
 
 // Автоудаление касается только подтверждённых сервером частей.
+// Восстановленная часть тоже подтверждается: REC0007_P01.SENT и REC0007_P01_R.SENT.
 inline bool isSentPart(const char *name) {
   const size_t len = strlen(name);
-  return len == 16 && strncmp(name, "REC", 3) == 0 && strcmp(name + 11, ".SENT") == 0;
+  if (strncmp(name, "REC", 3) != 0 || len < 9 || name[7] != '_' || name[8] != 'P') return false;
+  if (len == 16) return strcmp(name + 11, ".SENT") == 0;
+  if (len == 18) return name[11] == '_' && name[12] == 'R' && strcmp(name + 13, ".SENT") == 0;
+  return false;
 }
 
 // Рядом с частью лежит файл меток; уходит вместе с ней.
+// Метки пишутся во время записи как REC0007_P01.MRK и не знают, что часть
+// потом восстановят как _R. Поэтому суффикс _R здесь отбрасывается: иначе
+// метки восстановленной части терялись бы при отправке и оставались при очистке.
 inline void marksNameFor(const char *partName, char *out, size_t outSize) {
   const char *dot = strrchr(partName, '.');
-  const size_t stem = dot ? static_cast<size_t>(dot - partName) : strlen(partName);
+  size_t stem = dot ? static_cast<size_t>(dot - partName) : strlen(partName);
+  if (stem >= 2 && partName[stem - 2] == '_' && partName[stem - 1] == 'R') stem -= 2;
   if (stem + 5 >= outSize) {
     out[0] = '\0';
     return;

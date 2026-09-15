@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Хост-тесты чистой логики прошивки (кольцевой буфер, кнопка, арифметика
-# частей, правила отправки). Платы не требуют, Arduino не требуют.
+# Хост-тесты прошивки: чистая логика (кольцевой буфер, кнопка, арифметика
+# частей, правила отправки) и жизненный цикл записи поверх хранилища в памяти
+# (START с предзаписью, ротация, метки, STOP с .END, восстановление, очистка).
+# Платы не требуют, Arduino не требуют.
 #
 #   bash tools/host_tests.sh            локально, нужен g++
 #   bash tools/host_tests.sh --remote   на VPS (ssh config1), если g++ нет
@@ -9,15 +11,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="XiaoVoiceRecorder"
 FLAGS="-std=c++17 -O2 -Wall -Wextra -Werror -pthread"
+TESTS="test_core test_session"
 
 if [ "${1:-}" = "--remote" ]; then
   HOST="${RECORDER_HOST:-config1}"
   cd "$ROOT"
   tar czf - "$SRC"/*.h "$SRC"/host_tests \
     | ssh "$HOST" "rm -rf /tmp/recorder-host-tests && mkdir -p /tmp/recorder-host-tests \
-        && tar xzf - -C /tmp/recorder-host-tests \
-        && cd /tmp/recorder-host-tests && g++ $FLAGS -o test_core $SRC/host_tests/test_core.cpp \
-        && ./test_core"
+        && tar xzf - -C /tmp/recorder-host-tests && cd /tmp/recorder-host-tests \
+        && for t in $TESTS; do g++ $FLAGS -o \$t $SRC/host_tests/\$t.cpp && ./\$t || exit 1; done"
   exit $?
 fi
 
@@ -28,5 +30,7 @@ fi
 
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
-g++ $FLAGS -o "$OUT/test_core" "$ROOT/$SRC/host_tests/test_core.cpp"
-"$OUT/test_core"
+for t in $TESTS; do
+  g++ $FLAGS -o "$OUT/$t" "$ROOT/$SRC/host_tests/$t.cpp"
+  "$OUT/$t"
+done

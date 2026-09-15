@@ -148,6 +148,15 @@ class RingBuffer {
     m_hwm = 0;
   }
 
+#ifdef RING_BUFFER_TESTING
+  // Только для хост-тестов: поставить счётчики к краю 32 бит, чтобы проверить
+  // переполнение за несколько операций, а не за 2^28 push().
+  void testSetCounters(uint32_t head, uint32_t tail) {
+    m_head.store(head, std::memory_order_relaxed);
+    m_tail.store(tail, std::memory_order_relaxed);
+  }
+#endif
+
  private:
   uint8_t *m_buf = nullptr;
   uint32_t m_cap = 0;

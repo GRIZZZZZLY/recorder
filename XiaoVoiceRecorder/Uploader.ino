@@ -2,19 +2,24 @@
  * Отправка готовых частей на личный сервер. Контракт: shared/protocol.md.
  *
  * Кооперативная машина состояний: каждый вызов serviceUpload() делает один
- * ограниченный шаг (подключение Wi-Fi без ожидания, несколько кусков тела по
- * 4 КиБ, чтение ответа), поэтому loop() между шагами успевает опросить кнопку
- * и слить буфер на карту. START во время передачи обрывает её немедленно
- * (preemptUpload); недосланная часть остаётся .WAV и уйдёт заново целиком —
- * сервер идемпотентен.
+ * ограниченный шаг (подключение Wi-Fi без ожидания, кусок контрольной суммы,
+ * несколько кусков тела по 4 КиБ, чтение ответа), поэтому loop() между шагами
+ * успевает опросить кнопку и слить буфер на карту. START во время передачи
+ * обрывает её немедленно (preemptUpload); недосланная часть остаётся .WAV и
+ * уйдёт заново целиком — сервер идемпотентен.
  *
  * Классы ответов — UploadPolicy.h: временная помеха откладывает очередь по
  * расписанию 1/5/15/60 минут, конфликт или отказ одной части переименовывает
  * её (.CONFLICT / .REJECT) и не держит остальные, 401 и кривой адрес
  * останавливают отправку до смены настроек. Ничего не удаляется.
  *
- * ponytail: CRC части считается чтением всего файла перед отправкой (2–4 с на
- * 19 МБ по SPI). Путь наверх — считать на лету при записи и хранить рядом.
+ * Единственный шаг, который блокирует loop() целиком, — TLS-рукопожатие
+ * (секунда-две по оценке, на плате не измерено). Буфер предзаписи это
+ * переживает, задача захвата не останавливается.
+ *
+ * ponytail: контрольная сумма считается чтением всего файла перед отправкой,
+ * пусть и по кускам между опросами кнопки. Путь наверх — считать на лету при
+ * записи и хранить рядом с частью, тогда 19 МБ не перечитываются вовсе.
  */
 
 #include <Preferences.h>
@@ -24,6 +29,7 @@
 #include <time.h>
 
 #include "Certificates.h"
+#include "Session.h"
 #include "UploadPolicy.h"
 
 namespace upl {
@@ -32,15 +38,17 @@ constexpr uint32_t HANDSHAKE_TIMEOUT_MS = 15000;
 constexpr uint32_t SOCKET_TIMEOUT_MS = 5000;   // одна операция записи в сокет
 constexpr uint32_t REPLY_TIMEOUT_MS = 30000;
 constexpr uint32_t EMPTY_QUEUE_RECHECK_MS = 60UL * 60UL * 1000UL;
-constexpr size_t SEND_CHUNK_BYTES = 4096;
-constexpr int CHUNKS_PER_STEP_IDLE = 8;        // в ARMED: loop свободен
-constexpr int CHUNKS_PER_STEP_RECORDING = 1;   // при UPLOAD_DURING_RECORDING
+constexpr size_t CHUNK_BYTES = 4096;
+constexpr int SEND_CHUNKS_PER_STEP_IDLE = 8;       // в ARMED: loop свободен
+constexpr int SEND_CHUNKS_PER_STEP_RECORDING = 1;  // при UPLOAD_DURING_RECORDING
+constexpr int CRC_CHUNKS_PER_STEP_IDLE = 16;       // 64 КиБ с карты за оборот loop()
+constexpr int CRC_CHUNKS_PER_STEP_RECORDING = 2;
 constexpr size_t REPLY_MAX_BYTES = 1024;
 constexpr const char *NVS_NAMESPACE = "recorder";
 constexpr const char *NTP_SERVER = "pool.ntp.org";
 }  // namespace upl
 
-enum UpState { UP_IDLE, UP_WIFI, UP_SEND, UP_REPLY, UP_CLOSE };
+enum UpState { UP_IDLE, UP_WIFI, UP_CRC, UP_SEND, UP_REPLY, UP_CLOSE };
 
 Preferences g_prefs;
 
@@ -64,9 +72,16 @@ bool g_ntpRequested = false;
 WiFiClientSecure g_client;
 File g_upFile;
 String g_upName;
+uint16_t g_upSession = 0;
+uint16_t g_upPart = 0;
+bool g_upRecovered = false;
+char g_upHost[96];
+char g_upPrefix[64];
+uint16_t g_upPort = 443;
 uint32_t g_upSize = 0;
 uint32_t g_upSent = 0;
 uint32_t g_upCrc = 0;
+uint32_t g_upCrcDone = 0;
 uint32_t g_wifiStartedMs = 0;
 uint32_t g_replyStartedMs = 0;
 uint32_t g_transferStartedMs = 0;
@@ -132,53 +147,52 @@ bool uploadConfigured() {
 
 bool uploadBusy() { return g_upState != UP_IDLE; }
 
+// --- очередь на карте ------------------------------------------------------------------
+
+struct OldestPart {
+  char name[session::PATH_MAX_LEN] = {0};
+};
+
+static void oldestPartCb(const char *name, uint32_t, void *ctx) {
+  uint16_t s = 0, p = 0;
+  bool recovered = false;
+  if (!uploadpolicy::parsePartName(name, &s, &p, &recovered)) return;
+  OldestPart *o = static_cast<OldestPart *>(ctx);
+  if (o->name[0] == '\0' || strcmp(name, o->name) < 0) {
+    strncpy(o->name, name, sizeof(o->name) - 1);
+  }
+}
+
 // Старейшая неотправленная часть. Имена сортируются лексикографически, что
 // для нашей схемы совпадает с хронологией.
 String findOldestReadyPart() {
-  File root = SD.open("/");
-  if (!root || !root.isDirectory()) {
-    return String();
-  }
-  String best;
-  for (File f = root.openNextFile(); f; f = root.openNextFile()) {
-    if (!f.isDirectory()) {
-      const String name = baseName(f);
-      uint16_t session = 0, part = 0;
-      bool recovered = false;
-      if (uploadpolicy::parsePartName(name.c_str(), &session, &part, &recovered) &&
-          (best.isEmpty() || name < best)) {
-        best = name;
-      }
-    }
-    f.close();
-  }
-  root.close();
-  return best;
+  OldestPart oldest;
+  g_sd.listRoot(oldestPartCb, &oldest);
+  return String(oldest.name);
+}
+
+struct DeclaredParts {
+  uint16_t session = 0;
+  uint16_t parts = 0;
+};
+
+static void declaredPartsCb(const char *name, uint32_t, void *ctx) {
+  DeclaredParts *d = static_cast<DeclaredParts *>(ctx);
+  uint16_t s = 0, n = 0;
+  if (uploadpolicy::parseEndName(name, &s, &n) && s == d->session) d->parts = n;
 }
 
 // Сколько частей объявила прошивка при чистом STOP: файл REC0007_N08.END.
 // 0 — не объявлено (сессия восстановлена после сбоя), заголовок не ставится.
-uint16_t declaredPartsFor(uint16_t session) {
-  File root = SD.open("/");
-  if (!root || !root.isDirectory()) {
-    return 0;
-  }
-  uint16_t result = 0;
-  for (File f = root.openNextFile(); f; f = root.openNextFile()) {
-    if (!f.isDirectory()) {
-      const String name = baseName(f);
-      uint16_t s = 0, n = 0;
-      if (uploadpolicy::parseEndName(name.c_str(), &s, &n) && s == session) {
-        result = n;
-      }
-    }
-    f.close();
-  }
-  root.close();
-  return result;
+uint16_t declaredPartsFor(uint16_t sessionId) {
+  DeclaredParts d;
+  d.session = sessionId;
+  g_sd.listRoot(declaredPartsCb, &d);
+  return d.parts;
 }
 
 // Метки части в виде значения X-Marks. Пустая строка — заголовка нет.
+// Имя файла меток не зависит от _R: восстановленная часть находит свои метки.
 String marksHeaderFor(const String &partName) {
   char mrkName[32];
   uploadpolicy::marksNameFor(partName.c_str(), mrkName, sizeof(mrkName));
@@ -200,28 +214,6 @@ String marksHeaderFor(const String &partName) {
   return count > 0 ? String(header) : String();
 }
 
-uint32_t fileCrc32(const String &path, uint32_t &sizeOut) {
-  File f = SD.open(path.c_str(), FILE_READ);
-  if (!f) {
-    sizeOut = 0;
-    return 0;
-  }
-  static uint8_t buffer[upl::SEND_CHUNK_BYTES];
-  uint32_t crc = 0;
-  uint32_t total = 0;
-  while (true) {
-    const int read = f.read(buffer, sizeof(buffer));
-    if (read <= 0) {
-      break;
-    }
-    crc = esp_rom_crc32_le(crc, buffer, static_cast<uint32_t>(read));
-    total += static_cast<uint32_t>(read);
-  }
-  f.close();
-  sizeOut = total;
-  return crc;
-}
-
 void disconnectWifi() {
   WiFi.disconnect(true, true);
   WiFi.mode(WIFI_OFF);
@@ -235,47 +227,69 @@ void renamePart(const String &name, const char *suffix) {
   Serial.printf("[up] %s -> %s%s\n", name.c_str(), to.c_str() + 1, ok ? "" : " (переименование НЕ удалось)");
 }
 
-// Открывает TLS-соединение и шлёт заголовки. Тело уходит по кускам из UP_SEND.
-SendResult beginTransfer(const String &name) {
-  uint16_t session = 0, part = 0;
-  bool recovered = false;
-  if (!uploadpolicy::parsePartName(name.c_str(), &session, &part, &recovered)) {
+// --- передача одной части --------------------------------------------------------------------
+
+// Шаг 1: разобрать имя и адрес, открыть файл. Контрольная сумма считается
+// потом по кускам (UP_CRC), чтобы кнопка не ждала чтения 19 МБ с карты.
+SendResult prepareTransfer(const String &name) {
+  if (!uploadpolicy::parsePartName(name.c_str(), &g_upSession, &g_upPart, &g_upRecovered)) {
     return SEND_PART_FATAL;
   }
-
-  char host[96], prefix[64];
-  uint16_t port = 443;
-  if (!uploadpolicy::parseServerUrl(g_serverUrl.c_str(), host, sizeof(host), &port,
-                                    prefix, sizeof(prefix))) {
+  if (!uploadpolicy::parseServerUrl(g_serverUrl.c_str(), g_upHost, sizeof(g_upHost), &g_upPort,
+                                    g_upPrefix, sizeof(g_upPrefix))) {
     Serial.println("[up] Некорректный server_url: нужен вид https://host[:port]");
     return SEND_CONFIG_FATAL;
   }
-
   const String path = "/" + name;
-  g_upSize = 0;
-  g_upCrc = fileCrc32(path, g_upSize);
-  if (g_upSize <= partmath::WAV_HEADER_BYTES) {
-    Serial.printf("[up] %s пустой или не читается\n", name.c_str());
-    return SEND_PART_FATAL;
-  }
-  const String marks = marksHeaderFor(name);
-  const uint16_t declared = recovered ? 0 : declaredPartsFor(session);
-
   g_upFile = SD.open(path.c_str(), FILE_READ);
   if (!g_upFile) {
     return SEND_RETRY;
   }
+  g_upSize = static_cast<uint32_t>(g_upFile.size());
+  if (g_upSize <= partmath::WAV_HEADER_BYTES) {
+    Serial.printf("[up] %s пустой или не читается\n", name.c_str());
+    g_upFile.close();
+    return SEND_PART_FATAL;
+  }
+  g_upName = name;
+  g_upCrc = 0;
+  g_upCrcDone = 0;
+  g_upSent = 0;
+  g_reply = "";
+  g_transferStartedMs = millis();
+  return SEND_OK;
+}
+
+// Шаг 2: до chunks кусков контрольной суммы. true — файл прочитан целиком.
+bool serviceCrc(int chunks) {
+  static uint8_t buffer[upl::CHUNK_BYTES];
+  for (int i = 0; i < chunks && g_upCrcDone < g_upSize; ++i) {
+    const int read = g_upFile.read(buffer, sizeof(buffer));
+    if (read <= 0) break;
+    g_upCrc = esp_rom_crc32_le(g_upCrc, buffer, static_cast<uint32_t>(read));
+    g_upCrcDone += static_cast<uint32_t>(read);
+  }
+  return g_upCrcDone >= g_upSize;
+}
+
+// Шаг 3: TLS-соединение и заголовки. Тело уходит по кускам из UP_SEND.
+SendResult openConnection() {
+  if (!g_upFile.seek(0)) {
+    Serial.println("[up] Файл не перемотался.");
+    return SEND_RETRY;
+  }
+  const String marks = marksHeaderFor(g_upName);
+  const uint16_t declared = g_upRecovered ? 0 : declaredPartsFor(g_upSession);
 
   g_client.stop();
   g_client.setCACert(ISRG_ROOT_X1);
   g_client.setHandshakeTimeout(upl::HANDSHAKE_TIMEOUT_MS);
   // Рукопожатие блокирует loop() на секунду-две: буфер это переживает,
   // задача захвата не останавливается.
-  if (!g_client.connect(host, port, upl::SOCKET_TIMEOUT_MS)) {
+  if (!g_client.connect(g_upHost, g_upPort, upl::SOCKET_TIMEOUT_MS)) {
     char err[96];
     g_client.lastError(err, sizeof(err));
-    Serial.printf("[up] Нет соединения с %s:%u: %s\n", host, port, err);
-    g_upFile.close();
+    Serial.printf("[up] Нет соединения с %s:%u: %s\n", g_upHost, g_upPort, err);
     return SEND_RETRY;
   }
 
@@ -283,12 +297,12 @@ SendResult beginTransfer(const String &name) {
   String req;
   req.reserve(512 + marks.length());
   req += "POST ";
-  req += prefix;
+  req += g_upPrefix;
   req += "/api/v1/upload HTTP/1.1\r\nHost: ";
-  req += host;
-  if (port != 443) {
+  req += g_upHost;
+  if (g_upPort != 443) {
     req += ":";
-    req += port;
+    req += g_upPort;
   }
   req += "\r\nAuthorization: Bearer ";
   req += g_deviceToken;
@@ -296,14 +310,14 @@ SendResult beginTransfer(const String &name) {
   req += g_upSize;
   req += "\r\nX-Device-Id: ";
   req += g_deviceId;
-  snprintf(buf, sizeof(buf), "%u", session);
+  snprintf(buf, sizeof(buf), "%u", g_upSession);
   req += "\r\nX-Session: ";
   req += buf;
-  snprintf(buf, sizeof(buf), "%u", part);
+  snprintf(buf, sizeof(buf), "%u", g_upPart);
   req += "\r\nX-Part: ";
   req += buf;
   req += "\r\nX-Recovered: ";
-  req += recovered ? "1" : "0";
+  req += g_upRecovered ? "1" : "0";
   snprintf(buf, sizeof(buf), "%08lx", static_cast<unsigned long>(g_upCrc));
   req += "\r\nX-Crc32: ";
   req += buf;
@@ -321,16 +335,11 @@ SendResult beginTransfer(const String &name) {
   if (g_client.print(req) != req.length()) {
     Serial.println("[up] Заголовки не ушли.");
     g_client.stop();
-    g_upFile.close();
     return SEND_RETRY;
   }
 
-  g_upName = name;
-  g_upSent = 0;
-  g_reply = "";
-  g_transferStartedMs = millis();
   Serial.printf("[up] %s -> сервер, %lu байт, crc %08lx, меток %s, частей %u\n",
-                name.c_str(), static_cast<unsigned long>(g_upSize),
+                g_upName.c_str(), static_cast<unsigned long>(g_upSize),
                 static_cast<unsigned long>(g_upCrc),
                 marks.isEmpty() ? "нет" : marks.c_str(), declared);
   return SEND_OK;
@@ -345,7 +354,7 @@ void closeTransfer() {
 
 // Шлёт до chunks кусков тела. Возвращает SEND_RETRY при обрыве, SEND_OK иначе.
 SendResult sendBodyChunks(int chunks) {
-  static uint8_t buffer[upl::SEND_CHUNK_BYTES];
+  static uint8_t buffer[upl::CHUNK_BYTES];
   for (int i = 0; i < chunks && g_upSent < g_upSize; ++i) {
     const int read = g_upFile.read(buffer, sizeof(buffer));
     if (read <= 0) {
@@ -430,6 +439,25 @@ void scheduleRetry() {
                 static_cast<unsigned long>(g_uploadFailures));
 }
 
+// Отказ, не связанный с сетью: часть переименовывается и очередь идёт дальше;
+// 401 и кривой адрес останавливают всё. Возвращает false, если очередь стоит.
+bool handlePartVerdict(SendResult result, const String &name) {
+  switch (result) {
+    case SEND_CONFLICT:
+      renamePart(name, ".CONFLICT");
+      return true;
+    case SEND_PART_FATAL:
+      renamePart(name, ".REJECT");
+      return true;
+    case SEND_CONFIG_FATAL:
+      g_uploadBlocked = true;
+      Serial.println("[up] Отправка остановлена до смены настроек.");
+      return false;
+    default:
+      return false;
+  }
+}
+
 // Следующая часть в этом же сеансе Wi-Fi или закрытие сети.
 void nextPartOrClose() {
   const String name = findOldestReadyPart();
@@ -439,57 +467,33 @@ void nextPartOrClose() {
     g_upState = UP_CLOSE;
     return;
   }
-  switch (beginTransfer(name)) {
-    case SEND_OK:
-      g_upState = UP_SEND;
-      break;
-    case SEND_RETRY:
-      scheduleRetry();
-      g_upState = UP_CLOSE;
-      break;
-    case SEND_CONFLICT:
-      renamePart(name, ".CONFLICT");
-      break;  // остаёмся в текущем состоянии: следующий вызов возьмёт другую часть
-    case SEND_PART_FATAL:
-      renamePart(name, ".REJECT");
-      break;
-    case SEND_CONFIG_FATAL:
-      g_uploadBlocked = true;
-      Serial.println("[up] Отправка остановлена до смены настроек.");
-      g_upState = UP_CLOSE;
-      break;
+  const SendResult prepared = prepareTransfer(name);
+  if (prepared == SEND_OK) {
+    g_upState = UP_CRC;
+  } else if (prepared == SEND_RETRY) {
+    scheduleRetry();
+    g_upState = UP_CLOSE;
+  } else if (!handlePartVerdict(prepared, name)) {
+    g_upState = UP_CLOSE;
   }
+  // Переименованная часть: остаёмся в UP_WIFI, следующий вызов возьмёт другую.
 }
 
 void finishTransfer(SendResult result) {
   closeTransfer();
   g_diag.upload_duration_ms += millis() - g_transferStartedMs;
-  switch (result) {
-    case SEND_OK:
-      ++g_sentParts;
-      g_uploadFailures = 0;
-      if (!markDelivered(g_upName)) {
-        g_upState = UP_CLOSE;  // иначе тот же файл пойдёт по кругу
-        return;
-      }
-      break;
-    case SEND_RETRY:
-      scheduleRetry();
-      g_upState = UP_CLOSE;
-      return;
-    case SEND_CONFLICT:
-      renamePart(g_upName, ".CONFLICT");
-      break;
-    case SEND_PART_FATAL:
-      renamePart(g_upName, ".REJECT");
-      break;
-    case SEND_CONFIG_FATAL:
-      g_uploadBlocked = true;
-      Serial.println("[up] Отправка остановлена до вмешательства владельца.");
-      g_upState = UP_CLOSE;
-      return;
+  if (result == SEND_OK) {
+    ++g_sentParts;
+    g_uploadFailures = 0;
+    g_upState = markDelivered(g_upName) ? UP_WIFI : UP_CLOSE;  // без пометки файл шёл бы по кругу
+    return;
   }
-  g_upState = UP_WIFI;  // сеть уже есть: следующая часть без переподключения
+  if (result == SEND_RETRY) {
+    scheduleRetry();
+    g_upState = UP_CLOSE;
+    return;
+  }
+  g_upState = handlePartVerdict(result, g_upName) ? UP_WIFI : UP_CLOSE;
 }
 
 // Вызывается после каждой остановки записи и при старте: пробуем отдать всё.
@@ -512,6 +516,7 @@ void preemptUpload() {
 
 void serviceUpload() {
   const uint32_t now = millis();
+  const bool recording = g_state == ST_RECORDING;
   switch (g_upState) {
     case UP_IDLE: {
       if (!g_sdReady || g_uploadBlocked || !uploadConfigured()) {
@@ -551,9 +556,23 @@ void serviceUpload() {
       nextPartOrClose();
       return;
     }
+    case UP_CRC: {
+      const int chunks = recording ? upl::CRC_CHUNKS_PER_STEP_RECORDING
+                                   : upl::CRC_CHUNKS_PER_STEP_IDLE;
+      if (!serviceCrc(chunks)) {
+        return;
+      }
+      const SendResult opened = openConnection();
+      if (opened == SEND_OK) {
+        g_upState = UP_SEND;
+      } else {
+        finishTransfer(opened);
+      }
+      return;
+    }
     case UP_SEND: {
-      const int chunks = g_state == ST_RECORDING ? upl::CHUNKS_PER_STEP_RECORDING
-                                                 : upl::CHUNKS_PER_STEP_IDLE;
+      const int chunks = recording ? upl::SEND_CHUNKS_PER_STEP_RECORDING
+                                   : upl::SEND_CHUNKS_PER_STEP_IDLE;
       if (sendBodyChunks(chunks) != SEND_OK) {
         finishTransfer(SEND_RETRY);
         return;
@@ -589,76 +608,17 @@ void serviceUpload() {
 
 // --- очистка карты ------------------------------------------------------------------
 
-// Удаляет только .SENT (и их .MRK), старые первыми, и только когда свободного
-// места меньше CLEANUP_MIN_FREE_BYTES — до CLEANUP_TARGET_FREE_BYTES. Всё
-// неподтверждённое (.WAV .TMP .BAD .CONFLICT .REJECT) не трогается никогда.
-// SD.usedBytes() на FAT32 читает таблицу целиком — секунды на 32 ГБ, не
-// измерено; поэтому вызывается после STOP и при старте, но не перед START.
+// Правила и порядок — session::cleanupSent (проверено на хосте). Здесь только
+// пороги и сигнал владельцу. SD.usedBytes() на FAT32 читает таблицу целиком —
+// секунды на 32 ГБ, не измерено; поэтому вызывается после STOP и при старте,
+// но не перед START.
 void cleanupSentParts() {
   if (!g_sdReady) {
     return;
   }
-  const uint64_t total = SD.totalBytes();
-  uint64_t free = total - SD.usedBytes();
-  if (free >= cfg::CLEANUP_MIN_FREE_BYTES) {
-    g_cardLow = false;
-    Serial.printf("[clean] Свободно %llu МБ, удалять не нужно.\n",
-                  static_cast<unsigned long long>(free / (1024ULL * 1024ULL)));
-    return;
-  }
-
-  // Список сначала, удаление потом: менять каталог во время обхода нельзя.
-  constexpr int MAX_CANDIDATES = 64;
-  String names[MAX_CANDIDATES];
-  uint32_t sizes[MAX_CANDIDATES];
-  int found = 0;
-  File root = SD.open("/");
-  if (!root || !root.isDirectory()) {
-    return;
-  }
-  for (File f = root.openNextFile(); f && found < MAX_CANDIDATES; f = root.openNextFile()) {
-    if (!f.isDirectory()) {
-      const String name = baseName(f);
-      if (uploadpolicy::isSentPart(name.c_str())) {
-        names[found] = name;
-        sizes[found] = static_cast<uint32_t>(f.size());
-        ++found;
-      }
-    }
-    f.close();
-  }
-  root.close();
-
-  int deleted = 0;
-  while (free < cfg::CLEANUP_TARGET_FREE_BYTES) {
-    int oldest = -1;
-    for (int i = 0; i < found; ++i) {
-      if (!names[i].isEmpty() && (oldest < 0 || names[i] < names[oldest])) {
-        oldest = i;
-      }
-    }
-    if (oldest < 0) {
-      break;
-    }
-    const String path = "/" + names[oldest];
-    if (SD.remove(path.c_str())) {
-      free += sizes[oldest];
-      ++deleted;
-      char mrk[32];
-      uploadpolicy::marksNameFor(names[oldest].c_str(), mrk, sizeof(mrk));
-      const String mrkPath = "/" + String(mrk);
-      if (SD.exists(mrkPath.c_str())) {
-        SD.remove(mrkPath.c_str());
-      }
-      Serial.printf("[clean] Удалено %s\n", names[oldest].c_str());
-    }
-    names[oldest] = "";
-  }
-
-  g_cardLow = free < cfg::CLEANUP_MIN_FREE_BYTES;
-  Serial.printf("[clean] Удалено %d, свободно %llu МБ%s\n", deleted,
-                static_cast<unsigned long long>(free / (1024ULL * 1024ULL)),
-                g_cardLow ? " — МАЛО, подтверждённых частей для удаления нет" : "");
+  const session::CleanupResult r = session::cleanupSent(
+      g_sd, cfg::CLEANUP_MIN_FREE_BYTES, cfg::CLEANUP_TARGET_FREE_BYTES, serialLog);
+  g_cardLow = r.cardLow;
   if (g_cardLow) {
     feedbackEvent("error");
   }
