@@ -140,6 +140,22 @@ Preferences g_sessionPrefs;
 ButtonDecoder g_button(cfg::BUTTON_DEBOUNCE_MS, cfg::LONG_PRESS_MS);
 String g_serialLine;
 
+// Фронты кнопки защёлкиваются прерыванием. Опрос только из loop() терял бы
+// нажатие целиком: TLS-рукопожатие блокирует цикл на секунду-две, и короткое
+// нажатие умещается внутри этого окна. Нажал — значит запись начнётся, пусть
+// и на секунду позже; предзапись эту секунду держит.
+struct ButtonEdge {
+  uint32_t atMs;
+  bool pressed;
+};
+constexpr uint8_t BUTTON_QUEUE = 8;
+volatile ButtonEdge g_btnQueue[BUTTON_QUEUE];
+volatile uint8_t g_btnHead = 0;
+volatile uint8_t g_btnTail = 0;
+volatile uint32_t g_btnLastEdgeMs = 0;
+volatile bool g_btnLastLevel = false;
+volatile uint32_t g_btnLostEdges = 0;
+
 // Определены в Uploader.ino и Feedback.ino; компилятор Arduino дописывает их
 // следом за этим файлом.
 void loadUploadConfig();
@@ -150,6 +166,7 @@ void serviceUpload();
 void preemptUpload();
 bool uploadBusy();
 void cleanupSentParts();
+void continueInNewSession();
 void feedbackSetup();
 void feedbackService(DeviceState state);
 void feedbackEvent(const char *name);
@@ -365,8 +382,7 @@ void serviceRecording() {
     return;
   }
   if (g_writer.partLimitReached()) {
-    Serial.println("[rec] Part limit reached for this session. Stopping cleanly.");
-    stopRecording(STOP_NORMAL);
+    continueInNewSession();
     return;
   }
 
@@ -385,6 +401,30 @@ void serviceRecording() {
                   static_cast<unsigned long>(g_ring.dropped() / cfg::FRAME_BYTES));
     g_lastStatusMs = now;
   }
+}
+
+// 99 частей — это 16,5 часа. Хвост, который уже не влезает, не выбрасывается:
+// сессия закрывается чисто, и тут же начинается следующая. Буфер при этом не
+// трогаем, поэтому звук между двумя сессиями не теряется — он становится
+// предзаписью новой. Очистка карты сюда не лезет: она ждёт настоящего STOP,
+// потому что чтение таблицы FAT занимает секунды.
+void continueInNewSession() {
+  const uint16_t finished = g_writer.sessionId();
+  const bool clean = g_writer.stop(true);
+  Serial.printf("[rec] Предел частей в сессии %04u (clean=%s). Продолжаю новой сессией.\n",
+                finished, clean ? "yes" : "NO");
+  g_nextSessionId = finished + 1;
+  if (!clean || g_nextSessionId > cfg::MAX_SESSIONS || !g_writer.start(g_nextSessionId)) {
+    g_state = ST_ARMED;
+    feedbackEvent("error");
+    Serial.println("[rec] Новая сессия не открылась. Запись остановлена.");
+    armUpload();
+    return;
+  }
+  rememberSessionId(g_writer.sessionId());
+  g_recordStartedMs = millis();
+  g_lastStatusMs = g_recordStartedMs;
+  armUpload();
 }
 
 // Микрофон замолчал вне записи: ARMED без звука — ложное спокойствие.
@@ -420,9 +460,8 @@ void onLongPress() {
   }
 }
 
-void handleButton() {
-  const bool pressed = digitalRead(cfg::REC_BUTTON_PIN) == LOW;
-  switch (g_button.feed(pressed, millis())) {
+void dispatchButton(ButtonDecoder::Event event) {
+  switch (event) {
     case ButtonDecoder::SHORT:
       onShortPress();
       break;
@@ -431,6 +470,52 @@ void handleButton() {
       break;
     default:
       break;
+  }
+}
+
+// Прерывание только запоминает фронт: ни карты, ни сети, ни вибрации здесь
+// быть не может. Дребезг гасится по времени прямо тут, поэтому очередь из
+// восьми фронтов не переполняется от одного нажатия.
+void IRAM_ATTR buttonIsr() {
+  const uint32_t now = millis();
+  const bool pressed = digitalRead(cfg::REC_BUTTON_PIN) == LOW;
+  if (pressed == g_btnLastLevel || now - g_btnLastEdgeMs < cfg::BUTTON_DEBOUNCE_MS) {
+    return;
+  }
+  g_btnLastEdgeMs = now;
+  g_btnLastLevel = pressed;
+  const uint8_t next = static_cast<uint8_t>((g_btnHead + 1) % BUTTON_QUEUE);
+  if (next == g_btnTail) {
+    // Очередь полна: видно в диагностике, а не молча. Инкремент volatile
+    // устарел в C++20, поэтому явное присваивание.
+    g_btnLostEdges = g_btnLostEdges + 1;
+    return;
+  }
+  g_btnQueue[g_btnHead].atMs = now;
+  g_btnQueue[g_btnHead].pressed = pressed;
+  g_btnHead = next;
+}
+
+void handleButton() {
+  // Сначала фронты, случившиеся пока цикл был занят: у них своё, настоящее
+  // время, поэтому короткое нажатие не превратится в длинное.
+  while (g_btnTail != g_btnHead) {
+    const uint8_t tail = g_btnTail;
+    const uint32_t atMs = g_btnQueue[tail].atMs;
+    const bool pressed = g_btnQueue[tail].pressed;
+    g_btnTail = static_cast<uint8_t>((tail + 1) % BUTTON_QUEUE);
+    // Два отсчёта на фронт: второй переводит декодер в устойчивое состояние,
+    // при этом отсчёт удержания идёт от самого фронта.
+    dispatchButton(g_button.feed(pressed, atMs));
+    dispatchButton(g_button.feed(pressed, atMs + cfg::BUTTON_DEBOUNCE_MS));
+  }
+  // Затем обычный опрос: он даёт длинному нажатию сработать без новых фронтов
+  // и остаётся страховкой, если прерывание почему-то не встало. Пока фронт
+  // свежее антидребезга, опрос молчит: иначе он подал бы декодеру время
+  // раньше уже скормленного.
+  const uint32_t now = millis();
+  if (now - g_btnLastEdgeMs >= cfg::BUTTON_DEBOUNCE_MS) {
+    dispatchButton(g_button.feed(digitalRead(cfg::REC_BUTTON_PIN) == LOW, now));
   }
 }
 
@@ -518,6 +603,7 @@ void printDiag() {
   Serial.printf("upload_bytes          %lu\n", static_cast<unsigned long>(g_diag.upload_bytes));
   Serial.printf("upload_duration_ms    %lu\n", static_cast<unsigned long>(g_diag.upload_duration_ms));
   Serial.printf("upload_preempted      %lu\n", static_cast<unsigned long>(g_diag.upload_preempted));
+  Serial.printf("button_lost_edges     %lu\n", static_cast<unsigned long>(g_btnLostEdges));
   Serial.printf("uptime_ms             %lu\n", static_cast<unsigned long>(millis()));
   // Ожидание по часам против фактически захваченного: разница — оценка
   // потерь между DMA и задачей захвата, которых буфер не видит.
@@ -640,6 +726,8 @@ void setup() {
   Serial.println("====================================");
 
   pinMode(cfg::REC_BUTTON_PIN, INPUT_PULLUP);
+  g_btnLastLevel = digitalRead(cfg::REC_BUTTON_PIN) == LOW;
+  attachInterrupt(digitalPinToInterrupt(cfg::REC_BUTTON_PIN), buttonIsr, CHANGE);
   feedbackSetup();
 
   Serial.printf("[sys] Chip: %s\n", ESP.getChipModel());

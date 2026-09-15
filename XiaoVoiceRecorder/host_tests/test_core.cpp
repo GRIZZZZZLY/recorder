@@ -161,6 +161,27 @@ static void test_button_glitch_shorter_than_debounce_is_ignored() {
   CHECK(b.feed(false, 200) == ButtonDecoder::NONE);
 }
 
+static void test_edges_captured_while_the_loop_was_blocked_still_decode() {
+  // Так их проигрывает handleButton(): фронт с его настоящим временем, затем
+  // тот же уровень через антидребезг. Нажатие, случившееся целиком внутри
+  // TLS-рукопожатия, не должно ни потеряться, ни стать длинным.
+  ButtonDecoder b(40, 2000);
+  const uint32_t pressAt = 1000, releaseAt = 1300, now = 3000;  // loop проснулся в 3000
+  CHECK(b.feed(true, pressAt) == ButtonDecoder::NONE);
+  CHECK(b.feed(true, pressAt + 40) == ButtonDecoder::NONE);
+  CHECK(b.feed(false, releaseAt) == ButtonDecoder::NONE);
+  CHECK(b.feed(false, releaseAt + 40) == ButtonDecoder::SHORT);
+  CHECK(b.feed(false, now) == ButtonDecoder::NONE);  // опрос после разбора очереди
+
+  // Удержание, начавшееся во время блокировки: длинное считается от фронта,
+  // поэтому срабатывает сразу, как только цикл освободился.
+  ButtonDecoder h(40, 2000);
+  CHECK(h.feed(true, 1000) == ButtonDecoder::NONE);
+  CHECK(h.feed(true, 1040) == ButtonDecoder::NONE);
+  CHECK(h.feed(true, 3000) == ButtonDecoder::LONG);
+  CHECK(h.feed(true, 3100) == ButtonDecoder::NONE);
+}
+
 // --- PartMath ---------------------------------------------------------------------
 
 static void test_part_boundaries_are_exact_in_bytes() {
@@ -311,6 +332,7 @@ int main() {
   test_button_short_press_fires_on_release();
   test_button_long_press_fires_while_held_and_release_is_silent();
   test_button_glitch_shorter_than_debounce_is_ignored();
+  test_edges_captured_while_the_loop_was_blocked_still_decode();
   test_part_boundaries_are_exact_in_bytes();
   test_mark_formatting_rounds_to_hundredths();
   test_status_classification();

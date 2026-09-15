@@ -529,6 +529,10 @@ inline CleanupResult cleanupSent(Storage &fs, uint64_t minFree, uint64_t targetF
     detail::SentBatch batch;
     fs.listRoot(detail::sentBatchCb, &batch);
     if (batch.count == 0) break;
+    // Пачка берётся заново каждый проход, поэтому неудаляемый файл попадал бы
+    // в неё снова и снова. Проход без единого удаления — конец очистки, а не
+    // повод крутиться вечно: очистка идёт при загрузке, до перехода в ARMED.
+    const int deletedBefore = r.deleted;
     for (int i = 0; i < batch.count && r.freeBytes < targetFree; ++i) {
       char path[PATH_MAX_LEN + 1];
       snprintf(path, sizeof(path), "/%s", batch.names[i]);
@@ -546,6 +550,10 @@ inline CleanupResult cleanupSent(Storage &fs, uint64_t minFree, uint64_t targetF
       if (fs.exists(mrkPath)) fs.remove(mrkPath);
       snprintf(line, sizeof(line), "[clean] Удалено %s", batch.names[i]);
       say(log, line);
+    }
+    if (r.deleted == deletedBefore) {
+      say(log, "[clean] Ни один файл не удалился: очистка остановлена.");
+      break;
     }
   }
 

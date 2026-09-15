@@ -49,6 +49,7 @@ class FakeStorage : public Storage {
   std::map<std::string, std::vector<uint8_t>> files;
   std::set<std::string> failRename;      // from-пути, которые не переименуются
   std::set<std::string> failOpen;        // пути, которые не откроются
+  std::set<std::string> failRemove;      // пути, которые не удаляются (битая FAT)
   std::map<std::string, size_t> failWriteAfter;  // путь -> предел байт, дальше запись обрывается
   int failWritesAtZeroFrom = 0;          // с какого по счёту write() в позицию 0 отказывать (0 = никогда)
   int writesAtZero = 0;
@@ -82,7 +83,10 @@ class FakeStorage : public Storage {
     files.erase(from);
     return true;
   }
-  bool remove(const char *path) override { return files.erase(path) > 0; }
+  bool remove(const char *path) override {
+    if (failRemove.count(path)) return false;
+    return files.erase(path) > 0;
+  }
   void listRoot(ListFn fn, void *ctx) override {
     for (auto &entry : files) {
       fn(entry.first.c_str() + 1, static_cast<uint32_t>(entry.second.size()), ctx);

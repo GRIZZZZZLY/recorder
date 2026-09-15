@@ -260,16 +260,26 @@ SendResult prepareTransfer(const String &name) {
   return SEND_OK;
 }
 
-// Шаг 2: до chunks кусков контрольной суммы. true — файл прочитан целиком.
-bool serviceCrc(int chunks) {
+// Шаг 2: до chunks кусков контрольной суммы.
+//   CRC_MORE  — читать дальше на следующем обороте loop()
+//   CRC_DONE  — файл прочитан целиком
+//   CRC_ERROR — карта перестала отдавать байты раньше конца файла
+// Сам тип CrcStep живёт в Types.h: Arduino вставляет прототипы в начало
+// объединённого файла, раньше тел .ino.
+CrcStep serviceCrc(int chunks) {
   static uint8_t buffer[upl::CHUNK_BYTES];
   for (int i = 0; i < chunks && g_upCrcDone < g_upSize; ++i) {
     const int read = g_upFile.read(buffer, sizeof(buffer));
-    if (read <= 0) break;
+    if (read <= 0) {
+      Serial.printf("[up] Карта отдала %lu из %lu байт, дальше чтения нет.\n",
+                    static_cast<unsigned long>(g_upCrcDone),
+                    static_cast<unsigned long>(g_upSize));
+      return CRC_ERROR;
+    }
     g_upCrc = esp_rom_crc32_le(g_upCrc, buffer, static_cast<uint32_t>(read));
     g_upCrcDone += static_cast<uint32_t>(read);
   }
-  return g_upCrcDone >= g_upSize;
+  return g_upCrcDone >= g_upSize ? CRC_DONE : CRC_MORE;
 }
 
 // Шаг 3: TLS-соединение и заголовки. Тело уходит по кускам из UP_SEND.
@@ -559,7 +569,13 @@ void serviceUpload() {
     case UP_CRC: {
       const int chunks = recording ? upl::CRC_CHUNKS_PER_STEP_RECORDING
                                    : upl::CRC_CHUNKS_PER_STEP_IDLE;
-      if (!serviceCrc(chunks)) {
+      const CrcStep step = serviceCrc(chunks);
+      if (step == CRC_MORE) {
+        return;
+      }
+      if (step == CRC_ERROR) {
+        // Часть остаётся .WAV и уйдёт заново: читать её сейчас нечем.
+        finishTransfer(SEND_RETRY);
         return;
       }
       const SendResult opened = openConnection();

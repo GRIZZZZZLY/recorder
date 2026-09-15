@@ -8,6 +8,11 @@
 enum DeviceState { ST_ARMED, ST_RECORDING, ST_FAULT };
 enum StopReason { STOP_NORMAL, STOP_WRITE_ERROR };
 
+// Шаг подсчёта контрольной суммы части перед отправкой. Третье состояние не
+// для красоты: без него нулевое чтение посреди файла оставило бы отправку
+// ждать вечно, и очередь молча встала бы до перезагрузки.
+enum CrcStep { CRC_MORE, CRC_DONE, CRC_ERROR };
+
 namespace fb {
 constexpr uint8_t MAX_STEPS = 8;
 

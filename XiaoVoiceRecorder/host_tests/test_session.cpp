@@ -197,6 +197,39 @@ static void test_failed_rotation_in_the_middle_stops_dirty() {
   CHECK(!r.fs.has("/REC0007_N01.END") && !r.fs.has("/REC0007_N02.END"));
 }
 
+static void test_tail_after_the_part_limit_becomes_the_next_session() {
+  // 99 частей — 16,5 часа. Хвост, который уже не влезает, не выбрасывается:
+  // сессия закрывается чисто, и он становится предзаписью следующей.
+  Rig r;
+  r.writer.cfg.partMaxBytes = 8192;
+  r.writer.cfg.maxParts = 2;
+  r.capture(30000);
+  CHECK(r.writer.start(7));
+  CHECK(r.drain());
+  CHECK(r.writer.partLimitReached());
+
+  const uint32_t tail = r.ring.available();
+  CHECK(tail > 0);                    // звук, который не влез в сессию 7
+  CHECK(r.writer.stop(true));         // сессия 7 закрыта чисто
+  CHECK(r.fs.has("/REC0007_N02.END"));
+
+  CHECK(r.writer.start(8));           // буфер не трогали: хвост уходит в неё
+  CHECK(r.writer.preRollBytes() == tail);
+  CHECK(r.drain());
+  CHECK(r.writer.stop(true));
+  CHECK(r.fs.has("/REC0008_P01.WAV"));
+  CHECK(r.fs.has("/REC0008_N02.END"));  // хвост занял две части новой сессии
+  // Ни один байт не пропал: обе сессии вместе содержат всё, что записали.
+  uint32_t stored = 0;
+  for (const auto &entry : r.fs.files) {
+    if (entry.first.size() > 4 &&
+        entry.first.compare(entry.first.size() - 4, 4, ".WAV") == 0) {
+      stored += session::getLe32(entry.second.data() + 40);
+    }
+  }
+  CHECK(stored == 30000);
+}
+
 static void test_part_limit_stops_cleanly_with_end() {
   Rig r;
   r.writer.cfg.partMaxBytes = 8192;
@@ -330,6 +363,43 @@ static void test_cleanup_flags_low_card_only_when_nothing_is_left_to_delete() {
   CHECK(fs.files.size() == 3);  // неподтверждённое не тронуто
 }
 
+static void test_cleanup_stops_when_a_pass_deletes_nothing() {
+    // Битая FAT: файл виден, но не удаляется. Пачка набирается заново каждый
+    // проход, поэтому без защиты цикл крутился бы вечно — а очистка идёт при
+    // загрузке, до перехода в ARMED, то есть диктофон вообще не включился бы.
+  FakeStorage fs;
+  const uint64_t MB = 1024 * 1024;
+  for (int s = 1; s <= 3; ++s) {
+    fs.files[sentName(s)] = std::vector<uint8_t>(MB, 0);
+    fs.failRemove.insert(sentName(s));
+  }
+  fs.total = 100 * MB;
+  fs.usedByOthers = 95 * MB;
+
+  g_log.clear();
+  session::CleanupResult r = session::cleanupSent(fs, 50 * MB, 90 * MB, fakeLog);
+
+  CHECK(r.deleted == 0);
+  CHECK(r.cardLow);
+  CHECK(fs.files.size() == 3);  // ничего не потеряно
+  CHECK(logHas("очистка остановлена"));
+}
+
+static void test_cleanup_finishes_the_deletable_ones_even_if_one_is_stuck() {
+  FakeStorage fs;
+  const uint64_t MB = 1024 * 1024;
+  for (int s = 1; s <= 5; ++s) fs.files[sentName(s)] = std::vector<uint8_t>(MB, 0);
+  fs.failRemove.insert(sentName(2));  // один файл не удаляется
+  fs.total = 100 * MB;
+  fs.usedByOthers = 95 * MB;
+
+  session::CleanupResult r = session::cleanupSent(fs, 50 * MB, 99 * MB, fakeLog);
+
+  CHECK(r.deleted == 4);
+  CHECK(fs.has(sentName(2)));
+  CHECK(!fs.has(sentName(1)) && !fs.has(sentName(5)));
+}
+
 static void test_cleanup_does_nothing_while_space_is_fine() {
   FakeStorage fs;
   const uint64_t MB = 1024 * 1024;
@@ -368,6 +438,9 @@ int main() {
   test_recovery_with_nothing_to_do_is_quiet();
   test_max_session_on_card_reads_every_kind_of_file();
   test_cleanup_deletes_oldest_sent_in_batches_until_target();
+  test_cleanup_stops_when_a_pass_deletes_nothing();
+  test_cleanup_finishes_the_deletable_ones_even_if_one_is_stuck();
+  test_tail_after_the_part_limit_becomes_the_next_session();
   test_cleanup_flags_low_card_only_when_nothing_is_left_to_delete();
   test_cleanup_does_nothing_while_space_is_fine();
   test_cleanup_removes_recovered_sent_and_its_marks();
