@@ -21,6 +21,7 @@ export function useSeek() {
  * Один элемент <audio> на страницу: параллельно играющие части путают. Своя
  * кнопка и своя волна вместо `controls` — нативный виджет в тёмной теме
  * выглядит чужим, а главное, не умеет показывать, какая это часть из скольких.
+ * Перемотка — пальцем по волне, а не только тычком в неё.
  */
 export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes = {}, children }: {
   deviceId: string;
@@ -77,12 +78,32 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
     else element.pause();
   }
 
-  /** Клик по волне перематывает внутри части — привычнее, чем ползунок. */
-  function scrub(event: React.MouseEvent<HTMLDivElement>) {
-    const element = audio.current;
-    if (!element || !duration) return;
+  // Перемотка по волне: палец ведёт по ней, время под пальцем меняется сразу,
+  // а сам звук прыгает один раз — на отпускании. Ставить currentTime на каждое
+  // движение нельзя: каждая установка — новый Range-запрос к файлу.
+  const scrubbing = useRef(false);
+
+  function secondsAt(event: React.PointerEvent<HTMLDivElement>) {
     const box = event.currentTarget.getBoundingClientRect();
-    element.currentTime = ((event.clientX - box.left) / box.width) * duration;
+    return Math.min(Math.max((event.clientX - box.left) / box.width, 0), 1) * duration;
+  }
+
+  function onScrubStart(event: React.PointerEvent<HTMLDivElement>) {
+    if (idle || !duration) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    scrubbing.current = true;
+    setPosition(secondsAt(event));
+  }
+
+  function onScrubMove(event: React.PointerEvent<HTMLDivElement>) {
+    if (scrubbing.current) setPosition(secondsAt(event));
+  }
+
+  function onScrubEnd(event: React.PointerEvent<HTMLDivElement>) {
+    if (!scrubbing.current) return;
+    scrubbing.current = false;
+    const element = audio.current;
+    if (element) element.currentTime = secondsAt(event);
   }
 
   const idle = part === null;
@@ -103,7 +124,7 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
           disabled={idle}
           aria-label={playing ? "Пауза" : "Играть"}
           className={cx(
-            "press relative flex size-9 shrink-0 items-center justify-center rounded-chip bg-fill text-canvas disabled:opacity-40 lg:size-10",
+            "press hit relative flex size-9 shrink-0 items-center justify-center rounded-chip bg-fill text-canvas disabled:opacity-40 lg:size-10",
             // Свечение — пока идёт звук; пауза гасит.
             playing && "shadow-glow-fill",
           )}
@@ -123,10 +144,29 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
               {blocked ? <span className="text-text-secondary"> · браузер не разрешил автозапуск</span> : null}
             </span>
             <span className="shrink-0 text-text-secondary">
-              {idle ? `частей ${parts}` : `часть ${String(part).padStart(2, "0")} / ${String(parts).padStart(2, "0")}`}
+              {idle ? `частей ${parts}` : (
+                <>
+                  {/* На телефоне время стоит здесь: при перемотке оно нужнее
+                      слова «часть», а отдельной колонке справа места нет. */}
+                  <span className="font-mono sm:hidden">
+                    <span className="text-text-primary">{formatClock(position)}</span>
+                    {" / "}{formatClock(duration)}{" · "}
+                  </span>
+                  <span className="hidden sm:inline">часть </span>
+                  {String(part).padStart(2, "0")} / {String(parts).padStart(2, "0")}
+                </>
+              )}
             </span>
           </div>
-          <div onClick={scrub} className={cx("relative h-6 lg:h-8", !idle && "cursor-pointer")}>
+          {/* Волна видна на 24 px, а под пальцем — 44 (`hit`). touch-pan-y: вести
+              по ней вбок — перемотка, тянуть вверх — по-прежнему прокрутка страницы. */}
+          <div
+            onPointerDown={onScrubStart}
+            onPointerMove={onScrubMove}
+            onPointerUp={onScrubEnd}
+            onPointerCancel={onScrubEnd}
+            className={cx("hit relative h-6 touch-pan-y select-none lg:h-8", !idle && "cursor-pointer")}
+          >
             <Waveform
               values={thin(envelopes[part ?? 0] ?? [], 100)}
               height={idle ? 12 : 28}
@@ -153,7 +193,7 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
           onPause={() => setPlaying(false)}
           onEnded={() => setPlaying(false)}
           onLoadedMetadata={(event) => setDuration(event.currentTarget.duration || 0)}
-          onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime)}
+          onTimeUpdate={(event) => { if (!scrubbing.current) setPosition(event.currentTarget.currentTime); }}
         />
       </div>
     </SeekContext.Provider>

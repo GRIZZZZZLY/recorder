@@ -94,7 +94,7 @@ export function Chip({
       {...props}
       aria-pressed={selected}
       className={cx(
-        "press rounded-chip px-3 py-1.5 text-note",
+        "press hit relative rounded-chip px-3 py-1.5 text-note",
         selected
           ? "bg-fill text-canvas"
           : "border border-control text-text-secondary hover:border-white/30 hover:text-text-primary",

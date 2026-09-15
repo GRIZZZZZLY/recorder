@@ -183,7 +183,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <div className="flex items-center justify-between px-0.5 py-1">
             <span className="text-section">Ещё</span>
             <button type="button" aria-label="Закрыть" onClick={() => sheet.current?.close()}
-                    className="press rounded-inner p-1 text-text-secondary hover:text-text-primary">
+                    className="press hit relative rounded-inner p-1 text-text-secondary hover:text-text-primary">
               <X size={18} aria-hidden />
             </button>
           </div>

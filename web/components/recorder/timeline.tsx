@@ -9,6 +9,7 @@ import type { SessionRow } from "@/lib/api";
 import {
   formatClock, formatDayShort, formatDuration, formatTime, hoursOfDay, todayIso,
 } from "@/lib/format";
+import { magnetTarget } from "@/lib/magnet";
 import { at } from "@/lib/motion";
 import { sessionHref } from "@/lib/session-link";
 import { STATUS_TEXT, statusTone } from "@/lib/session-status";
@@ -26,13 +27,25 @@ import { cx } from "@/utils/cx";
  * Сутки на плёнке ровно одни: переключение дней — стрелками в шапке, по дням,
  * где записи есть. Бесконечную ленту через все дни сознательно не делаем: она
  * требует подмены scrollLeft на лету, а это гасит инерцию прокрутки на iOS.
+ *
+ * На телефоне модель одна: палец двигает плёнку, головка стоит. Для грубого
+ * указателя головка прозрачна для касаний — иначе полоса в 44 px посреди
+ * экрана перехватывала свайп и тянула плёнку без инерции. Мышью головку
+ * по-прежнему можно схватить. Когда прокрутка кончилась, головка примагничи-
+ * вается к ближайшей записи в радиусе SNAP_PX — сама, мягко, уже после того,
+ * как инерция иссякла: подменять scrollLeft во время инерции нельзя. Нативный
+ * scroll-snap не годится: у WebKit он гасит инерционный скролл (bug 243582).
  */
 const PX_PER_HOUR = 80;
 const DAY_PX = 24 * PX_PER_HOUR;
 /** Минимум ширины блока: минутная запись остаётся узкой, но видимой. Палец
- * попадает по ней за счёт высоты 28 px и подписи рядом, а не за счёт того, что
- * блок раздут до чужой длительности. */
+ * попадает по ней не за счёт того, что блок раздут до чужой длительности, а за
+ * счёт невидимой цели 44 px (`hit`) и магнита. */
 const MIN_BLOCK_PX = 10;
+/** Та же минимальная ширина в секундах: головка над узким блоком — «над записью». */
+const MIN_SECONDS = (MIN_BLOCK_PX / PX_PER_HOUR) * 3600;
+/** Дальность магнита: 24 px — это 18 минут ленты. */
+const SNAP_PX = 24;
 const DAY_SECONDS = 24 * 3600;
 
 /** Цвет волны — состояние записи: готова, ещё считается, упала. */
@@ -46,6 +59,11 @@ const WAVE = {
 function startSeconds(row: SessionRow): number | null {
   const hours = hoursOfDay(row.first_at);
   return hours === null ? null : hours * 3600;
+}
+
+/** Сколько секунд ленты занимает запись — не меньше, чем её блок на экране. */
+function spanSeconds(row: SessionRow) {
+  return Math.max(row.seconds, MIN_SECONDS);
 }
 
 function clamp(value: number, low: number, high: number) {
@@ -74,6 +92,12 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
   const scroller = useRef<HTMLDivElement>(null);
   const frame = useRef(0);
   const drag = useRef<{ pointer: number; x: number; left: number } | null>(null);
+  // Магнит: `held` — палец на плёнке или мышь на головке, снап ждёт; `armed` —
+  // прокрутку начал пользователь, а не код (клавиши, смена дня, «сейчас»), —
+  // только такую и притягиваем; `settle` — таймер тишины для Safari без scrollend.
+  const held = useRef(false);
+  const armed = useRef(false);
+  const settle = useRef(0);
 
   const nowSeconds = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
 
@@ -111,6 +135,28 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
     });
   }, []);
 
+  /** Прокрутка кончилась: если головка встала рядом с записью — доехать до неё. */
+  const snap = useCallback(() => {
+    const box = scroller.current;
+    if (!box || held.current || !armed.current) return;
+    armed.current = false;
+    const x = box.scrollLeft + box.clientWidth / 2 - padRef.current;
+    const spans = dayRows.map((row) => {
+      const start = (startSeconds(row)! / 3600) * PX_PER_HOUR;
+      return { start, end: start + (spanSeconds(row) / 3600) * PX_PER_HOUR };
+    });
+    const target = magnetTarget(x, spans, SNAP_PX);
+    if (target !== null) center((target / PX_PER_HOUR) * 3600, true);
+  }, [dayRows, center]);
+
+  /** Конец прокрутки без scrollend: 150 мс без событий scroll. */
+  const settleLater = useCallback(() => {
+    window.clearTimeout(settle.current);
+    settle.current = window.setTimeout(snap, 150);
+  }, [snap]);
+
+  useEffect(() => () => window.clearTimeout(settle.current), []);
+
   useEffect(() => {
     const box = scroller.current;
     if (!box) return;
@@ -139,6 +185,8 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
     if (!box) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     drag.current = { pointer: event.pointerId, x: event.clientX, left: box.scrollLeft };
+    held.current = true;
+    armed.current = true;
   }
 
   function onPointerMove(event: React.PointerEvent<HTMLElement>) {
@@ -150,7 +198,21 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
   }
 
   function onPointerUp(event: React.PointerEvent<HTMLElement>) {
-    if (drag.current?.pointer === event.pointerId) drag.current = null;
+    if (drag.current?.pointer !== event.pointerId) return;
+    drag.current = null;
+    held.current = false;
+    settleLater();
+  }
+
+  // Палец на плёнке: пока держит — магнит ждёт; отпустил — ждём конца инерции.
+  function onTouchStart() {
+    held.current = true;
+    armed.current = true;
+  }
+
+  function onTouchEnd() {
+    held.current = false;
+    settleLater();
   }
 
   function onKeyDown(event: React.KeyboardEvent) {
@@ -174,12 +236,13 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
   // сессия ровно на этой секунде.
   const under = dayRows.find((row) => {
     const start = startSeconds(row)!;
-    return head >= start && head <= start + Math.max(row.seconds, 1);
+    return head >= start && head <= start + spanSeconds(row);
   });
 
   function openUnderHead() {
     if (!under) return;
-    const offset = Math.max(0, Math.round(head - startSeconds(under)!));
+    // Блок короткой записи шире её самой: секунда не дальше её конца.
+    const offset = clamp(Math.round(head - startSeconds(under)!), 0, under.seconds);
     router.push(`${sessionHref(under.device_id, under.session)}&t=${offset}`);
   }
 
@@ -192,7 +255,7 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
         <div className="flex items-center gap-1">
           <button type="button" aria-label="Предыдущий день" disabled={index <= 0}
                   onClick={() => setDay(days[index - 1])}
-                  className="press -ml-1.5 rounded-inner p-1.5 hover:text-text-primary disabled:opacity-30">
+                  className="press hit relative -ml-1.5 rounded-inner p-1.5 hover:text-text-primary disabled:opacity-30">
             <CaretLeft size={14} aria-hidden />
           </button>
           <span className="min-w-[92px] text-center text-text-primary">
@@ -200,7 +263,7 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
           </span>
           <button type="button" aria-label="Следующий день" disabled={index >= days.length - 1}
                   onClick={() => setDay(days[index + 1])}
-                  className="press rounded-inner p-1.5 hover:text-text-primary disabled:opacity-30">
+                  className="press hit relative rounded-inner p-1.5 hover:text-text-primary disabled:opacity-30">
             <CaretRight size={14} aria-hidden />
           </button>
         </div>
@@ -210,7 +273,7 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
           {awayFromNow && (
             <button type="button"
                     onClick={() => { setDay(today); center(nowSeconds, day === today); }}
-                    className="press rounded-chip border border-control px-2 py-0.5 text-micro hover:text-text-primary">
+                    className="press hit relative rounded-chip border border-control px-2 py-0.5 text-micro hover:text-text-primary">
               сейчас
             </button>
           )}
@@ -222,9 +285,17 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
         <div
           ref={scroller}
           onScroll={() => {
+            settleLater();
             if (frame.current) return;
             frame.current = requestAnimationFrame(() => { frame.current = 0; sync(); });
           }}
+          // Где scrollend есть (Safari 26.2+, Chrome 114+), конец прокрутки
+          // точный; таймер тишины выше — запас для старых Safari.
+          onScrollEnd={() => { window.clearTimeout(settle.current); snap(); }}
+          onTouchStart={onTouchStart}
+          onTouchEnd={onTouchEnd}
+          onTouchCancel={onTouchEnd}
+          onWheel={() => { armed.current = true; }}
           className="no-scrollbar overflow-x-auto overscroll-x-contain"
         >
           {/* Поля по половине видимой ширины: полночь и конец суток тоже должны
@@ -267,7 +338,7 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
                     aria-label={`${label(row)}, ${formatTime(row.first_at)}, ${formatDuration(row.seconds)}, ${STATUS_TEXT[tone]}`}
                     title={`${label(row)} · ${formatDuration(row.seconds)} · ${STATUS_TEXT[tone]}`}
                     className={cx(
-                      "cascade-block press-row absolute top-4 flex h-10 items-center rounded-inner px-px hover:bg-hairline",
+                      "cascade-block press-row hit absolute top-4 flex h-10 items-center rounded-inner px-px hover:bg-hairline",
                       active && "bg-hairline",
                     )}
                     style={{ left, width, animationDelay: delay }}
@@ -304,7 +375,8 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
           </div>
         </div>
 
-        {/* Головка: тянется мышью и пальцем, ходит стрелками с клавиатуры. */}
+        {/* Головка: тянется мышью, ходит стрелками с клавиатуры. Для пальца
+            прозрачна — свайп идёт плёнке, открыть запись можно подписью ниже. */}
         <button
           type="button"
           role="slider"
@@ -319,7 +391,7 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
           onPointerCancel={onPointerUp}
           onKeyDown={onKeyDown}
           onClick={openUnderHead}
-          className="absolute top-0 bottom-0 left-1/2 flex w-11 -translate-x-1/2 cursor-grab touch-none items-start justify-center active:cursor-grabbing"
+          className="absolute top-0 bottom-0 left-1/2 flex w-11 -translate-x-1/2 cursor-grab touch-none items-start justify-center active:cursor-grabbing pointer-coarse:pointer-events-none"
         >
           <span aria-hidden className="absolute top-0 bottom-0 w-px bg-accent shadow-glow-accent-soft" />
           <span aria-hidden className="absolute -top-1 size-2 rounded-chip bg-accent" />
@@ -331,7 +403,10 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
         <span className="font-mono text-accent-text">{headLabel}</span>
         {under ? (
           <button type="button" onClick={openUnderHead}
-                  className="press min-w-0 truncate text-text-primary hover:underline">
+                  // Цель 44 px за счёт полей, а не `hit`: truncate режет всё, что
+                  // выходит за рамку, невидимый слой тоже. Отрицательные поля
+                  // возвращают строке прежнюю высоту.
+                  className="press -my-3.5 min-w-0 truncate py-3.5 text-text-primary hover:underline">
             {label(under)} · {formatClock(Math.max(0, head - startSeconds(under)!))}
           </button>
         ) : (
