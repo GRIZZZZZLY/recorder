@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 import { Pause, Play } from "@phosphor-icons/react/dist/ssr";
-import { thin, Waveform } from "@/components/recorder/waveform";
+import { Waveform } from "@/components/recorder/waveform";
 import type { Mark } from "@/lib/api";
 import { formatClock } from "@/lib/format";
 import { cx } from "@/utils/cx";
@@ -172,7 +172,7 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
                           !idle && "cursor-pointer")}
           >
             <Waveform
-              values={thin(envelopes[part ?? 0] ?? [], 100)}
+              values={envelopes[part ?? 0] ?? []}
               height={idle ? 12 : 28}
               played={duration ? position / duration : 0}
               className="w-full"

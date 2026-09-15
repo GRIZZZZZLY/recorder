@@ -160,9 +160,9 @@ def test_envelope_is_measured_from_the_audio(client):
     import db as db_module, json
     with db_module.connect() as conn:
         values = json.loads(conn.execute("SELECT envelope FROM parts").fetchone()[0])
-    assert len(values) == 4                        # две секунды на значение
-    assert values[:2] == [100, 100]
-    assert all(2 <= value <= 10 for value in values[2:]), values
+    assert len(values) == 16                       # полсекунды на значение
+    assert values[:8] == [100] * 8
+    assert all(2 <= value <= 10 for value in values[8:]), values
 
 
 def test_broken_marks_header_is_rejected(client):

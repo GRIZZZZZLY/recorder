@@ -4,7 +4,7 @@ import { BookmarkSimple } from "@phosphor-icons/react/dist/ssr";
 import { Card, RowLink, Section, SessionNo } from "@/components/recorder/list";
 import { PageHeader } from "@/components/recorder/page-header";
 import { Empty, Failed, Loading } from "@/components/recorder/states";
-import { thin, Waveform } from "@/components/recorder/waveform";
+import { Waveform } from "@/components/recorder/waveform";
 import { Dot } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import type { SessionRow } from "@/lib/api";
@@ -76,7 +76,7 @@ export default function RecordsPage() {
                         {row.marks.length}
                       </span>
                     )}
-                    <Waveform values={thin(row.envelope, 50)} height={24}
+                    <Waveform values={row.envelope} height={24}
                               className="wave-grow hidden w-[220px] shrink-0 lg:flex" />
                     <span className="shrink-0 text-right text-note text-text-secondary">
                       {formatDuration(row.seconds)}

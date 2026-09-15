@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { CaretLeft, CaretRight } from "@phosphor-icons/react/dist/ssr";
-import { thin, Waveform } from "@/components/recorder/waveform";
+import { Waveform } from "@/components/recorder/waveform";
 import type { SessionRow } from "@/lib/api";
 import {
   formatClock, formatDayShort, formatDuration, formatTime, hoursOfDay, todayIso,
@@ -357,7 +357,7 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
                     )}
                     style={{ left, width, animationDelay: delay }}
                   >
-                    <Waveform values={thin(row.envelope, Math.max(2, Math.floor(width / 2)))}
+                    <Waveform values={row.envelope} bar={2} gap={1}
                               height={32} tone={WAVE[tone]} className="w-full"
                               style={{ animationDelay: delay }} />
                   </Link>
