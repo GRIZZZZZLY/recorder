@@ -171,6 +171,19 @@ CREATE TABLE IF NOT EXISTS device_state (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Настоящий день записи, если владелец его уточнил. По умолчанию днём
+-- разговора считается день выгрузки первой части: часы диктофона не
+-- синхронизированы, и другого источника даты в данных нет. Записал в
+-- понедельник, выгрузил в среду — «сделаю завтра» уехало на четверг, а от
+-- дня разговора считаются все сроки задач. Строка появляется только после
+-- правки руками: пустая таблица означает «дату не уточняли».
+CREATE TABLE IF NOT EXISTS recording_days (
+    device_id TEXT    NOT NULL,
+    session   INTEGER NOT NULL,
+    day       TEXT    NOT NULL,          -- YYYY-MM-DD
+    PRIMARY KEY (device_id, session)
+);
+
 -- «Пози флора» и «Posiflora» — один проект. Ключ нормализован, отображаемое
 -- имя проекта хранится как написал владелец.
 CREATE TABLE IF NOT EXISTS project_aliases (
@@ -515,6 +528,15 @@ def set_speaker(conn, device_id, session, part, speaker, name, is_me):
         " name=excluded.name, is_me=excluded.is_me",
         (device_id, session, part, speaker, name.strip(), 1 if is_me else 0),
     )
+    # Имя попадает в транскрипт, который читает модель: исполнитель задачи
+    # стоит там именем, а не номером. Значит, переименование делает саммари
+    # устаревшим ровно так же, как поздняя часть. parts_covered=0 возвращает
+    # сессию в очередь, next_try_at снимает паузу после прошлых неудач.
+    conn.execute(
+        "UPDATE summaries SET parts_covered=0, next_try_at=datetime('now')"
+        " WHERE device_id=? AND session=?",
+        (device_id, session),
+    )
     conn.commit()
 
 
@@ -593,6 +615,11 @@ def session_transcript(conn, device_id, session):
     marks = session_marks(conn, device_id, session)
     parts = sorted({u["part"] for u in timeline} | set(failed))
     blocks = []
+    if len({u["label"] for u in timeline}) == 1:
+        # Один голос на всю запись — это заметка вслух, а не разговор, и разбор
+        # у неё другой. Считаем по данным: номер говорящего у каждой реплики
+        # модель видит и сама, но вывод из него делает не всегда.
+        blocks.append("[во всей записи один голос]")
     if len(parts) > 1:
         # Каждая часть распознавалась отдельно, поэтому номера говорящих в
         # разных частях друг с другом не связаны. Без этой строки модель
@@ -816,6 +843,38 @@ def item_id(item):
     return hashlib.sha1(base.encode("utf-8")).hexdigest()[:16]
 
 
+def source_pos(source):
+    """(часть, реплика) у подтверждённого источника, иначе None.
+
+    Неподтверждённый источник — ближайшая по времени реплика, то есть догадка.
+    Сводить по ней два пункта значит объявить их одним по совпадению секунды.
+    """
+    if not source or not source.get("confirmed") or source.get("part") is None:
+        return None
+    return source["part"], source["idx"]
+
+
+def tasks_by_source(conn, device_id, session):
+    """{(часть, реплика): task_id} по уже сохранённым задачам сессии.
+
+    Первая задача с этой реплики выигрывает: из одной фразы («сделаю смету и
+    отправлю») модель иногда достаёт две задачи, и вторая получит свой
+    идентификатор от текста.
+    """
+    known = {}
+    for row in conn.execute(
+        "SELECT task_id, source FROM tasks WHERE device_id=? AND session=?"
+        " ORDER BY created_at, task_id", (device_id, session),
+    ).fetchall():
+        try:
+            pos = source_pos(json.loads(row["source"] or "null"))
+        except json.JSONDecodeError:
+            continue
+        if pos:
+            known.setdefault(pos, row["task_id"])
+    return known
+
+
 def done_summaries(conn):
     """[(device_id, session, результат)] по готовым саммари, свежие первыми."""
     out = []
@@ -833,8 +892,9 @@ def done_summaries(conn):
 def session_days(conn):
     """{(устройство, сессия): дата разговора}.
 
-    Дата берётся из времени выгрузки первой части: часы диктофона пока не
-    синхронизированы, настоящего времени записи в данных нет.
+    По умолчанию — день выгрузки первой части: часы диктофона пока не
+    синхронизированы, настоящего времени записи в данных нет. Уточнённая
+    владельцем дата перекрывает его.
     """
     days = {}
     for row in conn.execute(
@@ -843,15 +903,56 @@ def session_days(conn):
     ).fetchall():
         if row["first"]:
             days[(row["device_id"], row["session"])] = date.fromisoformat(row["first"][:10])
+    for row in conn.execute("SELECT device_id, session, day FROM recording_days").fetchall():
+        days[(row["device_id"], row["session"])] = date.fromisoformat(row["day"])
     return days
 
 
 def session_day(conn, device_id, session):
+    fixed = conn.execute(
+        "SELECT day FROM recording_days WHERE device_id=? AND session=?",
+        (device_id, session),
+    ).fetchone()
+    if fixed:
+        return date.fromisoformat(fixed["day"])
     row = conn.execute(
         "SELECT MIN(received_at) AS first FROM parts WHERE device_id=? AND session=?",
         (device_id, session),
     ).fetchone()
     return date.fromisoformat(row["first"][:10]) if row and row["first"] else date.today()
+
+
+def set_recording_day(conn, device_id, session, day):
+    """Уточнить день разговора. day=None — вернуться ко дню выгрузки.
+
+    Сроки задач считаются от дня разговора, поэтому пересчитываются здесь же:
+    «в пятницу», сказанное в понедельник и в среду, — разные даты. Пересчёт
+    идёт из сохранённого due_said, модель для этого не нужна.
+
+    Возвращает получившийся день.
+    """
+    if day is None:
+        conn.execute("DELETE FROM recording_days WHERE device_id=? AND session=?",
+                     (device_id, session))
+    else:
+        conn.execute(
+            "INSERT INTO recording_days (device_id, session, day) VALUES (?,?,?)"
+            " ON CONFLICT(device_id, session) DO UPDATE SET day=excluded.day",
+            (device_id, session, day.isoformat()),
+        )
+    base = session_day(conn, device_id, session)
+    for row in conn.execute(
+        "SELECT task_id, due_said FROM tasks"
+        " WHERE device_id=? AND session=? AND due_said != ''",
+        (device_id, session),
+    ).fetchall():
+        due = duedate.parse_due(row["due_said"], base)
+        conn.execute(
+            "UPDATE tasks SET due_date=? WHERE device_id=? AND session=? AND task_id=?",
+            (due.isoformat() if due else None, device_id, session, row["task_id"]),
+        )
+    conn.commit()
+    return base
 
 
 def sync_tasks(conn, device_id, session, tasks):
@@ -861,9 +962,17 @@ def sync_tasks(conn, device_id, session, tasks):
     молча убрать то, что владелец уже читал, — потеря.
     """
     day = session_day(conn, device_id, session)
+    known = tasks_by_source(conn, device_id, session)
+    fresh = {item_id(item) for item in tasks or []}
     seen = []
     for item in tasks or []:
         task_id = item_id(item)
+        # Та же реплика, другие слова: модель пересказала задачу при пересборке.
+        # Без этой привязки закрытая задача вернулась бы новой строкой, а старая
+        # получила бы «исчезла из саммари» — владелец закрывал бы её дважды.
+        same_place = known.get(source_pos(item.get("source")))
+        if same_place and same_place not in fresh and same_place not in seen:
+            task_id = same_place
         seen.append(task_id)
         due_said = (item.get("due") or "").strip()
         due = duedate.parse_due(due_said, day)

@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, memo, useCallback, useEffect, useMemo, useRef } from "react";
+import { Suspense, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { BookmarkSimple } from "@phosphor-icons/react/dist/ssr";
 import { Card, Row, Section, SessionNo, Time } from "@/components/recorder/list";
@@ -14,8 +14,9 @@ import { Dot, Evidence, Retry, SourceDot, Tag } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import { at } from "@/lib/motion";
 import { revealUtterance } from "@/lib/reveal";
+import { apiPost } from "@/lib/api";
 import type { Mark, Question, Summary, Task, Utterance } from "@/lib/api";
-import { count, formatClock, formatDay, formatTime } from "@/lib/format";
+import { count, formatClock, formatDay, formatTime, todayIso } from "@/lib/format";
 import { cx } from "@/utils/cx";
 
 type Part = {
@@ -63,6 +64,61 @@ function Parts({ parts }: { parts: Part[] }) {
           />
         ))}
       </div>
+    </Section>
+  );
+}
+
+/**
+ * День разговора. По умолчанию это день выгрузки первой части: часов у
+ * диктофона нет. Запись, сделанная в понедельник и выгруженная в среду,
+ * превращает «сделаю завтра» в четверг — а от дня разговора считаются все
+ * сроки задач. Поэтому дату можно поправить; сроки пересчитываются сразу.
+ */
+function RecordedOn({ deviceId, session, day, onSaved }: {
+  deviceId: string;
+  session: number;
+  day: string;
+  onSaved: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(value: string) {
+    if (!value) return;
+    setBusy(true);
+    try {
+      await apiPost(`/sessions/${encodeURIComponent(deviceId)}/${session}/day`, { day: value });
+      setError(null);
+      onSaved();
+    } catch (err) {
+      setError(`не удалось сохранить: ${(err as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Section note="День разговора" at={2}>
+      <Card>
+        <Row>
+          {/* Нативный выбор даты: календарь телефона и клавиатурный ввод
+              бесплатно, и он уже знает про тёмную тему страницы. */}
+          <input
+            type="date"
+            value={day}
+            max={todayIso()}
+            disabled={busy}
+            aria-label="День разговора"
+            onChange={(event) => save(event.target.value)}
+            className="min-w-0 flex-1 rounded-inner bg-transparent px-2 py-1 text-row text-text-primary transition-colors hover:bg-hairline"
+          />
+        </Row>
+      </Card>
+      <p className="px-1 text-note text-text-secondary">
+        По умолчанию — день выгрузки. От него считаются сроки: «в пятницу» из понедельника
+        и из среды — разные даты.
+      </p>
+      {error ? <p className="rise-in px-1 text-note text-accent-text">{error}</p> : null}
     </Section>
   );
 }
@@ -390,6 +446,8 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
         <div className="flex flex-col gap-6">
           <SpeakersForm key={JSON.stringify(data.speakers)} deviceId={data.device_id}
                         session={data.session} speakers={data.speakers} onSaved={reload} />
+          <RecordedOn deviceId={data.device_id} session={data.session} day={data.day.slice(0, 10)}
+                      onSaved={reload} />
           <SpeechShare timeline={data.timeline} />
           <Parts parts={data.parts} />
 

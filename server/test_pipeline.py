@@ -710,6 +710,147 @@ def test_task_survives_summary_rebuild_and_keeps_manual_status(env, monkeypatch)
         assert [t["text"] for t in env.db.task_rows(conn)] == ["Совсем другая задача"]
 
 
+def test_rephrased_task_keeps_its_id_and_manual_status(env, monkeypatch):
+    """Пересобранное саммари пересказывает ту же задачу другими словами.
+
+    Идентификатор считается из текста, поэтому пересказ заводил новую строку,
+    а закрытая владельцем задача получала «исчезла из саммари». Задача
+    привязана к своей реплике, и по ней узнаётся та же самая.
+    """
+    upload(env, part=1)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
+
+    rephrased = json.loads(json.dumps(SUMMARY))
+    rephrased["tasks"] = [{"text": "Отправить смету заказчику", "owner": "Мария",
+                           "due": "пятница", "time": "0:00:01",
+                           "quote": "выслать смету заказчику"}]
+    versions = [SUMMARY, rephrased]
+    calls = []
+
+    def staged(text):
+        calls.append(text)
+        return json.loads(json.dumps(versions[min(len(calls) - 1, len(versions) - 1)]))
+
+    monkeypatch.setattr(env.worker.summarize, "summarize", staged)
+    run_all(env)
+
+    with closing(env.db.connect()) as conn:
+        rows = env.db.task_rows(conn)
+        assert len(rows) == 1
+        task_id = rows[0]["task_id"]
+        env.db.set_task_status(conn, "xiao-01", 7, task_id, "done")
+
+    upload(env, part=2, marker=2)          # поздняя часть пересобирает саммари
+    run_all(env)
+
+    with closing(env.db.connect()) as conn:
+        after = conn.execute("SELECT task_id, text, status, vanished FROM tasks").fetchall()
+    assert len(after) == 1, "пересказ той же задачи завёл вторую строку"
+    assert after[0]["task_id"] == task_id
+    assert after[0]["text"] == "Отправить смету заказчику"   # текст всё же обновился
+    assert after[0]["status"] == "done" and after[0]["vanished"] == 0
+
+
+def test_two_tasks_from_one_reply_stay_two_tasks(env, monkeypatch):
+    """Из одной фразы модель достаёт две задачи. Привязка к реплике не должна
+    сводить их в одну: реплика та же, а дела разные."""
+    upload(env, part=1)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
+    result = json.loads(json.dumps(SUMMARY))
+    result["tasks"] = [
+        {"text": "Посчитать смету", "owner": "", "due": "", "time": "0:00:01",
+         "quote": "выслать смету заказчику"},
+        {"text": "Отправить смету", "owner": "", "due": "", "time": "0:00:01",
+         "quote": "выслать смету заказчику"},
+    ]
+    summary_stub(env, monkeypatch, result)
+    run_all(env)
+
+    with closing(env.db.connect()) as conn:
+        rows = env.db.task_rows(conn)
+    assert sorted(t["text"] for t in rows) == ["Отправить смету", "Посчитать смету"]
+
+
+def test_renaming_a_speaker_rebuilds_the_summary(env, monkeypatch):
+    """Имя говорящего уходит в транскрипт, который читает модель: исполнителя
+    задачи она берёт оттуда. Значит, переименование делает саммари устаревшим
+    так же, как поздняя часть, — иначе в задаче остался бы «Говорящий 1»."""
+    upload(env, part=1)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
+    seen = []
+
+    def remember(text):
+        seen.append(text)
+        return json.loads(json.dumps(SUMMARY))
+
+    monkeypatch.setattr(env.worker.summarize, "summarize", remember)
+    run_all(env)
+    assert len(seen) == 1 and "Говорящий 1:" in seen[0]
+
+    with closing(env.db.connect()) as conn:
+        env.db.set_speaker(conn, "xiao-01", 7, 1, 0, "Мария", False)
+    run_all(env)
+    assert len(seen) == 2, "саммари осталось со старым именем"
+    assert "Мария:" in seen[1]
+
+    # Пересборка одноразовая: без новых поводов очередь пуста.
+    run_all(env)
+    assert len(seen) == 2
+
+
+def test_owner_fixes_the_recording_day_and_due_dates_follow(env, monkeypatch):
+    """Часов у диктофона нет, поэтому днём разговора считается день выгрузки.
+    Записанное в понедельник и выгруженное в среду «сделаю завтра» стало бы
+    четвергом. Исправленный день пересчитывает сроки из сказанного вслух."""
+    from datetime import timedelta
+
+    upload(env)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
+    result = json.loads(json.dumps(SUMMARY))
+    result["tasks"] = [{"text": "Выслать смету", "owner": "Мария", "due": "завтра",
+                        "time": "0:00:01", "quote": "к пятнице выслать смету заказчику"}]
+    summary_stub(env, monkeypatch, result)
+    run_all(env)
+
+    with closing(env.db.connect()) as conn:
+        uploaded = env.db.session_day(conn, "xiao-01", 7)
+        assert env.db.task_rows(conn)[0]["due_date"] == (uploaded + timedelta(days=1)).isoformat()
+
+        spoken = uploaded - timedelta(days=2)
+        assert env.db.set_recording_day(conn, "xiao-01", 7, spoken) == spoken
+        assert env.db.session_day(conn, "xiao-01", 7) == spoken
+        assert env.db.session_days(conn)[("xiao-01", 7)] == spoken
+        assert env.db.task_rows(conn)[0]["due_date"] == (spoken + timedelta(days=1)).isoformat()
+
+        # Отказ от правки возвращает и день, и срок.
+        env.db.set_recording_day(conn, "xiao-01", 7, None)
+        assert env.db.session_day(conn, "xiao-01", 7) == uploaded
+        assert env.db.task_rows(conn)[0]["due_date"] == (uploaded + timedelta(days=1)).isoformat()
+
+
+def test_one_voice_is_marked_as_a_note_for_the_model(env, monkeypatch):
+    """Заметка вслух разбирается не как разговор: решений и договорённостей
+    в ней нет. Один голос определяется по данным, а не догадкой модели."""
+    upload(env, session=11, part=1)
+    upload(env, session=12, part=1)
+
+    def by_session(path):
+        alone = [(1.0, 0, "Идея: предзапись на тридцать секунд."),
+                 (6.0, 0, "Проверить, хватит ли памяти.")]
+        return env.transcribe.parse_payload(
+            deepgram_reply(alone if "_S0011_" in path else PART_TEXTS[1]))
+
+    monkeypatch.setattr(env.transcribe, "transcribe_file", by_session)
+    summary_stub(env, monkeypatch)
+    run_all(env)
+
+    with closing(env.db.connect()) as conn:
+        note = env.db.session_transcript(conn, "xiao-01", 11)
+        talk = env.db.session_transcript(conn, "xiao-01", 12)
+    assert "[во всей записи один голос]" in note
+    assert "один голос" not in talk, "разговор двоих объявлен заметкой"
+
+
 def test_my_tasks_come_from_speaker_marked_as_me(env, monkeypatch):
     upload(env)
     monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))

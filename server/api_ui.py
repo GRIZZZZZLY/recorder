@@ -4,6 +4,7 @@
 """
 import json
 from contextlib import closing
+from datetime import date
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,6 +21,12 @@ class Speakers(BaseModel):
 
     names: dict[str, str] = {}
     me: str | None = None
+
+
+class RecordingDay(BaseModel):
+    """День разговора, уточнённый владельцем. null — вернуть день выгрузки."""
+
+    day: str | None = None
 
 
 class TaskStatus(BaseModel):
@@ -148,6 +155,26 @@ def save_speakers(device_id: str, session: int, body: Speakers, _=Depends(owner)
             db.set_speaker(conn, device_id, session, part, speaker, name[:60],
                            me == (part, speaker))
     return {"ok": True}
+
+
+@router.post("/sessions/{device_id}/{session}/day")
+def save_day(device_id: str, session: int, body: RecordingDay, _=Depends(owner)):
+    """Поправить день разговора и пересчитать сроки задач этой сессии.
+
+    По умолчанию днём считается день выгрузки первой части: часов у диктофона
+    нет. Запись понедельника, выгруженная в среду, делает «завтра» четвергом.
+    """
+    day = None
+    if body.day:
+        try:
+            day = date.fromisoformat(body.day)
+        except ValueError:
+            raise HTTPException(400, "дата ожидается в виде ГГГГ-ММ-ДД")
+        if day > date.today():
+            raise HTTPException(400, "разговор не мог состояться в будущем")
+    with closing(db.connect()) as conn:
+        result = db.set_recording_day(conn, device_id, session, day)
+    return {"day": result.isoformat()}
 
 
 @router.get("/tasks")

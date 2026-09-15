@@ -236,6 +236,32 @@ def test_speakers_are_saved_as_json(env, monkeypatch):
                                                                     "is_me": True}
 
 
+def test_recording_day_is_fixed_by_the_owner_and_validated(env, monkeypatch):
+    """День разговора правится руками: другого источника даты нет. Мусор и
+    будущее не принимаются — выдуманный день сдвинул бы все сроки задач."""
+    from datetime import date, timedelta
+
+    prepared(env, monkeypatch)
+    spoken = (date.today() - timedelta(days=2)).isoformat()
+    ahead = (date.today() + timedelta(days=1)).isoformat()
+    with TestClient(env.app) as client:
+        assert client.post("/api/ui/sessions/xiao-01/7/day", auth=AUTH,
+                           json={"day": "позавчера"}).status_code == 400
+        assert client.post("/api/ui/sessions/xiao-01/7/day", auth=AUTH,
+                           json={"day": ahead}).status_code == 400
+
+        saved = client.post("/api/ui/sessions/xiao-01/7/day", auth=AUTH, json={"day": spoken})
+        assert saved.status_code == 200 and saved.json() == {"day": spoken}
+        assert client.get("/api/ui/sessions/xiao-01/7", auth=AUTH).json()["day"] == spoken
+        # Срок «пятница» пересчитан от нового дня, а не от дня выгрузки.
+        task = client.get("/api/ui/tasks", auth=AUTH).json()["tasks"][0]
+        assert task["due_date"] == env.duedate.parse_due("пятница",
+                                                         date.fromisoformat(spoken)).isoformat()
+
+        assert client.post("/api/ui/sessions/xiao-01/7/day", auth=AUTH,
+                           json={"day": None}).status_code == 200
+
+
 def test_api_requires_password(env):
     with TestClient(env.app) as client:
         assert client.get("/api/ui/digest").status_code == 401
