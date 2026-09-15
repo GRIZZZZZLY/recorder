@@ -230,6 +230,8 @@ export function Dot({ tone, live, flash, size = 8, title }: {
         "inline-block shrink-0 rounded-chip",
         size === 8 ? "size-2" : "size-1.5",
         DOT_TONES[tone],
+        // Линза светодиода; у пустого контура «не найден» подсвечивать нечего.
+        tone !== "missing" && "shadow-lens",
         live && "live-dot",
         flash && tone !== "missing" && tone !== "muted" && "dot-flash",
         // Красная точка без пульса — ошибка: светится ровно, её надо видеть.

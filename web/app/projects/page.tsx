@@ -71,7 +71,7 @@ export default function ProjectsPage() {
             <Link
               key={project.name}
               href={`/project/?name=${encodeURIComponent(project.name)}`}
-              className="press-row flex flex-col gap-3.5 rounded-card bg-surface p-5 transition-shadow duration-150 hover:bg-surface-elevated hover:shadow-lit"
+              className="press-row flex flex-col gap-3.5 rounded-card bg-surface p-5 shadow-plate transition-shadow duration-150 hover:bg-surface-elevated hover:shadow-lit"
             >
               <span className="text-card-title text-text-primary">{project.name}</span>
               <span className="text-note text-text-secondary">

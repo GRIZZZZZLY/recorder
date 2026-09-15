@@ -44,7 +44,7 @@ export function Card({ className, style, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <div className={cx("overflow-hidden rounded-card bg-surface text-row", className)} style={style}>
+    <div className={cx("overflow-hidden rounded-card bg-surface text-row shadow-plate", className)} style={style}>
       {children}
     </div>
   );

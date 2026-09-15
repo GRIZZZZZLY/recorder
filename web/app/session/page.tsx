@@ -48,7 +48,7 @@ type Detail = {
 function Parts({ parts }: { parts: Part[] }) {
   return (
     <Section note={`Части · ${parts.length}`} at={2}>
-      <div className="flex gap-1.5 rounded-card bg-surface px-4 py-3.5">
+      <div className="flex gap-1.5 rounded-card bg-surface shadow-plate px-4 py-3.5">
         {parts.map((part, index) => (
           <span
             key={part.part}
@@ -108,7 +108,7 @@ function Transcript({ timeline, marked }: { timeline: Utterance[]; marked: Set<s
                   >
                     <Time className={marked.has(id) ? "flex items-center gap-1.5 text-text-primary" : undefined}>
                       {marked.has(id) && (
-                        <BookmarkSimple size={12} weight="fill" aria-label="отмечено кнопкой" />
+                        <BookmarkSimple size={12} weight="fill" aria-label="отмечено кнопкой" className="text-mark" />
                       )}
                       {formatClock(utterance.start_abs)}
                     </Time>
@@ -220,7 +220,7 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
               <Card className="cascade">
                 {data.marks.map((mark) => (
                   <Row key={`${mark.part}-${mark.offset}`} className="gap-3.5">
-                    <BookmarkSimple size={14} weight="fill" aria-hidden className="shrink-0" />
+                    <BookmarkSimple size={14} weight="fill" aria-hidden className="shrink-0 text-mark" />
                     <Time className="shrink-0">{mark.time}</Time>
                     <span className="min-w-0 flex-1">
                       {mark.text || <span className="text-text-secondary">часть ещё не расшифрована</span>}

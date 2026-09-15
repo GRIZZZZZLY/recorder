@@ -254,7 +254,7 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
   const awayFromNow = day !== today || Math.abs(head - nowSeconds) > 1800;
 
   return (
-    <div className="enter flex flex-col gap-2.5 rounded-card bg-surface px-5 pt-4 pb-3.5" style={at(tick)}>
+    <div className="enter flex flex-col gap-2.5 rounded-card bg-surface px-5 pt-4 pb-3.5 shadow-plate" style={at(tick)}>
       <div className="flex items-center justify-between gap-3 text-note text-text-secondary">
         <div className="flex items-center gap-1">
           <button type="button" aria-label="Предыдущий день" disabled={index <= 0}
@@ -284,8 +284,9 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
         </div>
       </div>
 
-      {/* Плёнка. Головка лежит поверх и не скроллится вместе с ней. */}
-      <div className="relative">
+      {/* Плёнка лежит в нише: тень у верхней кромки, освещённая нижняя, холоднее
+          корпуса. Головка — слой управления поверх ниши, не скроллится с ней. */}
+      <div className="relative -mx-2 rounded-inner bg-well px-2 shadow-well">
         <div
           ref={scroller}
           onScroll={() => {
@@ -311,8 +312,11 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
             <div aria-hidden className="absolute inset-0">
               {Array.from({ length: 24 }, (_, hour) => (
                 <div key={hour} style={{ left: hour * PX_PER_HOUR, width: PX_PER_HOUR, ...at(tick, hour) }}
-                     className="ruler-line absolute top-0 bottom-0 border-l border-hairline" />
+                     className="ruler-line absolute top-0 bottom-0 border-l border-hairline-strong" />
               ))}
+              {/* Гравировка четвертей часа по верхней кромке: 20 px — 15 минут. */}
+              <div className="absolute inset-x-0 top-0 h-1"
+                   style={{ backgroundImage: "repeating-linear-gradient(90deg, var(--color-hairline-strong) 0 1px, transparent 1px 20px)" }} />
             </div>
 
             {day === today && (
@@ -348,6 +352,8 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
                     className={cx(
                       "cascade-block press-row hit absolute top-4 flex h-10 items-center rounded-inner px-px hover:bg-hairline",
                       NEAR_BG[near],
+                      // Запись под головкой — чуть ярче и резче соседей.
+                      near === 3 && "brightness-110",
                     )}
                     style={{ left, width, animationDelay: delay }}
                   >
@@ -364,7 +370,7 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
                             left: left + clamp((mark / 3600) * PX_PER_HOUR, 0, width),
                             animationDelay: delay,
                           }}
-                          className="cascade-block absolute top-1.5 -translate-x-1/2 border-x-[3px] border-t-[5px] border-x-transparent border-t-fill" />
+                          className="cascade-block absolute top-1.5 -translate-x-1/2 border-x-[3px] border-t-[5px] border-x-transparent border-t-mark" />
                   ))}
                 </Fragment>
               );
@@ -408,7 +414,8 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
 
       {/* Подпись под головкой: время, а если под ней запись — её имя. */}
       <div className="flex items-baseline justify-center gap-2 text-note">
-        <span className="font-mono text-accent-text">{headLabel}</span>
+        {/* Показание прибора: одно крупное число на экране. */}
+        <span className="font-mono text-[22px] leading-none text-accent-text">{headLabel}</span>
         {under ? (
           <button type="button" onClick={openUnderHead}
                   // Цель 44 px за счёт полей, а не `hit`: truncate режет всё, что

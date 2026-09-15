@@ -47,7 +47,7 @@ export function Empty({ title, text, action }: {
   const flat = new Array(40).fill(3);
   const loud = Array.from({ length: 40 }, (_, index) => 4 + ((index * 7) % 13));
   return (
-    <div className="enter flex flex-col items-center gap-2 rounded-card bg-surface px-6 py-9 text-center" style={at(1)}>
+    <div className="enter flex flex-col items-center gap-2 rounded-card bg-surface shadow-plate px-6 py-9 text-center" style={at(1)}>
       <div aria-hidden className="flex h-6 items-center gap-0.5 opacity-50">
         {flat.map((value, index) => (
           <span key={index} className="settle w-0.5 rounded-[1px] bg-text-tertiary"
@@ -69,7 +69,7 @@ export function EmptyNote({ children }: { children: React.ReactNode }) {
 export function Failed({ error, onRetry }: { error: Error; onRetry: () => void }) {
   const auth = error instanceof AuthError;
   return (
-    <div className="rise-in flex items-center gap-3.5 rounded-card bg-surface p-5 text-row">
+    <div className="rise-in flex items-center gap-3.5 rounded-card bg-surface shadow-plate p-5 text-row">
       <Dot tone="accent" />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span>{auth ? "Нужен вход заново — обновите страницу" : "Не удалось загрузить данные"}</span>

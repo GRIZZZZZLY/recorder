@@ -72,7 +72,7 @@ export default function RecordsPage() {
                     {row.marks.length > 0 && (
                       <span className="flex shrink-0 items-center gap-1 text-note text-text-secondary"
                             title={`отмечено кнопкой: ${row.marks.length}`}>
-                        <BookmarkSimple size={12} weight="fill" aria-hidden />
+                        <BookmarkSimple size={12} weight="fill" aria-hidden className="text-mark" />
                         {row.marks.length}
                       </span>
                     )}

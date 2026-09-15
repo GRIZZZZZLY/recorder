@@ -79,7 +79,7 @@ function Body() {
                   <SessionNo session={item.session} />
                 </Link>
               </div>
-              <div className="flex flex-col gap-3.5 rounded-card bg-surface px-5 py-4.5 text-row">
+              <div className="flex flex-col gap-3.5 rounded-card bg-surface shadow-plate px-5 py-4.5 text-row">
                 <p className="leading-normal">{item.summary || "саммари ещё не собрано"}</p>
                 {(item.decisions.length || item.tasks.length || item.open_questions.length) ? (
                   <div className="grid gap-4 border-t border-hairline pt-3 text-note sm:grid-cols-3">

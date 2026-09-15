@@ -125,8 +125,10 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
           aria-label={playing ? "Пауза" : "Играть"}
           className={cx(
             "press hit relative flex size-9 shrink-0 items-center justify-center rounded-chip bg-fill text-canvas disabled:opacity-40 lg:size-10",
+            // Клавиша выпуклая; нажатие коротко уводит её в поверхность.
+            "shadow-key active:translate-y-px active:shadow-key-pressed",
             // Свечение — пока идёт звук; пауза гасит.
-            playing && "shadow-glow-fill",
+            playing && "shadow-key-lit",
           )}
         >
           {/* Обе иконки лежат друг на друге: смена play ↔ pause — кроссфейд за
@@ -165,7 +167,9 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
             onPointerMove={onScrubMove}
             onPointerUp={onScrubEnd}
             onPointerCancel={onScrubEnd}
-            className={cx("hit relative h-6 touch-pan-y select-none lg:h-8", !idle && "cursor-pointer")}
+            // Дорожка лежит в своей нише: у клавиши, таймера и звука разные роли.
+            className={cx("hit relative flex h-7 items-center rounded-inner bg-well px-1.5 shadow-well touch-pan-y select-none lg:h-8",
+                          !idle && "cursor-pointer")}
           >
             <Waveform
               values={thin(envelopes[part ?? 0] ?? [], 100)}
@@ -176,7 +180,7 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
             {/* Засечки меток этой части: место, где владелец нажал кнопку. */}
             {duration > 0 && marks.filter((mark) => mark.part === part).map((mark) => (
               <span key={mark.offset} aria-hidden
-                    className="absolute top-0 bottom-0 w-px bg-fill"
+                    className="absolute top-0 bottom-0 w-px bg-mark"
                     style={{ left: `${Math.min(100, (mark.offset / duration) * 100)}%` }} />
             ))}
           </div>

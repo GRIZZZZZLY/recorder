@@ -176,7 +176,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
         ref={sheet}
         aria-label="Ещё"
         onClick={(event) => { if (event.target === sheet.current) sheet.current?.close(); }}
-        className="grille mt-auto mb-0 w-full max-w-none rounded-t-card border-0 bg-surface-elevated p-0 text-text-primary shadow-sheet lg:hidden"
+        // Решётка микрофона осталась только на плеере: лист «Ещё» — меню, не динамик.
+        className="mt-auto mb-0 w-full max-w-none rounded-t-card border-0 bg-surface-elevated p-0 text-text-primary shadow-sheet lg:hidden"
       >
         <div className="flex flex-col gap-3 px-4 pt-2 pb-[max(2rem,env(safe-area-inset-bottom))]">
           <span aria-hidden className="mx-auto h-1 w-9 rounded-sm bg-hairline-strong" />
@@ -187,7 +188,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               <X size={18} aria-hidden />
             </button>
           </div>
-          <div className="overflow-hidden rounded-card bg-surface">
+          <div className="overflow-hidden rounded-card bg-surface shadow-plate">
             {SHEET.map((key) => {
               const item = NAV.find((entry) => entry.key === key)!;
               const Glyph = item.icon;
