@@ -95,8 +95,10 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
       <aside className="hidden w-[220px] shrink-0 flex-col gap-0.5 border-r border-hairline px-3 py-5 lg:flex">
         <div className="flex items-center gap-2.5 px-2.5 pt-1.5 pb-5">
-          <span className={cx("size-2 rounded-chip bg-accent", live && "live-dot")}
-                title={live ? "диктофон пишет" : undefined} />
+          {/* Светодиод записи: горит и дышит, пока диктофон пишет; иначе погашен,
+              а не горит ровно — ровный красный читался бы как «пишет». */}
+          <span className={cx("size-2 rounded-chip shadow-lens", live ? "bg-accent live-dot" : "bg-accent/35")}
+                title={live ? "диктофон пишет" : "диктофон молчит"} />
           <span className="text-row font-semibold">Диктофон</span>
         </div>
         <nav className="flex flex-col gap-0.5">

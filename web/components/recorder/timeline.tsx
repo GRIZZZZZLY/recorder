@@ -408,7 +408,7 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
           className="absolute top-0 bottom-0 left-1/2 flex w-11 -translate-x-1/2 cursor-grab touch-none items-start justify-center active:cursor-grabbing pointer-coarse:pointer-events-none"
         >
           <span aria-hidden className="absolute top-0 bottom-0 w-px bg-accent shadow-glow-accent-soft" />
-          <span aria-hidden className="absolute -top-1 size-2 rounded-chip bg-accent" />
+          <span aria-hidden className="absolute -top-1 size-2 rounded-chip bg-accent shadow-lens" />
         </button>
       </div>
 

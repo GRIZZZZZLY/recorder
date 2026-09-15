@@ -140,22 +140,21 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
         </button>
 
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <div className="flex justify-between gap-3 text-note">
+          <div className="flex items-baseline justify-between gap-3 text-note">
             <span className="truncate">
               {idle ? "Нажмите «основание» или реплику" : label || "Фрагмент записи"}
               {blocked ? <span className="text-text-secondary"> · браузер не разрешил автозапуск</span> : null}
             </span>
-            <span className="shrink-0 text-text-secondary">
+            <span className="flex shrink-0 items-baseline gap-1.5 text-text-secondary">
               {idle ? `частей ${parts}` : (
                 <>
-                  {/* На телефоне время стоит здесь: при перемотке оно нужнее
-                      слова «часть», а отдельной колонке справа места нет. */}
-                  <span className="font-mono sm:hidden">
-                    <span className="text-text-primary">{formatClock(position)}</span>
-                    {" / "}{formatClock(duration)}{" · "}
+                  {/* Показание прибора: одно крупное число — где сейчас звук.
+                      Общая длительность и номер части мелко, на той же базовой линии. */}
+                  <span className="font-mono text-[20px] leading-none text-text-primary lg:text-[22px]">
+                    {formatClock(position)}
                   </span>
-                  <span className="hidden sm:inline">часть </span>
-                  {String(part).padStart(2, "0")} / {String(parts).padStart(2, "0")}
+                  <span className="font-mono">/ {formatClock(duration)}</span>
+                  <span>· {String(part).padStart(2, "0")} / {String(parts).padStart(2, "0")}</span>
                 </>
               )}
             </span>
@@ -186,9 +185,6 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
           </div>
         </div>
 
-        <div className="hidden shrink-0 font-mono text-note text-text-secondary sm:block">
-          <span className="text-text-primary">{formatClock(position)}</span> / {formatClock(duration)}
-        </div>
 
         <audio
           ref={audio}
