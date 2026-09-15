@@ -46,6 +46,9 @@ const MIN_BLOCK_PX = 10;
 const MIN_SECONDS = (MIN_BLOCK_PX / PX_PER_HOUR) * 3600;
 /** Дальность магнита: 24 px — это 18 минут ленты. */
 const SNAP_PX = 24;
+/** Подсветка записи по мере приближения головки: видно, что магнит вот-вот
+ * поймает, ещё до того, как палец отпущен. Порядок — от «далеко» к «внутри». */
+const NEAR_BG = ["", "bg-hairline/40", "bg-hairline/70", "bg-hairline"] as const;
 const DAY_SECONDS = 24 * 3600;
 
 /** Цвет волны — состояние записи: готова, ещё считается, упала. */
@@ -246,6 +249,7 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
     router.push(`${sessionHref(under.device_id, under.session)}&t=${offset}`);
   }
 
+  const headPx = (head / 3600) * PX_PER_HOUR;
   const headLabel = `${String(Math.floor(head / 3600)).padStart(2, "0")}:${String(Math.floor((head % 3600) / 60)).padStart(2, "0")}`;
   const awayFromNow = day !== today || Math.abs(head - nowSeconds) > 1800;
 
@@ -326,7 +330,11 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
               const left = (start / 3600) * PX_PER_HOUR;
               const width = Math.max((row.seconds / 3600) * PX_PER_HOUR, MIN_BLOCK_PX);
               const tone = statusTone(row);
-              const active = under?.device_id === row.device_id && under?.session === row.session;
+              // Насколько головка близка: 0 — она внутри записи. Границы блока
+              // те же, по которым считает магнит, поэтому «внутри» здесь и
+              // «запись под головкой» — одно и то же.
+              const gap = Math.max(left - headPx, headPx - (left + width), 0);
+              const near = gap === 0 ? 3 : gap <= SNAP_PX / 2 ? 2 : gap <= SNAP_PX ? 1 : 0;
               const delay = `calc(var(--i, 0) * var(--stagger) + 375ms + ${Math.min(position, 12)} * var(--stagger))`;
               return (
                 <Fragment key={`${row.device_id}-${row.session}`}>
@@ -339,7 +347,7 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
                     title={`${label(row)} · ${formatDuration(row.seconds)} · ${STATUS_TEXT[tone]}`}
                     className={cx(
                       "cascade-block press-row hit absolute top-4 flex h-10 items-center rounded-inner px-px hover:bg-hairline",
-                      active && "bg-hairline",
+                      NEAR_BG[near],
                     )}
                     style={{ left, width, animationDelay: delay }}
                   >
