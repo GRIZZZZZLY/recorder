@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Play } from "@phosphor-icons/react/dist/ssr";
 import type { Icon } from "@phosphor-icons/react";
+import { apiPost } from "@/lib/api";
 import { cx } from "@/utils/cx";
 
 /** На сервере раскладку не измерить, а предупреждение React читать незачем. */
@@ -308,5 +309,48 @@ export function EvidenceLink({ href }: { href: string | null }) {
       <PlayGlyph />
       основание
     </Link>
+  );
+}
+
+/**
+ * «Повторить» у части или саммари, которое упало.
+ *
+ * Ошибки бывают временные: Deepgram лёг, сеть моргнула. До этой кнопки
+ * единственным способом вернуть часть в очередь был поход на сервер руками.
+ * Нажатие сразу гасит кнопку и пишет результат словами: молчащая кнопка
+ * оставляет владельца гадать, сработало или нет.
+ */
+export function Retry({ path, onDone }: { path: string; onDone?: () => void }) {
+  const [state, setState] = useState<"idle" | "busy" | "done" | "failed">("idle");
+
+  if (state === "done") {
+    return <span className="shrink-0 text-note text-text-secondary">в очереди</span>;
+  }
+
+  return (
+    <button
+      type="button"
+      disabled={state === "busy"}
+      title={state === "failed" ? "не получилось, попробуйте ещё раз" : undefined}
+      onClick={async () => {
+        setState("busy");
+        try {
+          await apiPost(path, {});
+          setState("done");
+          onDone?.();
+        } catch {
+          setState("failed");
+        }
+      }}
+      className={cx(
+        "press hit relative shrink-0 rounded-chip border px-3 py-1 text-note",
+        "disabled:text-text-disabled",
+        state === "failed"
+          ? "border-accent-text text-accent-text"
+          : "border-control text-text-secondary hover:border-white/30 hover:text-text-primary",
+      )}
+    >
+      {state === "busy" ? "…" : state === "failed" ? "ещё раз" : "Повторить"}
+    </button>
   );
 }

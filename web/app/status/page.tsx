@@ -4,7 +4,7 @@ import { Card, Row, Section, SessionNo } from "@/components/recorder/list";
 import { PageHeader } from "@/components/recorder/page-header";
 import { Stats } from "@/components/recorder/stats";
 import { Empty, Failed, Loading } from "@/components/recorder/states";
-import { Dot } from "@/components/recorder/ui";
+import { Dot, Retry } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import { count, formatAgo, formatDuration } from "@/lib/format";
 import { at } from "@/lib/motion";
@@ -18,6 +18,8 @@ type Status = {
   stuck_summaries: { device_id: string; session: number; attempts: number; last_error: string }[];
   recovered_parts: { device_id: string; session: number; part: number }[];
   last_upload: { device_id: string; at: string; parts: number }[];
+  /** Что диктофон рассказал о себе: пусто, пока прошивка это не шлёт. */
+  devices: { device_id: string; battery: number | null; firmware: string | null; updated_at: string }[];
   gaps: { session: number; missing: number[] }[];
   duration_mismatch: { session: number; part: number; by_size: number; by_deepgram: number }[];
 };
@@ -40,6 +42,8 @@ export default function StatusPage() {
   if (loading || !data) return <Loading />;
 
   const upload = data.last_upload[0];
+  // Состояние того диктофона, который выгружался последним: он же и показан выше.
+  const device = data.devices.find((row) => row.device_id === upload?.device_id) ?? data.devices[0];
   const live = isLive(upload?.at, now);
   const broken = data.failed_parts.length + data.stuck_summaries.length;
 
@@ -86,6 +90,24 @@ export default function StatusPage() {
                 {formatAgo(row.at, now)} · {count(row.parts, "часть", "части", "частей")}
               </Fact>
             ))}
+            {/* Заряд и прошивка приходят заголовками выгрузки. Прошивка на плате
+                их ещё не шлёт, поэтому здесь честное «нет данных», а не
+                выдуманный процент: плата в пути. */}
+            <Fact title="Заряд">
+              {device?.battery === null || device?.battery === undefined ? (
+                <span className="text-text-tertiary">диктофон ещё не сообщал</span>
+              ) : (
+                <span className="flex items-center justify-end gap-2">
+                  <Dot tone={device.battery > 20 ? "ok" : device.battery > 10 ? "warn" : "accent"} />
+                  <span className="font-mono">{device.battery}%</span>
+                </span>
+              )}
+            </Fact>
+            <Fact title="Прошивка">
+              {device?.firmware
+                ? <span className="font-mono text-note">{device.firmware}</span>
+                : <span className="text-text-tertiary">диктофон ещё не сообщал</span>}
+            </Fact>
           </Card>
         </Section>
 
@@ -129,6 +151,8 @@ export default function StatusPage() {
                 <span className="shrink-0 text-note text-text-tertiary">
                   попыток {row.attempts}
                 </span>
+                <Retry path={`/parts/${encodeURIComponent(row.device_id)}/${row.session}/${row.part}/retry`}
+                       onDone={reload} />
               </Row>
             ))}
           </Card>
@@ -146,6 +170,8 @@ export default function StatusPage() {
                   {row.last_error}
                 </span>
                 <span className="shrink-0 text-note text-text-tertiary">попыток {row.attempts}</span>
+                <Retry path={`/sessions/${encodeURIComponent(row.device_id)}/${row.session}/retry-summary`}
+                       onDone={reload} />
               </Row>
             ))}
           </Card>

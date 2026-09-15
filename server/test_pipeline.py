@@ -116,7 +116,8 @@ def env(tmp_path, monkeypatch):
     return bundle
 
 
-def upload(env, session=7, part=1, marker=0, seconds=1, marks=None, session_parts=None):
+def upload(env, session=7, part=1, marker=0, seconds=1, marks=None, session_parts=None,
+           extra=None):
     body = wav(seconds=seconds, marker=marker)
     headers = {
         "Authorization": f"Bearer {TOKEN}",
@@ -129,6 +130,7 @@ def upload(env, session=7, part=1, marker=0, seconds=1, marks=None, session_part
         headers["X-Marks"] = ",".join(str(offset) for offset in marks)
     if session_parts is not None:
         headers["X-Session-Parts"] = str(session_parts)
+    headers.update(extra or {})
     with TestClient(env.app) as client:
         return client.post("/api/v1/upload", content=body, headers=headers)
 

@@ -347,3 +347,85 @@ def test_review_and_status_are_exposed(env, monkeypatch):
     assert isinstance(review, list)
     assert status["transcripts_pending"] == 0
     assert "failed_parts" in status
+
+
+def test_device_state_comes_from_upload_headers(env):
+    """Заряд и прошивка приходят заголовками выгрузки и видны в состоянии."""
+    upload(env, extra={"X-Battery": "73", "X-Firmware": "0.3.1"})
+    with TestClient(env.app) as client:
+        devices = client.get("/api/ui/status", auth=AUTH).json()["devices"]
+    assert devices == [{"device_id": "xiao-01", "battery": 73, "firmware": "0.3.1",
+                        "updated_at": devices[0]["updated_at"]}]
+
+
+def test_device_state_survives_uploads_without_headers(env):
+    """Прошивка перестала слать заряд — вчерашнее значение остаётся, а не
+    затирается неизвестным."""
+    upload(env, part=1, extra={"X-Battery": "73", "X-Firmware": "0.3.1"})
+    upload(env, part=2)
+    with TestClient(env.app) as client:
+        devices = client.get("/api/ui/status", auth=AUTH).json()["devices"]
+    assert devices[0]["battery"] == 73 and devices[0]["firmware"] == "0.3.1"
+
+
+def test_broken_device_headers_are_rejected(env):
+    for header, value in (("X-Battery", "101"), ("X-Battery", "full"),
+                          ("X-Firmware", "0.3.1; rm -rf /")):
+        assert upload(env, extra={header: value}).status_code == 400
+
+
+def test_failed_part_can_be_returned_to_the_queue(env, monkeypatch):
+    prepared(env, monkeypatch)
+    with closing(env.db.connect()) as conn:
+        conn.execute("UPDATE transcripts SET status='failed', attempts=3,"
+                     " last_error='Deepgram лёг', next_try_at=datetime('now','+1 hour')")
+        conn.commit()
+
+    with TestClient(env.app) as client:
+        assert client.post("/api/ui/parts/xiao-01/7/1/retry", auth=AUTH).status_code == 200
+        with closing(env.db.connect()) as conn:
+            row = conn.execute("SELECT status, attempts, last_error FROM transcripts").fetchone()
+        assert (row["status"], row["attempts"], row["last_error"]) == ("pending", 0, None)
+
+        # Расшифрованную часть повторять нечего: иначе кнопка молча стирала бы
+        # готовый текст и отправляла запись в Deepgram второй раз за деньги.
+        conn = env.db.connect()
+        with closing(conn):
+            conn.execute("UPDATE transcripts SET status='done'")
+            conn.commit()
+        assert client.post("/api/ui/parts/xiao-01/7/1/retry", auth=AUTH).status_code == 404
+        assert client.post("/api/ui/parts/xiao-01/7/9/retry", auth=AUTH).status_code == 404
+
+
+def test_stuck_summary_can_be_returned_to_the_queue(env, monkeypatch):
+    prepared(env, monkeypatch)
+    with closing(env.db.connect()) as conn:
+        conn.execute("UPDATE summaries SET status='failed', last_error='claude не ответил'")
+        conn.commit()
+    with TestClient(env.app) as client:
+        assert client.post("/api/ui/sessions/xiao-01/7/retry-summary", auth=AUTH).status_code == 200
+        assert client.post("/api/ui/sessions/xiao-01/7/retry-summary", auth=AUTH).status_code == 200
+        with closing(env.db.connect()) as conn:
+            conn.execute("UPDATE summaries SET status='done'")
+            conn.commit()
+        assert client.post("/api/ui/sessions/xiao-01/7/retry-summary", auth=AUTH).status_code == 404
+
+
+def test_sessions_list_carries_named_speakers(env, monkeypatch):
+    prepared(env, monkeypatch)
+    with closing(env.db.connect()) as conn:
+        env.db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", True)
+        env.db.set_speaker(conn, "xiao-01", 7, 1, 1, "", False)
+        conn.commit()
+    with TestClient(env.app) as client:
+        rows = client.get("/api/ui/sessions", auth=AUTH).json()
+    # Безымянный говорящий в список не попадает: «Говорящий 2» искать не помогает.
+    assert rows[0]["speakers"] == ["Игорь"]
+
+
+def test_projects_count_open_tasks(env, monkeypatch):
+    prepared(env, monkeypatch)
+    with TestClient(env.app) as client:
+        projects = client.get("/api/ui/projects", auth=AUTH).json()["projects"]
+    assert projects and all("open_tasks" in item for item in projects)
+    assert projects[0]["open_tasks"] >= 1

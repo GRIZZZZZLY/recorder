@@ -160,6 +160,17 @@ CREATE TABLE IF NOT EXISTS marks (
     PRIMARY KEY (device_id, session, part, offset)
 );
 
+-- Что диктофон рассказал о себе при последней выгрузке: заряд и версия
+-- прошивки. Одна строка на устройство, перезаписывается. Прошивка шлёт это
+-- заголовками и может не слать вовсе — тогда NULL, и интерфейс честно
+-- показывает «нет данных», а не выдуманный процент.
+CREATE TABLE IF NOT EXISTS device_state (
+    device_id  TEXT PRIMARY KEY,
+    battery    INTEGER,
+    firmware   TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- «Пози флора» и «Posiflora» — один проект. Ключ нормализован, отображаемое
 -- имя проекта хранится как написал владелец.
 CREATE TABLE IF NOT EXISTS project_aliases (
@@ -432,6 +443,68 @@ def speaker_names(conn, device_id, session):
     ).fetchall()
     return {(r["part"], r["speaker"]): {"name": r["name"], "is_me": bool(r["is_me"])}
             for r in rows}
+
+
+def session_speakers(conn):
+    """{(устройство, сессия): [имена]} — участники разговора для списков.
+
+    Одним запросом на весь архив: списку сессий имя нужно у каждой строки, а
+    speaker_names ходит за одной сессией. Безымянные («Говорящий 2») не
+    отдаются: в списке они не помогают найти разговор.
+    """
+    found = {}
+    for row in conn.execute(
+        "SELECT DISTINCT device_id, session, name, is_me FROM speaker_names"
+        " WHERE TRIM(COALESCE(name,'')) != '' ORDER BY is_me DESC, name"
+    ):
+        names = found.setdefault((row["device_id"], row["session"]), [])
+        if row["name"] not in names:
+            names.append(row["name"])
+    return found
+
+
+def retry_part(conn, device_id, session, part):
+    """Вернуть часть в очередь расшифровки. Успешную не трогаем."""
+    cursor = conn.execute(
+        "UPDATE transcripts SET status='pending', attempts=0, last_error=NULL,"
+        " next_try_at=datetime('now'), updated_at=datetime('now')"
+        " WHERE device_id=? AND session=? AND part=? AND status!='done'",
+        (device_id, session, part),
+    )
+    return cursor.rowcount > 0
+
+
+def retry_summary(conn, device_id, session):
+    """Вернуть саммари в очередь. Готовое не трогаем."""
+    cursor = conn.execute(
+        "UPDATE summaries SET status='pending', attempts=0, last_error=NULL,"
+        " next_try_at=datetime('now'), updated_at=datetime('now')"
+        " WHERE device_id=? AND session=? AND status!='done'",
+        (device_id, session),
+    )
+    return cursor.rowcount > 0
+
+
+def set_device_state(conn, device_id, battery, firmware):
+    """Заряд и прошивка с последней выгрузки. Ничего не пришло — ничего не пишем:
+    затирать известное значение неизвестным хуже, чем показать вчерашнее."""
+    if battery is None and firmware is None:
+        return
+    conn.execute(
+        "INSERT INTO device_state (device_id, battery, firmware) VALUES (?,?,?)"
+        " ON CONFLICT(device_id) DO UPDATE SET"
+        "  battery=COALESCE(excluded.battery, device_state.battery),"
+        "  firmware=COALESCE(excluded.firmware, device_state.firmware),"
+        "  updated_at=datetime('now')",
+        (device_id, battery, firmware),
+    )
+
+
+def device_states(conn):
+    """Состояние каждого диктофона: заряд, прошивка, когда рассказано."""
+    return [dict(row) for row in conn.execute(
+        "SELECT device_id, battery, firmware, updated_at FROM device_state"
+        " ORDER BY device_id")]
 
 
 def set_speaker(conn, device_id, session, part, speaker, name, is_me):
@@ -1062,6 +1135,7 @@ def session_rows(conn, limit=None):
     marks = mark_offsets(conn)
     # 60 столбиков: больше не разглядеть ни в строке списка, ни в блоке ленты.
     envelopes = session_envelopes(conn, 60)
+    speakers = session_speakers(conn)
     rows = []
     for row in conn.execute(sql, args).fetchall():
         item = dict(row)
@@ -1071,6 +1145,8 @@ def session_rows(conn, limit=None):
         # Метки отдаются секундами от начала сессии: списку нужно их число,
         # ленте дня — засечки на своих местах.
         item["marks"] = marks.get((item["device_id"], item["session"]), [])
+        # Названные участники: разговор ищут по человеку не реже, чем по часу.
+        item["speakers"] = speakers.get((item["device_id"], item["session"]), [])
         rows.append(item)
     return rows
 
@@ -1128,6 +1204,9 @@ def processing_status(conn):
         "stuck_summaries": [dict(r) for r in conn.execute(
             "SELECT device_id, session, last_error, attempts FROM summaries"
             " WHERE status!='done' AND last_error IS NOT NULL ORDER BY session").fetchall()],
+        # Что диктофон рассказал о себе: пустой список — прошивка ещё не шлёт
+        # заряд и версию (плата в пути), и это честнее выдуманных процентов.
+        "devices": device_states(conn),
         # Части, которые не удалось сжать: звук цел и работает, но владелец
         # должен знать, что архив встал.
         "archive_failed": [dict(r) for r in conn.execute(

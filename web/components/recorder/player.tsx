@@ -69,6 +69,10 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
   useEffect(() => {
     try {
       const saved = Number(window.localStorage.getItem(RATE_KEY));
+      // Лишняя отрисовка при открытии здесь осознанная: прочитать хранилище
+      // прямо в useState нельзя — статический экспорт рисует страницу заранее,
+      // без хранилища, и значения на сервере и в браузере разошлись бы.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (RATES.includes(saved as (typeof RATES)[number])) setRate(saved);
     } catch {
       // Частное окно или запрет на хранилище: скорость просто не помнится.

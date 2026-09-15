@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ArrowRight } from "@phosphor-icons/react/dist/ssr";
+import { ArrowRight, CheckSquare } from "@phosphor-icons/react/dist/ssr";
 import { Card, Row, Section } from "@/components/recorder/list";
 import { PageHeader } from "@/components/recorder/page-header";
 import { Empty, Failed, Loading } from "@/components/recorder/states";
@@ -14,7 +14,7 @@ import { at } from "@/lib/motion";
 import { cx } from "@/utils/cx";
 
 type Listing = {
-  projects: { name: string; sessions: number; last_day: string | null }[];
+  projects: { name: string; sessions: number; open_tasks: number; last_day: string | null }[];
   aliases: { alias: string; canonical: string }[];
 };
 
@@ -78,6 +78,14 @@ export default function ProjectsPage() {
                 {count(project.sessions, "разговор", "разговора", "разговоров")}
                 {project.last_day ? ` · последний ${formatDayShort(project.last_day)}` : ""}
               </span>
+              {/* Открытые задачи темы: макет обещал число на карточке, а данные
+                  лежали рядом всё это время. Нет задач — нет и строки. */}
+              {project.open_tasks > 0 && (
+                <span className="flex items-center gap-2 text-note text-text-primary">
+                  <CheckSquare size={14} weight="fill" aria-hidden className="text-text-tertiary" />
+                  {count(project.open_tasks, "открытая задача", "открытые задачи", "открытых задач")}
+                </span>
+              )}
             </Link>
           ))}
         </div>

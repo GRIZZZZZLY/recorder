@@ -10,7 +10,7 @@ import { SpeakersForm } from "@/components/recorder/speakers-form";
 import { SummaryList } from "@/components/recorder/summary-list";
 import { TaskRow } from "@/components/recorder/task-row";
 import { Empty, EmptyNote, Failed, Loading } from "@/components/recorder/states";
-import { Dot, Evidence, SourceDot, Tag } from "@/components/recorder/ui";
+import { Dot, Evidence, Retry, SourceDot, Tag } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import { at } from "@/lib/motion";
 import { revealUtterance } from "@/lib/reveal";
@@ -405,6 +405,8 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
                         {data.summary_error}
                       </span>
                     </span>
+                    <Retry path={`/sessions/${encodeURIComponent(data.device_id)}/${data.session}/retry-summary`}
+                           onDone={reload} />
                   </Row>
                 ) : null}
                 {failedParts.map((part) => (
@@ -416,6 +418,8 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
                         {part.last_error || "причина не записана"}
                       </span>
                     </span>
+                    <Retry path={`/parts/${encodeURIComponent(data.device_id)}/${data.session}/${part.part}/retry`}
+                           onDone={reload} />
                   </Row>
                 ))}
               </Card>

@@ -58,15 +58,17 @@ export default function RecordsPage() {
                     <span className="min-w-0 flex-1 truncate">
                       {row.topic || <span className="text-text-secondary">без темы</span>}
                       <span className="hidden text-text-tertiary sm:inline">
+                        {row.speakers.length > 0 ? ` · ${row.speakers.join(", ")}` : ""}
                         {" · "}{count(row.parts, "часть", "части", "частей")}
                         {row.done_parts < row.parts ? `, расшифровано ${row.done_parts}` : ""}
                       </span>
-                      {/* На телефоне время начала — второй строкой, а не за бортом:
-                          разговор ищут по часу, а не по номеру. */}
+                      {/* На телефоне время начала и участники — второй строкой, а
+                          не за бортом: разговор ищут по часу и по человеку,
+                          а не по номеру. */}
                       <span className="block truncate text-note text-text-tertiary sm:hidden">
                         <span className="font-mono">{formatTime(row.first_at)}</span>
+                        {row.speakers.length > 0 ? ` · ${row.speakers.join(", ")}` : ""}
                         {" · "}{count(row.parts, "часть", "части", "частей")}
-                        {row.done_parts < row.parts ? `, расшифровано ${row.done_parts}` : ""}
                       </span>
                     </span>
                     {row.marks.length > 0 && (

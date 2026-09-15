@@ -17,7 +17,7 @@ import audio
 import envelope
 import static_site
 from auth import owner
-from db import AUDIO_DIR, connect, init_storage, save_marks
+from db import AUDIO_DIR, connect, init_storage, save_marks, set_device_state
 
 MAX_BYTES = int(os.environ.get("RECORDER_MAX_BYTES", 64 * 1024 * 1024))
 # Токен обязателен. Пустое значение означает незакрытый сервер, это отказ.
@@ -88,6 +88,8 @@ async def upload(
     x_recovered: str = Header("0"),
     x_marks: str = Header(None),
     x_session_parts: str = Header(None),
+    x_battery: str = Header(None),
+    x_firmware: str = Header(None),
 ):
     if not DEVICE_TOKEN or authorization != f"Bearer {DEVICE_TOKEN}":
         raise HTTPException(401, "неверный токен устройства")
@@ -107,6 +109,18 @@ async def upload(
     expected_parts = None
     if x_session_parts is not None and x_session_parts.strip():
         expected_parts = _int_header(x_session_parts, "X-Session-Parts", part, 99)
+
+    # Заряд и версия прошивки — необязательные: прошивка на плате их ещё не
+    # шлёт. Кривое значение отвергаем, как и остальные заголовки: молча принять
+    # мусор хуже, чем отказать и показать это в логе диктофона.
+    battery = None
+    if x_battery is not None and x_battery.strip():
+        battery = _int_header(x_battery, "X-Battery", 0, 100)
+    firmware = None
+    if x_firmware is not None and x_firmware.strip():
+        firmware = x_firmware.strip()[:32]
+        if not re.fullmatch(r"[0-9A-Za-z.\-_+]+", firmware):
+            raise HTTPException(400, "X-Firmware: допустимы буквы, цифры и .-_+")
 
     declared = _int_header(
         request.headers.get("content-length"), "Content-Length", 1, MAX_BYTES
@@ -161,6 +175,7 @@ async def upload(
                 # Метки пишем и здесь: повтор идемпотентен, а первая попытка
                 # могла оборваться после записи файла, но до их сохранения.
                 save_marks(conn, x_device_id, session, part, marks)
+                set_device_state(conn, x_device_id, battery, firmware)
                 conn.commit()
                 return JSONResponse({"status": "duplicate", **body}, status_code=200)
             # Уже принятое аудио не перезаписываем молча.
@@ -178,6 +193,7 @@ async def upload(
              str(final_path), expected_parts),
         )
         save_marks(conn, x_device_id, session, part, marks)
+        set_device_state(conn, x_device_id, battery, firmware)
         # Огибающая считается сразу: файл уже на диске и ещё горячий в кэше.
         envelope.store(conn, x_device_id, session, part, final_path)
         conn.commit()

@@ -187,12 +187,21 @@ def projects(_=Depends(owner)):
     with closing(db.connect()) as conn:
         found = db.project_sessions(conn)
         aliases = db.alias_map(conn)
+        open_tasks = db.task_rows(conn, only_open=True)
+    # Открытые задачи проекта — задачи его разговоров. Считаем здесь, а не в
+    # db.project_sessions: там сессии, а связь «задача — проект» идёт только
+    # через сессию, и второго источника правды заводить незачем.
+    by_session = {}
+    for task in open_tasks:
+        by_session.setdefault((task["device_id"], task["session"]), 0)
+        by_session[(task["device_id"], task["session"])] += 1
     listing = []
     for name in sorted(found):
         items = found[name]
         listing.append({
             "name": name,
             "sessions": len(items),
+            "open_tasks": sum(by_session.get((i["device_id"], i["session"]), 0) for i in items),
             "last_day": items[-1]["day"].isoformat() if items[-1]["day"] else None,
         })
     return {"projects": listing,
@@ -244,6 +253,32 @@ def search(q: str = "", _=Depends(owner)):
         return []
     with closing(db.connect()) as conn:
         return db.search_segments(conn, q)
+
+
+@router.post("/parts/{device_id}/{session}/{part}/retry")
+def retry_part(device_id: str, session: int, part: int, _=Depends(owner)):
+    """Вернуть упавшую часть в очередь расшифровки.
+
+    Ошибки бывают временные (Deepgram лёг, сеть моргнула), и до этой кнопки
+    единственным способом был поход на сервер руками.
+    """
+    with closing(db.connect()) as conn:
+        ok = db.retry_part(conn, device_id, session, part)
+        conn.commit()
+    if not ok:
+        raise HTTPException(404, "нечего повторять: части нет или она уже расшифрована")
+    return {"ok": True}
+
+
+@router.post("/sessions/{device_id}/{session}/retry-summary")
+def retry_summary(device_id: str, session: int, _=Depends(owner)):
+    """Вернуть саммари в очередь: та же причина, что и у части."""
+    with closing(db.connect()) as conn:
+        ok = db.retry_summary(conn, device_id, session)
+        conn.commit()
+    if not ok:
+        raise HTTPException(404, "нечего повторять: саммари нет или оно готово")
+    return {"ok": True}
 
 
 @router.get("/status")
