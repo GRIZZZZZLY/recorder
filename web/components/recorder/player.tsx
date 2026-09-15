@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Pause, Play } from "@phosphor-icons/react/dist/ssr";
 import { Waveform } from "@/components/recorder/waveform";
 import type { Mark } from "@/lib/api";
@@ -11,9 +11,22 @@ type SeekFn = (part: number, seconds: number, label?: string) => void;
 
 const SeekContext = createContext<SeekFn>(() => {});
 
+/** Где сейчас звук. Нужен транскрипту, чтобы вести за собой реплику. */
+export type Playhead = { part: number | null; position: number; playing: boolean };
+
+const PlayheadContext = createContext<Playhead>({ part: null, position: 0, playing: false });
+
 export function useSeek() {
   return useContext(SeekContext);
 }
+
+export function usePlayhead() {
+  return useContext(PlayheadContext);
+}
+
+/** Скорости по кругу. Больше двух не нужно: речь выше ×2 не разбирается. */
+const RATES = [1, 1.5, 2] as const;
+const RATE_KEY = "recorder.rate";
 
 /**
  * Плавающий плеер сессии — единственная карточка с тенью во всём интерфейсе.
@@ -22,6 +35,10 @@ export function useSeek() {
  * кнопка и своя волна вместо `controls` — нативный виджет в тёмной теме
  * выглядит чужим, а главное, не умеет показывать, какая это часть из скольких.
  * Перемотка — пальцем по волне, а не только тычком в неё.
+ *
+ * Положение звука отдаётся страницей через `usePlayhead`: транскрипт подсвечивает
+ * звучащую реплику и едет за ней. Контекстов два, а не один: `useSeek` меняется
+ * редко, а положение — четыре раза в секунду, и подписчикам нужно разное.
  */
 export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes = {}, children }: {
   deviceId: string;
@@ -43,6 +60,36 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [blocked, setBlocked] = useState(false);
+  const [rate, setRate] = useState(1);
+
+  // Скорость живёт между записями и между заходами: выбрал ×1.5 — слушаешь так
+  // всё. Читаем после первой отрисовки, а не при инициализации состояния:
+  // статический экспорт рисует страницу заранее, и разное значение на сервере и
+  // в браузере ломало бы гидратацию.
+  useEffect(() => {
+    try {
+      const saved = Number(window.localStorage.getItem(RATE_KEY));
+      if (RATES.includes(saved as (typeof RATES)[number])) setRate(saved);
+    } catch {
+      // Частное окно или запрет на хранилище: скорость просто не помнится.
+    }
+  }, []);
+
+  // playbackRate сбрасывается на каждой новой части: держим его одним эффектом,
+  // а не в обработчиках — ставить его приходилось бы в четырёх местах.
+  useEffect(() => {
+    if (audio.current) audio.current.playbackRate = rate;
+  }, [rate, part]);
+
+  function cycleRate() {
+    const next = RATES[(RATES.indexOf(rate as (typeof RATES)[number]) + 1) % RATES.length];
+    setRate(next);
+    try {
+      window.localStorage.setItem(RATE_KEY, String(next));
+    } catch {
+      // см. выше
+    }
+  }
 
   const seek = useCallback<SeekFn>((nextPart, seconds, nextLabel) => {
     const element = audio.current;
@@ -70,6 +117,7 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
   }, [deviceId, session, part]);
 
   const value = useMemo(() => seek, [seek]);
+  const playhead = useMemo<Playhead>(() => ({ part, position, playing }), [part, position, playing]);
 
   function toggle() {
     const element = audio.current;
@@ -110,92 +158,112 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
 
   return (
     <SeekContext.Provider value={value}>
-      {/* Отступ снизу принадлежит плееру: иначе последняя реплика прячется
-          под его карточкой. */}
-      <div className="pb-32">{children}</div>
+      <PlayheadContext.Provider value={playhead}>
+        {/* Отступ снизу принадлежит плееру: иначе последняя реплика прячется
+            под его карточкой. */}
+        <div className="pb-32">{children}</div>
 
-      <div className={cx(
-        "player-in grille fixed right-3 bottom-24 left-3 z-20 flex items-center gap-3 rounded-card bg-surface-elevated px-3 py-2.5 shadow-player",
-        "lg:right-12 lg:bottom-7 lg:left-[268px] lg:gap-4 lg:px-4 lg:py-3.5",
-      )}>
-        <button
-          type="button"
-          onClick={toggle}
-          disabled={idle}
-          aria-label={playing ? "Пауза" : "Играть"}
-          className={cx(
-            "press hit relative flex size-9 shrink-0 items-center justify-center rounded-chip bg-fill text-canvas disabled:opacity-40 lg:size-10",
-            // Клавиша выпуклая; нажатие коротко уводит её в поверхность.
-            "shadow-key active:translate-y-px active:shadow-key-pressed",
-            // Свечение — пока идёт звук; пауза гасит.
-            playing && "shadow-key-lit",
-          )}
-        >
-          {/* Обе иконки лежат друг на друге: смена play ↔ pause — кроссфейд за
-              120 мс, а не подмена глифа между кадрами. */}
-          <Pause size={14} weight="fill" aria-hidden
-                 className={cx("absolute transition-opacity duration-120", playing ? "opacity-100" : "opacity-0")} />
-          <Play size={14} weight="fill" aria-hidden
-                className={cx("absolute transition-opacity duration-120", playing ? "opacity-0" : "opacity-100")} />
-        </button>
-
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <div className="flex items-baseline justify-between gap-3 text-note">
-            <span className="truncate">
-              {idle ? "Нажмите «основание» или реплику" : label || "Фрагмент записи"}
-              {blocked ? <span className="text-text-secondary"> · браузер не разрешил автозапуск</span> : null}
-            </span>
-            <span className="flex shrink-0 items-baseline gap-1.5 text-text-secondary">
-              {idle ? `частей ${parts}` : (
-                <>
-                  {/* Показание прибора: одно крупное число — где сейчас звук.
-                      Общая длительность и номер части мелко, на той же базовой линии. */}
-                  <span className="font-mono text-[20px] leading-none text-text-primary lg:text-[22px]">
-                    {formatClock(position)}
-                  </span>
-                  <span className="font-mono">/ {formatClock(duration)}</span>
-                  <span>· {String(part).padStart(2, "0")} / {String(parts).padStart(2, "0")}</span>
-                </>
-              )}
-            </span>
-          </div>
-          {/* Волна видна на 24 px, а под пальцем — 44 (`hit`). touch-pan-y: вести
-              по ней вбок — перемотка, тянуть вверх — по-прежнему прокрутка страницы. */}
-          <div
-            onPointerDown={onScrubStart}
-            onPointerMove={onScrubMove}
-            onPointerUp={onScrubEnd}
-            onPointerCancel={onScrubEnd}
-            // Дорожка лежит в своей нише: у клавиши, таймера и звука разные роли.
-            className={cx("hit relative flex h-7 items-center rounded-inner bg-well px-1.5 shadow-well touch-pan-y select-none lg:h-8",
-                          !idle && "cursor-pointer")}
+        <div className={cx(
+          "player-in grille fixed right-3 bottom-24 left-3 z-20 flex items-center gap-3 rounded-card bg-surface-elevated px-3 py-2.5 shadow-player",
+          "lg:right-12 lg:bottom-7 lg:left-[268px] lg:gap-4 lg:px-4 lg:py-3.5",
+        )}>
+          <button
+            type="button"
+            onClick={toggle}
+            disabled={idle}
+            aria-label={playing ? "Пауза" : "Играть"}
+            className={cx(
+              "press hit relative flex size-9 shrink-0 items-center justify-center rounded-chip bg-fill text-canvas disabled:opacity-40 lg:size-10",
+              // Клавиша выпуклая; нажатие коротко уводит её в поверхность.
+              "shadow-key active:translate-y-px active:shadow-key-pressed",
+              // Свечение — пока идёт звук; пауза гасит.
+              playing && "shadow-key-lit",
+            )}
           >
-            <Waveform
-              values={envelopes[part ?? 0] ?? []}
-              height={idle ? 12 : 28}
-              played={duration ? position / duration : 0}
-              className="w-full"
-            />
-            {/* Засечки меток этой части: место, где владелец нажал кнопку. */}
-            {duration > 0 && marks.filter((mark) => mark.part === part).map((mark) => (
-              <span key={mark.offset} aria-hidden
-                    className="absolute top-0 bottom-0 w-px bg-mark"
-                    style={{ left: `${Math.min(100, (mark.offset / duration) * 100)}%` }} />
-            ))}
+            {/* Обе иконки лежат друг на друге: смена play ↔ pause — кроссфейд за
+                120 мс, а не подмена глифа между кадрами. */}
+            <Pause size={14} weight="fill" aria-hidden
+                   className={cx("absolute transition-opacity duration-120", playing ? "opacity-100" : "opacity-0")} />
+            <Play size={14} weight="fill" aria-hidden
+                  className={cx("absolute transition-opacity duration-120", playing ? "opacity-0" : "opacity-100")} />
+          </button>
+
+          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+            <div className="flex items-baseline justify-between gap-3 text-note">
+              <span className="truncate">
+                {idle ? "Нажмите «основание» или реплику" : label || "Фрагмент записи"}
+                {blocked ? <span className="text-text-secondary"> · браузер не разрешил автозапуск</span> : null}
+              </span>
+              <span className="flex shrink-0 items-baseline gap-1.5 text-text-secondary">
+                {idle ? `частей ${parts}` : (
+                  <>
+                    {/* Показание прибора: одно крупное число — где сейчас звук.
+                        Общая длительность и номер части мелко, на той же базовой линии. */}
+                    <span className="font-mono text-[20px] leading-none text-text-primary lg:text-[22px]">
+                      {formatClock(position)}
+                    </span>
+                    <span className="font-mono">/ {formatClock(duration)}</span>
+                    <span className="hidden sm:inline">
+                      · {String(part).padStart(2, "0")} / {String(parts).padStart(2, "0")}
+                    </span>
+                  </>
+                )}
+              </span>
+            </div>
+            {/* Волна видна на 24 px, а под пальцем — 44 (`hit`). touch-pan-y: вести
+                по ней вбок — перемотка, тянуть вверх — по-прежнему прокрутка страницы. */}
+            <div
+              onPointerDown={onScrubStart}
+              onPointerMove={onScrubMove}
+              onPointerUp={onScrubEnd}
+              onPointerCancel={onScrubEnd}
+              // Дорожка лежит в своей нише: у клавиши, таймера и звука разные роли.
+              className={cx("hit relative flex h-7 items-center rounded-inner bg-well px-1.5 shadow-well touch-pan-y select-none lg:h-8",
+                            !idle && "cursor-pointer")}
+            >
+              <Waveform
+                values={envelopes[part ?? 0] ?? []}
+                height={idle ? 12 : 28}
+                played={duration ? position / duration : 0}
+                className="w-full"
+              />
+              {/* Засечки меток этой части: место, где владелец нажал кнопку. */}
+              {duration > 0 && marks.filter((mark) => mark.part === part).map((mark) => (
+                <span key={mark.offset} aria-hidden
+                      className="absolute top-0 bottom-0 w-px bg-mark"
+                      style={{ left: `${Math.min(100, (mark.offset / duration) * 100)}%` }} />
+              ))}
+            </div>
           </div>
+
+          {/* Скорость: час совещания на ×2 — полчаса. Клавиша рядом с Play,
+              потому что нажимают их одинаково часто. */}
+          <button
+            type="button"
+            onClick={cycleRate}
+            aria-label={`Скорость ${rate}×, нажмите чтобы сменить`}
+            className={cx(
+              "press hit relative flex h-9 shrink-0 items-center justify-center rounded-chip px-2.5 font-mono text-note lg:h-10",
+              "shadow-key active:translate-y-px active:shadow-key-pressed",
+              rate === 1
+                ? "bg-hairline text-text-secondary"
+                : "bg-fill text-canvas",
+            )}
+          >
+            {rate}×
+          </button>
+
+          <audio
+            ref={audio}
+            preload="none"
+            onPlay={() => { setPlaying(true); setBlocked(false); }}
+            onPause={() => setPlaying(false)}
+            onEnded={() => setPlaying(false)}
+            onLoadedMetadata={(event) => setDuration(event.currentTarget.duration || 0)}
+            onTimeUpdate={(event) => { if (!scrubbing.current) setPosition(event.currentTarget.currentTime); }}
+          />
         </div>
-
-
-        <audio
-          ref={audio}
-          preload="none"
-          onPlay={() => { setPlaying(true); setBlocked(false); }}
-          onPause={() => setPlaying(false)}
-          onEnded={() => setPlaying(false)}
-          onLoadedMetadata={(event) => setDuration(event.currentTarget.duration || 0)}
-          onTimeUpdate={(event) => { if (!scrubbing.current) setPosition(event.currentTarget.currentTime); }}
-        />
-      </div>
+      </PlayheadContext.Provider>
     </SeekContext.Provider>
   );
 }

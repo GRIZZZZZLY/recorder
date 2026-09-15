@@ -1,11 +1,11 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useRef } from "react";
+import { Suspense, memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import { BookmarkSimple } from "@phosphor-icons/react/dist/ssr";
 import { Card, Row, Section, SessionNo, Time } from "@/components/recorder/list";
 import { PageHeader } from "@/components/recorder/page-header";
-import { PlayerProvider, useSeek } from "@/components/recorder/player";
+import { PlayerProvider, usePlayhead, useSeek } from "@/components/recorder/player";
 import { SpeakersForm } from "@/components/recorder/speakers-form";
 import { SummaryList } from "@/components/recorder/summary-list";
 import { TaskRow } from "@/components/recorder/task-row";
@@ -67,8 +67,107 @@ function Parts({ parts }: { parts: Part[] }) {
   );
 }
 
+/**
+ * Кто сколько говорил. Считается из шкалы реплик, без сервера и без единого
+ * нового поля: у каждой реплики есть начало и конец.
+ *
+ * Это первый кусок речевых метрик, и намеренно самый скромный: доля времени —
+ * факт, его видно в данных. Оценок «много перебивал», «говорил слишком долго»
+ * здесь нет и не будет без отдельного разговора.
+ */
+function SpeechShare({ timeline }: { timeline: Utterance[] }) {
+  const shares = useMemo(() => {
+    const seconds = new Map<string, number>();
+    for (const item of timeline) {
+      seconds.set(item.label, (seconds.get(item.label) ?? 0) + Math.max(0, item.end - item.start));
+    }
+    const total = [...seconds.values()].reduce((sum, value) => sum + value, 0);
+    if (!total) return [];
+    return [...seconds.entries()]
+      .map(([label, value]) => ({ label, seconds: value, share: value / total }))
+      .sort((a, b) => b.seconds - a.seconds);
+  }, [timeline]);
+
+  if (shares.length < 2) return null;
+
+  // Ступени серого вместо цветов: красный в этом интерфейсе означает «запись
+  // и внимание», раздавать его говорящим нельзя.
+  const TONES = ["bg-fill", "bg-waveform", "bg-control", "bg-hairline-strong"];
+
+  return (
+    <Section note="Кто сколько говорил" at={2}>
+      <Card className="flex flex-col gap-3 p-4">
+        <div className="flex h-2 gap-px overflow-hidden rounded-chip">
+          {shares.map((item, index) => (
+            <span key={item.label} className={TONES[index % TONES.length]}
+                  style={{ width: `${item.share * 100}%` }} />
+          ))}
+        </div>
+        <div className="flex flex-col gap-1.5">
+          {shares.map((item, index) => (
+            <div key={item.label} className="flex items-center gap-2.5 text-note">
+              <span aria-hidden className={cx("size-2 shrink-0 rounded-chip shadow-lens",
+                                              TONES[index % TONES.length])} />
+              <span className="min-w-0 flex-1 truncate">{item.label}</span>
+              <span className="shrink-0 font-mono text-text-secondary">{formatClock(item.seconds)}</span>
+              <span className="w-10 shrink-0 text-right font-mono text-text-primary">
+                {Math.round(item.share * 100)}%
+              </span>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </Section>
+  );
+}
+
+/**
+ * Строка транскрипта. Вынесена и запомнена (`memo`) не ради красоты: положение
+ * звука приходит четыре раза в секунду, и без этого на каждом такте
+ * перерисовывались бы все реплики часового разговора, а не две изменившиеся.
+ */
+const Line = memo(function Line({ utterance, marked, active, onPlay }: {
+  utterance: Utterance;
+  marked: boolean;
+  active: boolean;
+  onPlay: (utterance: Utterance) => void;
+}) {
+  const id = `u-${utterance.part}-${utterance.idx}`;
+  return (
+    <button
+      id={id}
+      type="button"
+      onClick={() => onPlay(utterance)}
+      className={cx(
+        // scroll-my-24: якорь иначе прижимает реплику к самому
+        // верху окна, под шапку страницы.
+        "press-row grid w-full scroll-my-24 grid-cols-[76px_1fr] gap-x-3 px-4 py-2 text-left",
+        "hover:bg-surface-elevated sm:grid-cols-[76px_90px_1fr]",
+        // Звучит прямо сейчас: подложка и светлый текст. Полоска слева — там же,
+        // где у реплики-основания вспышка, поэтому цвет другой, светлый.
+        active && "bg-surface-elevated shadow-[inset_2px_0_0_var(--color-fill)]",
+      )}
+    >
+      <Time className={cx(marked && "flex items-center gap-1.5", (marked || active) && "text-text-primary")}>
+        {marked && (
+          <BookmarkSimple size={12} weight="fill" aria-label="отмечено кнопкой" className="text-mark" />
+        )}
+        {formatClock(utterance.start_abs)}
+      </Time>
+      <span className="truncate text-note text-text-secondary">
+        {utterance.label}
+      </span>
+      <span className={cx("col-span-2 text-row leading-relaxed sm:col-span-1",
+                          active && "text-text-primary")}>
+        {utterance.text}
+      </span>
+    </button>
+  );
+});
+
 function Transcript({ timeline, marked }: { timeline: Utterance[]; marked: Set<string> }) {
   const seek = useSeek();
+  const { part, position, playing } = usePlayhead();
   // Группировка заранее: заголовок части ставится по данным, а не по счётчику,
   // который менялся бы прямо во время отрисовки.
   const byPart = useMemo(() => {
@@ -80,6 +179,38 @@ function Transcript({ timeline, marked }: { timeline: Utterance[]; marked: Set<s
     }
     return groups;
   }, [timeline]);
+
+  // Звучащая реплика. Между репликами бывают паузы, и на них подсветка не
+  // гаснет: держим последнюю начавшуюся, иначе она мигала бы на каждом вдохе.
+  const activeId = useMemo(() => {
+    if (part === null) return null;
+    let found: Utterance | null = null;
+    for (const item of timeline) {
+      if (item.part !== part || item.start > position + 0.25) continue;
+      found = item;
+    }
+    return found ? `u-${found.part}-${found.idx}` : null;
+  }, [timeline, part, position]);
+
+  // Транскрипт едет за звуком, но только пока звук идёт и только если реплика
+  // ушла с экрана: дёргать страницу под рукой читающего нельзя.
+  const followed = useRef<string | null>(null);
+  useEffect(() => {
+    if (!playing || !activeId || followed.current === activeId) return;
+    followed.current = activeId;
+    const element = document.getElementById(activeId);
+    if (!element) return;
+    const box = element.getBoundingClientRect();
+    if (box.top >= 80 && box.bottom <= window.innerHeight - 160) return;
+    element.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      block: "center",
+    });
+  }, [activeId, playing]);
+
+  const play = useCallback((utterance: Utterance) => {
+    seek(utterance.part, utterance.start, `${utterance.label} · ${formatClock(utterance.start_abs)}`);
+  }, [seek]);
 
   return (
     <Section note="Транскрипт" aside="нажмите реплику, чтобы послушать" at={7}>
@@ -93,32 +224,8 @@ function Transcript({ timeline, marked }: { timeline: Utterance[]; marked: Set<s
               {group.items.map((utterance) => {
                 const id = `u-${utterance.part}-${utterance.idx}`;
                 return (
-                  <button
-                    key={id}
-                    id={id}
-                    type="button"
-                    onClick={() => seek(utterance.part, utterance.start,
-                                        `${utterance.label} · ${formatClock(utterance.start_abs)}`)}
-                    className={cx(
-                      // scroll-my-24: якорь иначе прижимает реплику к самому
-                      // верху окна, под шапку страницы.
-                      "press-row grid w-full scroll-my-24 grid-cols-[76px_1fr] gap-x-3 px-4 py-2 text-left",
-                      "hover:bg-surface-elevated sm:grid-cols-[76px_90px_1fr]",
-                    )}
-                  >
-                    <Time className={marked.has(id) ? "flex items-center gap-1.5 text-text-primary" : undefined}>
-                      {marked.has(id) && (
-                        <BookmarkSimple size={12} weight="fill" aria-label="отмечено кнопкой" className="text-mark" />
-                      )}
-                      {formatClock(utterance.start_abs)}
-                    </Time>
-                    <span className="truncate text-note text-text-secondary">
-                      {utterance.label}
-                    </span>
-                    <span className="col-span-2 text-row leading-relaxed sm:col-span-1">
-                      {utterance.text}
-                    </span>
-                  </button>
+                  <Line key={id} utterance={utterance} marked={marked.has(id)}
+                        active={id === activeId} onPlay={play} />
                 );
               })}
             </Card>
@@ -283,6 +390,7 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
         <div className="flex flex-col gap-6">
           <SpeakersForm key={JSON.stringify(data.speakers)} deviceId={data.device_id}
                         session={data.session} speakers={data.speakers} onSaved={reload} />
+          <SpeechShare timeline={data.timeline} />
           <Parts parts={data.parts} />
 
           {(data.summary_error || failedParts.length > 0) && (
