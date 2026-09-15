@@ -127,6 +127,10 @@ class Writer {
   Config cfg;
 
   bool recording() const { return m_recording; }
+  // Позиция в сессии считается от этой отметки кольца: pos = head - ringBase.
+  // Отсюда метку можно поставить по head, снятому в момент нажатия, а не в
+  // момент, когда до неё добрался цикл.
+  uint32_t ringBase() const { return m_ringBase; }
   uint16_t sessionId() const { return m_session; }
   uint16_t partIndex() const { return m_part; }
   uint32_t partBytes() const { return m_partBytes; }
@@ -150,6 +154,7 @@ class Writer {
     m_ring.resetStats();
     m_ring.resync();
     m_preRoll = m_ring.available();
+    m_ringBase = m_ring.tail();
     if (!openPart()) return false;
     m_recording = true;
     return true;
@@ -177,14 +182,22 @@ class Writer {
     return true;
   }
 
-  // Метка: секунды от начала своей части. Позиция «сейчас» — всё записанное за
-  // сессию плюс то, что ещё в буфере и будет записано следом. За границей части
-  // метка достаётся следующей — туда попадёт и сам звук. Части вращаются ровно
-  // на partMaxBytes, поэтому номер части — чистая арифметика.
-  // Имя файла меток не зависит от _R: восстановленная часть находит свои метки.
-  bool mark() {
+  // Метка по текущему моменту.
+  bool mark() { return markAt(m_ring.head()); }
+
+  // Метка по положению потока, снятому в момент нажатия кнопки. Между
+  // нажатием и разбором события цикл мог простоять секунду-две на
+  // TLS-рукопожатии; метка обязана указывать туда, где человек нажал, а не
+  // туда, где прошивка об этом узнала.
+  //
+  // Позиция в сессии — байты от начала первой части: pos = head - ringBase.
+  // Части вращаются ровно на partMaxBytes, поэтому номер части — чистая
+  // арифметика. За границей части метка достаётся следующей — туда попадёт и
+  // сам звук. Имя файла меток не зависит от _R: восстановленная часть находит
+  // свои метки.
+  bool markAt(uint32_t ringHead) {
     if (!m_recording) return false;
-    const uint32_t pos = m_sessionBytes + m_partBytes + m_ring.available();
+    const uint32_t pos = ringHead - m_ringBase;
     const uint16_t part = static_cast<uint16_t>(pos / cfg.partMaxBytes) + 1;
     const uint32_t offset = pos % cfg.partMaxBytes;
 
@@ -372,6 +385,7 @@ class Writer {
   uint32_t m_partBytes = 0;
   uint32_t m_sessionBytes = 0;
   uint32_t m_preRoll = 0;
+  uint32_t m_ringBase = 0;
   uint32_t m_lastFlushMs = 0;
   char m_path[PATH_MAX_LEN] = {0};
   uint8_t m_chunk[CHUNK_CAP];
@@ -442,6 +456,16 @@ inline void sentBatchCb(const char *name, uint32_t size, void *ctx) {
 }
 
 }  // namespace detail
+
+// Номер следующей сессии: больше и того, что лежит на карте, и того, что уже
+// выдавалось (NVS). Иначе после автоудаления старых .SENT номер повторился бы,
+// а сервер ключует части по (устройство, сессия, часть) и ответил бы 409.
+// Ноль означает, что номера кончились: 9999 сессий записаны, карту пора чистить.
+inline uint16_t nextSessionId(uint16_t issued, uint16_t onCard) {
+  const uint16_t highest = issued > onCard ? issued : onCard;
+  if (highest >= MAX_SESSIONS) return 0;
+  return static_cast<uint16_t>(highest + 1);
+}
 
 // Наибольший номер сессии на карте. Один проход вместо 9999 exists().
 inline uint16_t maxSessionOnCard(Storage &fs) {

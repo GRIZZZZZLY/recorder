@@ -57,6 +57,17 @@ class FakeStorage : public Storage {
   uint64_t usedByOthers = 0;             // «чужие» байты на карте помимо наших файлов
   std::vector<std::string> log;
   int openFiles = 0;
+  std::set<FakeFile *> live;             // выданные и ещё не закрытые файлы
+
+  ~FakeStorage() override { powerLoss(); }
+
+  // Пропадание питания: открытые файлы просто исчезают, их содержимое на
+  // «карте» остаётся таким, каким его успели записать.
+  void powerLoss() {
+    for (FakeFile *f : live) delete f;
+    live.clear();
+    openFiles = 0;
+  }
 
   StorageFile *open(const char *path, Mode mode) override {
     const std::string p(path);
@@ -70,10 +81,14 @@ class FakeStorage : public Storage {
       files[p];
     }
     ++openFiles;
-    return new FakeFile(*this, p, mode == APPEND);
+    FakeFile *f = new FakeFile(*this, p, mode == APPEND);
+    live.insert(f);
+    return f;
   }
-  void close(StorageFile *f) override {
+  void close(StorageFile *file) override {
+    FakeFile *f = static_cast<FakeFile *>(file);
     --openFiles;
+    live.erase(f);
     delete f;
   }
   bool exists(const char *path) override { return files.count(path) > 0; }

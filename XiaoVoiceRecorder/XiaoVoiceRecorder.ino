@@ -79,8 +79,6 @@ constexpr uint32_t RING_FALLBACK_BYTES = 64 * 1024;
 constexpr size_t MIC_READ_BYTES = 1024;
 constexpr uint32_t STATUS_INTERVAL_MS = 5000;
 
-constexpr uint16_t MAX_SESSIONS = session::MAX_SESSIONS;
-
 // Встроенная кнопка BOOT на GPIO0 с внешней подтяжкой: REC без пайки.
 // Удержание при сбросе всё так же уводит в загрузчик.
 // Не проверено на нашем экземпляре: подтвердить при первом включении.
@@ -146,6 +144,7 @@ String g_serialLine;
 // и на секунду позже; предзапись эту секунду держит.
 struct ButtonEdge {
   uint32_t atMs;
+  uint32_t ringHead;  // сколько звука произведено к этому мгновению
   bool pressed;
 };
 constexpr uint8_t BUTTON_QUEUE = 8;
@@ -155,6 +154,7 @@ volatile uint8_t g_btnTail = 0;
 volatile uint32_t g_btnLastEdgeMs = 0;
 volatile bool g_btnLastLevel = false;
 volatile uint32_t g_btnLostEdges = 0;
+uint32_t g_btnPressHead = 0;   // положение потока в момент последнего нажатия
 
 // Определены в Uploader.ino и Feedback.ino; компилятор Arduino дописывает их
 // следом за этим файлом.
@@ -295,7 +295,7 @@ void refreshNextSessionId() {
   const uint16_t issued = static_cast<uint16_t>(g_sessionPrefs.getUShort("last_session", 0));
   g_sessionPrefs.end();
   const uint16_t onCard = g_sdReady ? session::maxSessionOnCard(g_sd) : 0;
-  g_nextSessionId = (issued > onCard ? issued : onCard) + 1;
+  g_nextSessionId = session::nextSessionId(issued, onCard);
 }
 
 void rememberSessionId(uint16_t sessionId) {
@@ -315,7 +315,7 @@ bool startRecording() {
     feedbackEvent("error");
     return false;
   }
-  if (g_nextSessionId > cfg::MAX_SESSIONS) {
+  if (g_nextSessionId == 0) {
     Serial.println("[rec] ERROR: session numbers exhausted. Clear the card.");
     feedbackEvent("error");
     return false;
@@ -413,8 +413,8 @@ void continueInNewSession() {
   const bool clean = g_writer.stop(true);
   Serial.printf("[rec] Предел частей в сессии %04u (clean=%s). Продолжаю новой сессией.\n",
                 finished, clean ? "yes" : "NO");
-  g_nextSessionId = finished + 1;
-  if (!clean || g_nextSessionId > cfg::MAX_SESSIONS || !g_writer.start(g_nextSessionId)) {
+  g_nextSessionId = session::nextSessionId(finished, finished);
+  if (!clean || g_nextSessionId == 0 || !g_writer.start(g_nextSessionId)) {
     g_state = ST_ARMED;
     feedbackEvent("error");
     Serial.println("[rec] Новая сессия не открылась. Запись остановлена.");
@@ -438,13 +438,15 @@ void serviceHealth() {
 
 // --- команды и кнопка ----------------------------------------------------------------------
 
-void onShortPress() {
+// ringHead — положение потока в момент нажатия; 0 означает «неизвестно»
+// (команда с Serial), тогда берётся текущее.
+void onShortPress(uint32_t ringHead) {
   switch (g_state) {
     case ST_ARMED:
       startRecording();
       break;
     case ST_RECORDING:
-      feedbackEvent(g_writer.mark() ? "mark" : "error");
+      feedbackEvent((ringHead ? g_writer.markAt(ringHead) : g_writer.mark()) ? "mark" : "error");
       break;
     case ST_FAULT:
       feedbackEvent("error");
@@ -460,10 +462,10 @@ void onLongPress() {
   }
 }
 
-void dispatchButton(ButtonDecoder::Event event) {
+void dispatchButton(ButtonDecoder::Event event, uint32_t ringHead) {
   switch (event) {
     case ButtonDecoder::SHORT:
-      onShortPress();
+      onShortPress(ringHead);
       break;
     case ButtonDecoder::LONG:
       onLongPress();
@@ -492,6 +494,10 @@ void IRAM_ATTR buttonIsr() {
     return;
   }
   g_btnQueue[g_btnHead].atMs = now;
+  // Положение потока в момент нажатия: обычная атомарная загрузка, ничего
+  // блокирующего. По нему метка попадает туда, где человек нажал, а не туда,
+  // где цикл об этом узнал.
+  g_btnQueue[g_btnHead].ringHead = g_ring.head();
   g_btnQueue[g_btnHead].pressed = pressed;
   g_btnHead = next;
 }
@@ -504,10 +510,15 @@ void handleButton() {
     const uint32_t atMs = g_btnQueue[tail].atMs;
     const bool pressed = g_btnQueue[tail].pressed;
     g_btnTail = static_cast<uint8_t>((tail + 1) % BUTTON_QUEUE);
+    // Метка ставится по положению потока в момент НАЖАТИЯ, а событие SHORT
+    // приходит на отпускании: поэтому запоминаем head нажатия.
+    if (pressed) {
+      g_btnPressHead = g_btnQueue[tail].ringHead;
+    }
     // Два отсчёта на фронт: второй переводит декодер в устойчивое состояние,
     // при этом отсчёт удержания идёт от самого фронта.
-    dispatchButton(g_button.feed(pressed, atMs));
-    dispatchButton(g_button.feed(pressed, atMs + cfg::BUTTON_DEBOUNCE_MS));
+    dispatchButton(g_button.feed(pressed, atMs), g_btnPressHead);
+    dispatchButton(g_button.feed(pressed, atMs + cfg::BUTTON_DEBOUNCE_MS), g_btnPressHead);
   }
   // Затем обычный опрос: он даёт длинному нажатию сработать без новых фронтов
   // и остаётся страховкой, если прерывание почему-то не встало. Пока фронт
@@ -515,7 +526,7 @@ void handleButton() {
   // раньше уже скормленного.
   const uint32_t now = millis();
   if (now - g_btnLastEdgeMs >= cfg::BUTTON_DEBOUNCE_MS) {
-    dispatchButton(g_button.feed(digitalRead(cfg::REC_BUTTON_PIN) == LOW, now));
+    dispatchButton(g_button.feed(digitalRead(cfg::REC_BUTTON_PIN) == LOW, now), g_btnPressHead);
   }
 }
 
@@ -652,7 +663,7 @@ void processSerialLine(const String &line) {
       else startRecording();
       break;
     case 'm': case 'M':
-      if (g_state == ST_RECORDING) onShortPress();
+      if (g_state == ST_RECORDING) onShortPress(0);
       else Serial.println("[mark] Только во время записи.");
       break;
     case 's': case 'S':

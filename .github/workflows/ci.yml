@@ -29,11 +29,21 @@ jobs:
         run: cd server && python -m pytest -q -rs
 
   firmware-host-tests:
-    name: firmware host tests (g++)
+    name: firmware host tests (g++, 2109 проверок)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - run: bash tools/host_tests.sh
+
+  firmware-sanitizers:
+    name: firmware host tests (ASan + UBSan)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      # Выход за границы массива, использование освобождённой памяти, утечки
+      # и неопределённое поведение: в C++ этого не видно ни глазами, ни
+      # обычными тестами, а прошивка должна работать девять часов подряд.
+      - run: bash tools/host_tests.sh --sanitize
 
   firmware-build:
     name: firmware build (arduino-cli, esp32 3.3.11)
