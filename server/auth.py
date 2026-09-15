@@ -61,10 +61,25 @@ def _issue(request: Request, response: Response) -> None:
     )
 
 
-def owner(request: Request, response: Response,
-          credentials: HTTPBasicCredentials = Depends(security)):
-    """Пустой пароль в настройках означает незакрытый сервер: отдавать разговоры
-    в таком состоянии нельзя, поэтому это отказ, а не свободный доступ."""
+def password_matches(user: str, password: str) -> bool:
+    """Сравнение постоянного времени: иначе пароль подбирается по задержке ответа."""
+    user_ok = secrets.compare_digest(user, OWNER_USER)
+    password_ok = secrets.compare_digest(password, OWNER_PASSWORD)
+    return user_ok and password_ok
+
+
+def issue(request: Request, response: Response) -> None:
+    """Выдать метку владельца. Нужна форме входа: там нет Basic-заголовка."""
+    _issue(request, response)
+
+
+def verify(request: Request, response: Response,
+           credentials: HTTPBasicCredentials | None) -> str | None:
+    """Владелец или None. Ничего не поднимает, кроме отказа незакрытого сервера.
+
+    Ответ на «не владелец» у страницы и у JSON-API разный: странице нужна форма
+    входа, API — отказ 401. Поэтому проверка отделена от отказа.
+    """
     if not OWNER_PASSWORD:
         raise HTTPException(503, "RECORDER_OWNER_PASSWORD не задан, доступ закрыт")
 
@@ -76,14 +91,18 @@ def owner(request: Request, response: Response,
             _issue(request, response)
         return OWNER_USER
 
-    if credentials is None:
-        raise HTTPException(401, "нужен логин и пароль",
-                            headers={"WWW-Authenticate": "Basic"})
-    # Сравнение постоянного времени: иначе пароль подбирается по задержке ответа.
-    user_ok = secrets.compare_digest(credentials.username, OWNER_USER)
-    password_ok = secrets.compare_digest(credentials.password, OWNER_PASSWORD)
-    if not (user_ok and password_ok):
-        raise HTTPException(401, "неверный логин или пароль",
-                            headers={"WWW-Authenticate": "Basic"})
+    if credentials is None or not password_matches(credentials.username, credentials.password):
+        return None
     _issue(request, response)
     return credentials.username
+
+
+def owner(request: Request, response: Response,
+          credentials: HTTPBasicCredentials = Depends(security)):
+    """Пустой пароль в настройках означает незакрытый сервер: отдавать разговоры
+    в таком состоянии нельзя, поэтому это отказ, а не свободный доступ."""
+    user = verify(request, response, credentials)
+    if user is None:
+        raise HTTPException(401, "нужен логин и пароль",
+                            headers={"WWW-Authenticate": "Basic"})
+    return user

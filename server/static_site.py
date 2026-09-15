@@ -7,10 +7,13 @@
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
+from fastapi.security import HTTPBasicCredentials
 
-from auth import owner
+import auth
+import login
+from auth import security
 
 WEB_DIR = Path(os.environ.get(
     "RECORDER_WEB_DIR",
@@ -43,7 +46,15 @@ def resolve(path):
 
 
 @router.get("/{path:path}")
-def site(path: str = "", _=Depends(owner)):
+def site(request: Request, response: Response, path: str = "",
+         credentials: HTTPBasicCredentials = Depends(security)):
+    # Страница ведёт на форму входа, а не отвечает 401: в режиме «на домашний
+    # экран» Safari окно Basic-авторизации не показывает, и владелец видел бы
+    # пустоту. В обычной вкладке пароль из браузера по-прежнему принимается —
+    # `verify` сначала смотрит метку, потом Basic-заголовок.
+    if auth.verify(request, response, credentials) is None:
+        return login.redirect_to_login(request)
+
     if not WEB_DIR.is_dir():
         raise HTTPException(503, f"фронтенд не собран: нет каталога {WEB_DIR}")
     hit = resolve(path or "index.html")

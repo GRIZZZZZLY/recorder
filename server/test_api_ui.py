@@ -36,9 +36,52 @@ def test_site_serves_index_and_nested_page(site):
 
 
 def test_site_is_closed_by_the_same_password(site):
+    """Ни страница, ни файлы сборки не отдаются без пароля: содержимого в
+    ответе нет, вместо него переход на форму входа."""
     with TestClient(site.app) as client:
-        assert client.get("/", auth=("owner", "wrong")).status_code == 401
-        assert client.get("/_next/app.js").status_code == 401
+        for path, attempt in (("/", {"auth": ("owner", "wrong")}), ("/_next/app.js", {})):
+            answer = client.get(path, follow_redirects=False, **attempt)
+            assert answer.status_code == 303
+            assert answer.headers["location"].startswith("/login")
+            assert "Сводка" not in answer.text and "console.log" not in answer.text
+        # JSON-API остаётся при отказе 401: странице нужна форма, фоновому
+        # запросу — честная ошибка, а не HTML формы вместо данных.
+        assert client.get("/api/ui/digest").status_code == 401
+
+
+def test_login_form_lets_the_owner_in(site):
+    """Форма входа: ради неё всё и затевалось — Safari в режиме «на домашний
+    экран» окна Basic-авторизации не показывает."""
+    with TestClient(site.app) as client:
+        assert "Пароль" in client.get("/login").text
+
+        bad = client.post("/login", data={"user": "owner", "password": "wrong", "next": "/"})
+        assert bad.status_code == 200 and "Неверное имя или пароль" in bad.text
+        assert client.get("/", follow_redirects=False).status_code == 303
+
+        good = client.post("/login", data={"user": "owner", "password": PASSWORD, "next": "/"},
+                           follow_redirects=False)
+        assert good.status_code == 303 and good.headers["location"] == "/"
+        # Метка выдана: дальше сайт открывается без пароля.
+        assert client.get("/").status_code == 200
+        # Вошедшему форма не нужна — уводим на сайт, а не в тупик.
+        assert client.get("/login", follow_redirects=False).status_code == 303
+
+
+def test_login_does_not_forward_to_a_stranger(site):
+    """`next` — только путь внутри сайта: иначе форма входа стала бы удобной
+    пересылкой на чужую страницу под нашим адресом."""
+    import login as login_module
+    assert login_module.safe_next("https://example.org/") == "/"
+    assert login_module.safe_next("//example.org/") == "/"
+    assert login_module.safe_next("/records/?show=all") == "/records/?show=all"
+
+    with TestClient(site.app) as client:
+        answer = client.post("/login",
+                             data={"user": "owner", "password": PASSWORD,
+                                   "next": "https://example.org/"},
+                             follow_redirects=False)
+        assert answer.headers["location"] == "/"
 
 
 def test_site_without_build_says_so(env, monkeypatch, tmp_path):

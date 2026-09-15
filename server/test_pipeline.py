@@ -602,9 +602,17 @@ def test_status_sees_gap_failure_and_duration_mismatch(env, monkeypatch):
 # --- интерфейс --------------------------------------------------------------
 
 def test_web_requires_password(env):
+    """Страница без пароля уводит на форму входа, а не отдаёт содержимое.
+
+    Раньше здесь был отказ 401 с окном браузера. В режиме «на домашний экран»
+    Safari это окно не показывает вовсе, поэтому страница ведёт на свою форму.
+    Пароль из браузера при этом принимается по-прежнему.
+    """
     with TestClient(env.app) as client:
-        assert client.get("/").status_code == 401
-        assert client.get("/", auth=("owner", "wrong")).status_code == 401
+        for attempt in ({}, {"auth": ("owner", "wrong")}):
+            answer = client.get("/", follow_redirects=False, **attempt)
+            assert answer.status_code == 303
+            assert answer.headers["location"].startswith("/login")
         assert client.get("/", auth=AUTH).status_code == 200
 
 

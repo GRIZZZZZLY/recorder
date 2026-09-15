@@ -66,16 +66,29 @@ export function EmptyNote({ children }: { children: React.ReactNode }) {
   return <p className="px-1 text-row text-text-secondary">{children}</p>;
 }
 
+/** Текущий адрес для возврата после входа. На сервере его нет. */
+function here() {
+  return typeof window === "undefined" ? "/" : window.location.pathname + window.location.search;
+}
+
 export function Failed({ error, onRetry }: { error: Error; onRetry: () => void }) {
   const auth = error instanceof AuthError;
   return (
     <div className="rise-in flex items-center gap-3.5 rounded-card bg-surface shadow-plate p-5 text-row">
       <Dot tone="accent" />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span>{auth ? "Нужен вход заново — обновите страницу" : "Не удалось загрузить данные"}</span>
+        <span>{auth ? "Метка входа истекла" : "Не удалось загрузить данные"}</span>
         <span className="truncate font-mono text-micro text-text-secondary">{error.message}</span>
       </div>
-      {!auth && (
+      {auth ? (
+        // Метка живёт месяц, но когда-то кончается — и в режиме «на домашний
+        // экран» браузер пароль сам не спросит. Ведём на форму и возвращаем
+        // обратно на ту же страницу.
+        <a href={`/login?next=${encodeURIComponent(here())}`}
+           className="press shrink-0 rounded-inner bg-hairline px-4 py-2 text-note hover:bg-hairline-strong">
+          Войти
+        </a>
+      ) : (
         <Button icon={ArrowClockwise} onClick={onRetry} className="shrink-0">Повторить</Button>
       )}
     </div>

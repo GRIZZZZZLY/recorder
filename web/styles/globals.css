@@ -718,20 +718,36 @@ dialog[open] {
 
 dialog::backdrop {
   background-color: rgb(0 0 0 / 0);
+  /* Страница уходит из фокуса, а не просто темнеет: лист лежит над ней, а не
+   * вместо неё. Размытие только на фоне листа — на прокручиваемых контейнерах
+   * оно перерисовывалось бы каждый кадр. */
+  backdrop-filter: blur(0px);
   transition:
     background-color var(--duration-base) var(--ease-out),
+    backdrop-filter var(--duration-base) var(--ease-out),
     overlay var(--duration-base) allow-discrete,
     display var(--duration-base) allow-discrete;
 }
 
 dialog[open]::backdrop {
   background-color: rgb(0 0 0 / 0.5);
+  backdrop-filter: blur(12px);
   transition-duration: var(--duration-base);
 }
 
 @starting-style {
   dialog[open]::backdrop {
     background-color: rgb(0 0 0 / 0);
+    backdrop-filter: blur(0px);
+  }
+}
+
+/* Настройка iOS «уменьшить прозрачность»: размытие убираем, затемняем сильнее —
+ * иначе за листом останется читаемый текст, а просили именно убрать его. */
+@media (prefers-reduced-transparency: reduce) {
+  dialog[open]::backdrop {
+    backdrop-filter: none;
+    background-color: rgb(0 0 0 / 0.72);
   }
 }
 
@@ -745,6 +761,13 @@ dialog[open]::backdrop {
   dialog::backdrop {
     transition: none;
   }
+}
+
+/* Столбик волны освещён сверху тем же светом, что и корпус: вершина светлее
+ * основания. Градиент поверх любой заливки, поэтому годится всем состояниям
+ * записи — готово, в очереди, ошибка. */
+@utility lit-bar {
+  background-image: linear-gradient(to bottom, rgb(255 255 255 / 0.22), transparent 62%);
 }
 
 /* Цель для пальца не меньше 44 × 44 px при любом видимом размере: невидимый

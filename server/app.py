@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 import api_ui
 import audio
 import envelope
+import login
 import static_site
 from auth import owner
 from db import AUDIO_DIR, connect, init_storage, save_marks, set_device_state
@@ -219,6 +220,9 @@ def sessions(_=Depends(owner)):
 
 
 app.include_router(api_ui.router)
+# Форма входа — до catch-all и без пароля: иначе за паролем оказалась бы сама
+# страница ввода пароля.
+app.include_router(login.router)
 # Catch-all регистрируется последним из всех: /api/v1/... объявлены декораторами
 # выше в этом же файле, а значит попадают в app.router раньше него — но легко
 # забыть при следующей правке, поэтому регистрация вынесена в самый конец файла.

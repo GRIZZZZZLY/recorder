@@ -58,7 +58,7 @@ export function Waveform({
       {bars.map((value, index) => (
         <span
           key={index}
-          className={cx("shrink-0 rounded-full", index < edge ? "bg-fill" : tone)}
+          className={cx("lit-bar shrink-0 rounded-full", index < edge ? "bg-fill" : tone)}
           style={{ width: bar, height: Math.max(bar, Math.round((value / 100) * height)) }}
         />
       ))}
