@@ -221,6 +221,9 @@ def init_storage():
         speaker_columns = {row["name"]
                            for row in conn.execute("PRAGMA table_info(speaker_names)")}
         if speaker_columns and "part" not in speaker_columns:
+            # Явная транзакция: SQLite умеет откатывать DDL, а без неё падение
+            # между DROP и RENAME оставило бы владельца без разметки.
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "CREATE TABLE speaker_names_new ("
                 " device_id TEXT NOT NULL, session INTEGER NOT NULL,"
@@ -238,6 +241,7 @@ def init_storage():
             conn.execute("DROP TABLE speaker_names")
             conn.execute("ALTER TABLE speaker_names_new RENAME TO speaker_names")
         conn.commit()
+
 
 
 def format_abs(seconds):
