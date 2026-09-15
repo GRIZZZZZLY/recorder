@@ -5,7 +5,11 @@ import { Card, Row, Section } from "@/components/recorder/list";
 import { Button } from "@/components/recorder/ui";
 import { apiPost } from "@/lib/api";
 
-type Speaker = { speaker: number; name: string; is_me: boolean };
+type Speaker = { part: number; speaker: number; name: string; is_me: boolean };
+
+/** Ключ разметки. Номер говорящего принадлежит своей части: части уходят
+ *  в распознавание поодиночке, и «первый» во второй части — уже другой голос. */
+const keyOf = (s: { part: number; speaker: number }) => `${s.part}:${s.speaker}`;
 
 /**
  * Переключатель «это я». Внутри — нативная радиокнопка: «я» в разговоре один,
@@ -41,11 +45,12 @@ function MeSwitch({ value, current, onChange }: {
 export function SpeakersForm({ deviceId, session, speakers, onSaved }:
   { deviceId: string; session: number; speakers: Speaker[]; onSaved: () => void }) {
   const [names, setNames] = useState(() =>
-    Object.fromEntries(speakers.map((s) => [String(s.speaker), s.name])));
+    Object.fromEntries(speakers.map((s) => [keyOf(s), s.name])));
   const [me, setMe] = useState(() => {
     const found = speakers.find((s) => s.is_me);
-    return found ? String(found.speaker) : "";
+    return found ? keyOf(found) : "";
   });
+  const manyParts = new Set(speakers.map((s) => s.part)).size > 1;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -55,7 +60,7 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
     setBusy(true);
     try {
       await apiPost(`/sessions/${encodeURIComponent(deviceId)}/${session}/speakers`,
-                    { names, me: me === "" ? null : Number(me) });
+                    { names, me: me === "" ? null : me });
       setError(null);
       onSaved();
     } catch (err) {
@@ -69,22 +74,30 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
     <Section note={`Говорящие · ${speakers.length}`}>
       <Card>
         {speakers.map((speaker) => {
-          const name = names[String(speaker.speaker)] ?? "";
+          const key = keyOf(speaker);
+          const name = names[key] ?? "";
+          const who = `Говорящий ${speaker.speaker + 1}`;
           return (
-            <Row key={speaker.speaker}>
+            <Row key={key}>
               <span aria-hidden
                     className="flex size-7 shrink-0 items-center justify-center rounded-chip bg-surface-elevated text-micro text-text-secondary">
                 {name.trim() ? name.trim()[0].toUpperCase() : speaker.speaker + 1}
               </span>
+              {manyParts && (
+                <span className="shrink-0 font-mono text-micro text-text-tertiary"
+                      title="номер части: нумерация голосов в каждой части своя">
+                  ч.{String(speaker.part).padStart(2, "0")}
+                </span>
+              )}
               <input
                 value={name}
-                placeholder={`Говорящий ${speaker.speaker + 1}`}
-                aria-label={`Имя говорящего ${speaker.speaker + 1}`}
+                placeholder={who}
+                aria-label={manyParts ? `Имя: ${who}, часть ${speaker.part}` : `Имя: ${who}`}
                 onChange={(event) =>
-                  setNames((old) => ({ ...old, [String(speaker.speaker)]: event.target.value }))}
+                  setNames((old) => ({ ...old, [key]: event.target.value }))}
                 className="min-w-0 flex-1 rounded-inner bg-transparent px-2 py-1 text-row text-text-primary transition-colors placeholder:text-text-tertiary hover:bg-hairline"
               />
-              <MeSwitch value={String(speaker.speaker)} current={me} onChange={setMe} />
+              <MeSwitch value={key} current={me} onChange={setMe} />
             </Row>
           );
         })}
@@ -92,7 +105,9 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
       <div className="flex items-center gap-3 px-1">
         <Button variant="secondary" disabled={busy} onClick={save}>Сохранить</Button>
         <span className="text-note text-text-secondary">
-          Номера — метки диаризации, транскрипт не меняется.
+          {manyParts
+            ? "Номера — метки диаризации внутри своей части, между частями не совпадают."
+            : "Номера — метки диаризации, транскрипт не меняется."}
         </span>
       </div>
       {error ? <p className="rise-in px-1 text-note text-accent-text">{error}</p> : null}

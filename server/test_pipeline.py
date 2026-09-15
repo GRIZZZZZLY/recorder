@@ -86,9 +86,16 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("RECORDER_QUIET_MINUTES", "0")
     monkeypatch.setenv("DEEPGRAM_API_KEY", "key-for-tests")
 
-    import db, duedate, textnorm, transcribe, summarize, app as app_module, worker
+    # Архив выключен: ffmpeg есть не на всякой машине разработки, а тесты
+    # обязаны вести себя одинаково. Проверки архива включают его сами.
+    monkeypatch.setenv("RECORDER_ARCHIVE_FLAC", "0")
 
-    for module in (textnorm, duedate, db, transcribe, summarize, app_module, worker):
+    import archive, db, duedate, textnorm, stt, transcribe, summarize
+    import app as app_module
+    import worker
+
+    for module in (textnorm, duedate, db, stt, transcribe, archive, summarize,
+                   app_module, worker):
         importlib.reload(module)
     db.init_storage()
 
@@ -97,6 +104,8 @@ def env(tmp_path, monkeypatch):
 
     bundle = Env()
     bundle.db = db
+    bundle.archive = archive
+    bundle.stt = stt
     bundle.duedate = duedate
     bundle.transcribe = transcribe
     bundle.summarize = summarize
@@ -262,7 +271,7 @@ def test_bad_key_keeps_part_pending_for_an_hour(env, monkeypatch):
         raise env.transcribe.TranscribeError("Deepgram отказал 401", retryable=True,
                                              wait_minutes=60)
 
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", bad_key)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", bad_key)
     with closing(env.db.connect()) as conn:
         assert env.worker.tick(conn) is True
         row = conn.execute(
@@ -276,7 +285,7 @@ def test_bad_key_keeps_part_pending_for_an_hour(env, monkeypatch):
 
 def test_part_is_transcribed_then_session_summarized(env, monkeypatch):
     upload(env)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     summary_stub(env, monkeypatch)
 
     with closing(env.db.connect()) as conn:
@@ -303,7 +312,7 @@ def test_done_transcript_is_never_requested_again(env, monkeypatch):
         calls.append(path)
         return fake_transcribe(env)(path)
 
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", counting)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", counting)
     summary_stub(env, monkeypatch)
 
     with closing(env.db.connect()) as conn:
@@ -320,7 +329,7 @@ def test_done_transcript_is_never_requested_again(env, monkeypatch):
 
 def test_late_part_makes_summary_stale_and_it_is_rebuilt(env, monkeypatch):
     upload(env, part=1)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     summaries = []
 
     def counting_summary(text):
@@ -340,7 +349,7 @@ def test_late_part_makes_summary_stale_and_it_is_rebuilt(env, monkeypatch):
 
 def test_failed_summary_keeps_transcript_available(env, monkeypatch):
     upload(env)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
 
     def failing(text):
         raise env.summarize.SummaryError("модель недоступна")
@@ -358,7 +367,7 @@ def test_failed_summary_keeps_transcript_available(env, monkeypatch):
 
 def test_auth_failure_in_summary_is_reported_not_retried_fast(env, monkeypatch):
     upload(env)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
 
     def expired(text):
         raise env.summarize.SummaryError("authentication_error: OAuth access token has expired")
@@ -383,7 +392,7 @@ def test_transient_failure_first_retry_is_one_minute(env, monkeypatch):
     def network_down(path):
         raise env.transcribe.TranscribeError("сеть", retryable=True)
 
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", network_down)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", network_down)
     with closing(env.db.connect()) as conn:
         assert env.worker.tick(conn) is True
         row = conn.execute(
@@ -403,7 +412,7 @@ def test_transient_failure_is_retried_forever(env, monkeypatch):
     def network_down(path):
         raise env.transcribe.TranscribeError("сеть", retryable=True)
 
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", network_down)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", network_down)
     with closing(env.db.connect()) as conn:
         env.worker.tick(conn)
         conn.execute("UPDATE transcripts SET attempts=99,"
@@ -424,7 +433,7 @@ def test_declared_complete_session_is_summarized_without_waiting(env, monkeypatc
     monkeypatch.setattr(env.db, "SESSION_QUIET_MINUTES", 12)
     upload(env, part=1, session_parts=2)
     upload(env, part=2, marker=2, session_parts=2)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     summary_stub(env, monkeypatch)
     run_all(env)
     with closing(env.db.connect()) as conn:
@@ -435,7 +444,7 @@ def test_declared_incomplete_session_still_waits_for_quiet(env, monkeypatch):
     """Объявлено две части, пришла одна: как раньше, ждём тишины."""
     monkeypatch.setattr(env.db, "SESSION_QUIET_MINUTES", 12)
     upload(env, part=1, session_parts=2)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     summary_stub(env, monkeypatch)
     run_all(env)
     with closing(env.db.connect()) as conn:
@@ -453,7 +462,7 @@ def test_unrecoverable_part_does_not_block_session_summary(env, monkeypatch):
             raise env.transcribe.TranscribeError("битое аудио", retryable=False)
         return fake_transcribe(env)(path)
 
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", half_broken)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", half_broken)
     captured = []
     monkeypatch.setattr(env.worker.summarize, "summarize",
                         lambda text: captured.append(text) or json.loads(json.dumps(SUMMARY)))
@@ -470,7 +479,7 @@ def test_timeline_is_absolute_across_parts(env, monkeypatch):
     """Часть 2 начинается там, где кончилась часть 1: 2 секунды аудио → сдвиг 2 с."""
     for part in (1, 2, 3):
         upload(env, part=part, marker=part, seconds=2)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     summary_stub(env, monkeypatch)
     run_all(env)
 
@@ -504,7 +513,7 @@ def test_abs_time_roundtrip(env):
 def test_quote_found_confirms_source_with_seek_target(env, monkeypatch):
     for part in (1, 2):
         upload(env, part=part, marker=part, seconds=2)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     result = json.loads(json.dumps(SUMMARY))
     # пункт из второй части: абсолютное время 2 + 1 = 3 с
     result["decisions"].append({"text": "Проверить договор", "time": "0:00:03",
@@ -523,7 +532,7 @@ def test_quote_found_confirms_source_with_seek_target(env, monkeypatch):
 
 def test_quote_not_found_is_flagged_but_still_seekable(env, monkeypatch):
     upload(env)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     result = json.loads(json.dumps(SUMMARY))
     result["facts"] = [{"text": "Выдумка", "time": "0:00:05",
                         "quote": "этих слов в записи нет"}]
@@ -549,7 +558,7 @@ def test_source_none_when_no_time_and_no_quote(env):
 
 def test_search_finds_other_word_form(env, monkeypatch):
     upload(env)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     summary_stub(env, monkeypatch)
     run_all(env)
 
@@ -575,7 +584,7 @@ def test_status_sees_gap_failure_and_duration_mismatch(env, monkeypatch):
         # Deepgram насчитал 1 с там, где файл на 2 с
         return env.transcribe.parse_payload(deepgram_reply(PART_TEXTS[1], duration=1.0))
 
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", mixed)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", mixed)
     summary_stub(env, monkeypatch)
     run_all(env)
 
@@ -652,7 +661,7 @@ def test_due_phrases_become_dates_or_stay_unparsed(env):
 def test_task_survives_summary_rebuild_and_keeps_manual_status(env, monkeypatch):
     """Поздняя часть пересобирает саммари. Закрытие владельца при этом не теряется."""
     upload(env, part=1)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
 
     other = json.loads(json.dumps(SUMMARY))
     other["tasks"] = [{"text": "Совсем другая задача", "owner": "", "due": "как получится",
@@ -693,22 +702,83 @@ def test_task_survives_summary_rebuild_and_keeps_manual_status(env, monkeypatch)
 
 def test_my_tasks_come_from_speaker_marked_as_me(env, monkeypatch):
     upload(env)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     summary_stub(env, monkeypatch)
     run_all(env)
 
     with closing(env.db.connect()) as conn:
         assert env.db.task_rows(conn, mine=True) == []     # никто не отмечен «это я»
-        env.db.set_speaker(conn, "xiao-01", 7, 1, "Мария", True)
+        env.db.set_speaker(conn, "xiao-01", 7, 1, 1, "Мария", True)
         mine = env.db.task_rows(conn, mine=True)
     assert len(mine) == 1 and mine[0]["owner"] == "Мария"
 
 
 # --- вопросы без ответа --------------------------------------------------------
 
+def test_the_same_number_in_two_parts_is_not_the_same_person(env, monkeypatch):
+    """Deepgram нумерует голоса внутри одной части. Склеить номера значит
+    приписать слова тому, кто их не говорил."""
+    upload(env, part=1)
+    upload(env, part=2, marker=2)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
+    summary_stub(env, monkeypatch)
+    run_all(env)
+
+    with closing(env.db.connect()) as conn:
+        env.db.set_speaker(conn, "xiao-01", 7, 1, 0, "Мария", False)
+        timeline, _ = env.db.session_timeline(conn, "xiao-01", 7)
+
+    named = {(u["part"], u["speaker"]): u["label"] for u in timeline}
+    assert named[(1, 0)] == "Мария"
+    assert named[(2, 0)] == "Говорящий 1", "имя из первой части утекло во вторую"
+
+
+def test_model_is_told_that_speaker_numbers_are_local_to_a_part(env, monkeypatch):
+    upload(env, part=1)
+    upload(env, part=2, marker=2)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
+    run_all(env)
+
+    with closing(env.db.connect()) as conn:
+        many = env.db.session_transcript(conn, "xiao-01", 7)
+        one_part = env.db.session_transcript(conn, "xiao-01", 8)
+    assert "номера говорящих у каждой части свои" in many
+    # Для сессии из одной части оговорка не нужна и только мешала бы.
+    assert one_part == ""
+
+
+def test_old_speaker_names_survive_the_move_to_per_part_keys(env, monkeypatch):
+    """Разметка, сделанная до переезда, применялась ко всей сессии. Миграция
+    обязана сохранить ровно то, что владелец видел на странице."""
+    upload(env, part=1)
+    upload(env, part=2, marker=2)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
+    run_all(env)
+
+    with closing(env.db.connect()) as conn:
+        conn.execute("DROP TABLE speaker_names")
+        conn.execute(
+            "CREATE TABLE speaker_names (device_id TEXT NOT NULL,"
+            " session INTEGER NOT NULL, speaker INTEGER NOT NULL,"
+            " name TEXT NOT NULL DEFAULT '', is_me INTEGER NOT NULL DEFAULT 0,"
+            " PRIMARY KEY (device_id, session, speaker))"
+        )
+        conn.execute("INSERT INTO speaker_names VALUES ('xiao-01', 7, 0, 'Мария', 1)")
+        conn.commit()
+
+    env.db.init_storage()
+
+    with closing(env.db.connect()) as conn:
+        names = env.db.speaker_names(conn, "xiao-01", 7)
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(speaker_names)")}
+    assert "part" in columns
+    assert names[(1, 0)] == {"name": "Мария", "is_me": True}
+    assert names[(2, 0)] == {"name": "Мария", "is_me": True}
+
+
 def test_question_state_is_manual_and_survives_rebuild(env, monkeypatch):
     upload(env)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     result = json.loads(json.dumps(SUMMARY))
     result["open_questions"] = [{"text": "Кто смотрит договор", "time": "0:00:05",
                                  "quote": "кто смотрит"}]
@@ -733,7 +803,7 @@ def test_question_state_is_manual_and_survives_rebuild(env, monkeypatch):
 
 def test_alias_joins_two_spellings_of_one_project(env, monkeypatch):
     upload(env)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     result = json.loads(json.dumps(SUMMARY))
     result["topics"] = ["Posiflora"]
     summary_stub(env, monkeypatch, result)
@@ -760,7 +830,7 @@ def test_review_collects_only_what_needs_owner(env, monkeypatch):
         ]
         return env.transcribe.parse_payload(payload)
 
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", shaky)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", shaky)
     result = json.loads(json.dumps(SUMMARY))
     result["facts"] = [
         {"text": "Встреча 23 числа", "time": "0:00:01", "quote": "к пятнице выслать смету"},
@@ -784,7 +854,7 @@ def test_review_collects_only_what_needs_owner(env, monkeypatch):
 def test_old_transcripts_without_confidence_are_not_flagged(env, monkeypatch):
     """Уверенность слов начали писать в этом этапе. Старые записи не помечаем."""
     upload(env)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     summary_stub(env, monkeypatch)
     run_all(env)
 
@@ -799,7 +869,7 @@ def test_old_transcripts_without_confidence_are_not_flagged(env, monkeypatch):
 
 def test_digest_counts_without_calling_model(env, monkeypatch):
     upload(env, seconds=60)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     summary_stub(env, monkeypatch)
     run_all(env)
 

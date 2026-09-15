@@ -51,6 +51,13 @@ CREATE TABLE IF NOT EXISTS parts (
     -- NULL — не объявлено: часть восстановлена после сбоя или прошивка старая.
     -- Когда пришло столько частей, саммари не ждёт тишины.
     expected_parts INTEGER,
+    -- Перевод принятого WAV в FLAC без потерь (archive.py). pending | done |
+    -- failed. bytes и crc32 остаются от WAV: это контракт приёмки, по ним же
+    -- считается шкала времени, и переписывать их под сжатый файл нельзя.
+    archive_status TEXT NOT NULL DEFAULT 'pending',
+    archive_attempts INTEGER NOT NULL DEFAULT 0,
+    archive_error TEXT,
+    archive_next_try_at TEXT NOT NULL DEFAULT (datetime('now')),
     received_at TEXT    NOT NULL DEFAULT (datetime('now')),
     -- Одна часть сессии одного устройства существует ровно в одном экземпляре.
     -- Это и есть идемпотентность: повтор упрётся сюда, а не создаст дубль.
@@ -91,16 +98,22 @@ CREATE TABLE IF NOT EXISTS summaries (
     PRIMARY KEY (device_id, session)
 );
 
--- Ручные имена для номеров диаризации внутри одной сессии. Исходный номер
--- в транскрипте не меняется. is_me пока ничего не считает: он накапливает
--- размеченные образцы голоса для будущего определения своего голоса.
+-- Ручные имена для номеров диаризации. Исходный номер в транскрипте не
+-- меняется. is_me пока ничего не считает: он накапливает размеченные образцы
+-- голоса для будущего определения своего голоса.
+--
+-- Ключ включает часть намеренно. Deepgram обрабатывает каждую часть отдельным
+-- запросом, поэтому «говорящий 0» в части 1 и «говорящий 0» в части 2 — это
+-- два разных номера, а не один человек. Считать их одним человеком значит
+-- приписать слова тому, кто их не говорил.
 CREATE TABLE IF NOT EXISTS speaker_names (
     device_id TEXT    NOT NULL,
     session   INTEGER NOT NULL,
+    part      INTEGER NOT NULL,
     speaker   INTEGER NOT NULL,
     name      TEXT    NOT NULL DEFAULT '',
     is_me     INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (device_id, session, speaker)
+    PRIMARY KEY (device_id, session, part, speaker)
 );
 
 -- Задачи вынесены из саммари в таблицу: у них есть ручной статус, а саммари
@@ -185,9 +198,45 @@ def init_storage():
         # таблицу. У частей, принятых до появления колонки, останется NULL —
         # интерфейс и очередь это переживают.
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(parts)")}
-        for name, kind in (("envelope", "TEXT"), ("expected_parts", "INTEGER")):
+        for name, kind in (
+            ("envelope", "TEXT"),
+            ("expected_parts", "INTEGER"),
+            # Части, принятые до появления архива, становятся кандидатами на
+            # сжатие: значение по умолчанию у них такое же, как у новых.
+            # datetime('now') в ALTER TABLE не примут: значение по умолчанию
+            # для добавляемой колонки обязано быть константой.
+            ("archive_status", "TEXT NOT NULL DEFAULT 'pending'"),
+            ("archive_attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ("archive_error", "TEXT"),
+            ("archive_next_try_at", "TEXT NOT NULL DEFAULT '1970-01-01 00:00:00'"),
+        ):
             if name not in columns:
                 conn.execute(f"ALTER TABLE parts ADD COLUMN {name} {kind}")
+
+        # Имена говорящих переехали с ключа (устройство, сессия, говорящий) на
+        # ключ с частью. Ключ в SQLite не меняется на месте, поэтому таблица
+        # пересобирается. Каждая старая строка размножается на все части своей
+        # сессии: ровно это владелец и видел на странице до переезда, так что
+        # разметка не пропадает и смысла себе не меняет.
+        speaker_columns = {row["name"]
+                           for row in conn.execute("PRAGMA table_info(speaker_names)")}
+        if speaker_columns and "part" not in speaker_columns:
+            conn.execute(
+                "CREATE TABLE speaker_names_new ("
+                " device_id TEXT NOT NULL, session INTEGER NOT NULL,"
+                " part INTEGER NOT NULL, speaker INTEGER NOT NULL,"
+                " name TEXT NOT NULL DEFAULT '', is_me INTEGER NOT NULL DEFAULT 0,"
+                " PRIMARY KEY (device_id, session, part, speaker))"
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO speaker_names_new"
+                " (device_id, session, part, speaker, name, is_me)"
+                " SELECT s.device_id, s.session, p.part, s.speaker, s.name, s.is_me"
+                " FROM speaker_names s JOIN parts p"
+                "   ON p.device_id = s.device_id AND p.session = s.session"
+            )
+            conn.execute("DROP TABLE speaker_names")
+            conn.execute("ALTER TABLE speaker_names_new RENAME TO speaker_names")
         conn.commit()
 
 
@@ -277,33 +326,126 @@ def fail_transcript(conn, key, error, retry_in_minutes):
     conn.commit()
 
 
-# --- говорящие ----------------------------------------------------------------
+# --- архив: WAV -> FLAC --------------------------------------------------------
 
-def speaker_names(conn, device_id, session):
-    """{номер: {'name': ..., 'is_me': bool}} для сессии."""
-    rows = conn.execute(
-        "SELECT speaker, name, is_me FROM speaker_names WHERE device_id=? AND session=?",
-        (device_id, session),
-    ).fetchall()
-    return {r["speaker"]: {"name": r["name"], "is_me": bool(r["is_me"])} for r in rows}
+def claim_part_for_archive(conn):
+    """Часть, которую пора сжать: аудио ещё в WAV и подошло время попытки.
+
+    Расшифровка идёт первой: она платная, и ждать сжатия не должна. Поэтому
+    берутся только части с готовым или окончательно провалившимся транскриптом."""
+    return conn.execute(
+        "SELECT p.device_id, p.session, p.part, p.audio_path, p.bytes,"
+        "       p.archive_attempts"
+        " FROM parts p LEFT JOIN transcripts t"
+        "   ON t.device_id=p.device_id AND t.session=p.session AND t.part=p.part"
+        " WHERE p.archive_status='pending'"
+        "   AND p.audio_path LIKE '%.wav'"
+        "   AND p.archive_next_try_at <= datetime('now')"
+        "   AND t.status IN ('done', 'failed')"
+        " ORDER BY p.session, p.part LIMIT 1"
+    ).fetchone()
 
 
-def set_speaker(conn, device_id, session, speaker, name, is_me):
+def finish_archive(conn, key, flac_path):
+    """Новый путь в базу. Удаление WAV — после этого и только после."""
     conn.execute(
-        "INSERT INTO speaker_names (device_id, session, speaker, name, is_me)"
-        " VALUES (?,?,?,?,?)"
-        " ON CONFLICT(device_id, session, speaker) DO UPDATE SET name=excluded.name,"
-        " is_me=excluded.is_me",
-        (device_id, session, speaker, name.strip(), 1 if is_me else 0),
+        "UPDATE parts SET audio_path=?, archive_status='done', archive_error=NULL"
+        " WHERE device_id=? AND session=? AND part=?",
+        (str(flac_path), *key),
     )
     conn.commit()
 
 
-def speaker_label(names, speaker):
+def fail_archive(conn, key, error, retry_in_minutes):
+    if retry_in_minutes is None:
+        conn.execute(
+            "UPDATE parts SET archive_status='failed', archive_error=?,"
+            " archive_attempts=archive_attempts+1"
+            " WHERE device_id=? AND session=? AND part=?",
+            (error, *key),
+        )
+    else:
+        conn.execute(
+            "UPDATE parts SET archive_error=?, archive_attempts=archive_attempts+1,"
+            " archive_next_try_at=datetime('now', ?)"
+            " WHERE device_id=? AND session=? AND part=?",
+            (error, f"+{retry_in_minutes} minutes", *key),
+        )
+    conn.commit()
+
+
+def stale_wavs(conn):
+    """WAV, оставшиеся после краха между записью пути в базу и удалением файла.
+
+    Их держит только упавший процесс: в базе уже лежит проверенный FLAC."""
+    rows = conn.execute(
+        "SELECT audio_path FROM parts WHERE archive_status='done'"
+        " AND audio_path LIKE '%.flac'"
+    ).fetchall()
+    leftovers = []
+    for row in rows:
+        wav = Path(row["audio_path"]).with_suffix(".wav")
+        if wav.exists():
+            leftovers.append(wav)
+    return leftovers
+
+
+def audio_file(conn, device_id, session, part):
+    """Путь к аудио части и его media type. None — такой части нет.
+
+    Если записанного пути нет на диске, пробуем соседа с другим расширением:
+    воркер меняет путь и удаляет WAV не одним действием, и запрос плеера может
+    прийти ровно между ними."""
+    row = conn.execute(
+        "SELECT audio_path FROM parts WHERE device_id=? AND session=? AND part=?",
+        (device_id, session, part),
+    ).fetchone()
+    if row is None:
+        return None
+    path = Path(row["audio_path"])
+    if not path.exists():
+        for suffix in (".flac", ".wav"):
+            other = path.with_suffix(suffix)
+            if other.exists():
+                path = other
+                break
+        else:
+            return None
+    return path, "audio/flac" if path.suffix == ".flac" else "audio/wav"
+
+
+# --- говорящие ----------------------------------------------------------------
+
+def speaker_names(conn, device_id, session):
+    """{(часть, номер): {'name': ..., 'is_me': bool}} для сессии.
+
+    Номер говорящего принадлежит своей части: Deepgram нумерует голоса внутри
+    одного запроса, а части уходят к нему поодиночке."""
+    rows = conn.execute(
+        "SELECT part, speaker, name, is_me FROM speaker_names"
+        " WHERE device_id=? AND session=?",
+        (device_id, session),
+    ).fetchall()
+    return {(r["part"], r["speaker"]): {"name": r["name"], "is_me": bool(r["is_me"])}
+            for r in rows}
+
+
+def set_speaker(conn, device_id, session, part, speaker, name, is_me):
+    conn.execute(
+        "INSERT INTO speaker_names (device_id, session, part, speaker, name, is_me)"
+        " VALUES (?,?,?,?,?,?)"
+        " ON CONFLICT(device_id, session, part, speaker) DO UPDATE SET"
+        " name=excluded.name, is_me=excluded.is_me",
+        (device_id, session, part, speaker, name.strip(), 1 if is_me else 0),
+    )
+    conn.commit()
+
+
+def speaker_label(names, part, speaker):
     """Имя, если задано, иначе технический номер. Номер не является личностью."""
     if speaker is None:
         return "Говорящий ?"
-    entry = names.get(speaker)
+    entry = names.get((part, speaker))
     if entry and entry["name"]:
         return entry["name"]
     return f"Говорящий {speaker + 1}"
@@ -358,7 +500,7 @@ def session_timeline(conn, device_id, session):
                 "end": float(u.get("e") or 0.0),
                 "start_abs": base + float(u.get("s") or 0.0),
                 "speaker": u.get("spk"),
-                "label": speaker_label(names, u.get("spk")),
+                "label": speaker_label(names, row["part"], u.get("spk")),
                 "text": u["text"],
             })
     return timeline, failed
@@ -374,6 +516,12 @@ def session_transcript(conn, device_id, session):
     marks = session_marks(conn, device_id, session)
     parts = sorted({u["part"] for u in timeline} | set(failed))
     blocks = []
+    if len(parts) > 1:
+        # Каждая часть распознавалась отдельно, поэтому номера говорящих в
+        # разных частях друг с другом не связаны. Без этой строки модель
+        # склеивает «Говорящего 1» из первой части с «Говорящим 1» из второй.
+        blocks.append("[номера говорящих у каждой части свои и между частями"
+                      " не совпадают; одинаковые имена — это один человек]")
     for part in parts:
         if part in failed:
             blocks.append(f"[часть {part:02d}: расшифровка не удалась]")
@@ -976,6 +1124,11 @@ def processing_status(conn):
         "stuck_summaries": [dict(r) for r in conn.execute(
             "SELECT device_id, session, last_error, attempts FROM summaries"
             " WHERE status!='done' AND last_error IS NOT NULL ORDER BY session").fetchall()],
+        # Части, которые не удалось сжать: звук цел и работает, но владелец
+        # должен знать, что архив встал.
+        "archive_failed": [dict(r) for r in conn.execute(
+            "SELECT device_id, session, part, archive_error, archive_attempts"
+            " FROM parts WHERE archive_status='failed' ORDER BY session, part").fetchall()],
         "recovered_parts": [dict(r) for r in conn.execute(
             "SELECT device_id, session, part FROM parts WHERE recovered=1"
             " ORDER BY session, part").fetchall()],

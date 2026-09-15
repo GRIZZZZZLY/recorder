@@ -10,9 +10,12 @@
 """
 import json
 import os
-from dataclasses import dataclass, field
 
 import httpx
+
+# Форма результата и класс ошибки общие для всех движков: stt.py. Deepgram —
+# одна из реализаций, а не определение того, как выглядит расшифровка.
+from stt import Transcript, TranscribeError
 
 API_URL = os.environ.get("DEEPGRAM_URL", "https://api.deepgram.com/v1/listen")
 API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
@@ -37,23 +40,6 @@ ACCOUNT_STATUSES = {401, 402, 403}
 ACCOUNT_RETRY_MINUTES = 60
 # Сам запрос или файл: повторять нечего.
 FATAL_STATUSES = {400, 404}
-
-
-class TranscribeError(Exception):
-    def __init__(self, message, retryable=True, wait_minutes=None):
-        super().__init__(message)
-        self.retryable = retryable
-        # Пауза, заданная самой ошибкой. None — воркер выбирает по числу попыток.
-        self.wait_minutes = wait_minutes
-
-
-@dataclass
-class Transcript:
-    text: str                       # чистый текст без меток
-    words: list                     # [{w, s, e, spk}]
-    utterances: list                # [{s, e, spk, text}], секунды от начала части
-    duration_sec: float
-    request_id: str = ""
 
 
 def _first_alternative(payload):
@@ -171,7 +157,9 @@ def transcribe_file(path):
 
     headers = {
         "Authorization": f"Token {API_KEY}",
-        "Content-Type": "audio/wav",
+        # Часть, уже переведённую в архив, отдаём как FLAC: Deepgram принимает
+        # оба формата, но чужой Content-Type — повод для отказа 400.
+        "Content-Type": "audio/flac" if str(path).endswith(".flac") else "audio/wav",
     }
 
     try:

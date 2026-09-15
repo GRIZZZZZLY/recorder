@@ -16,8 +16,10 @@ router = APIRouter(prefix="/api/ui")
 
 
 class Speakers(BaseModel):
+    """Имена говорящих. Ключ — "часть:номер": номер принадлежит своей части."""
+
     names: dict[str, str] = {}
-    me: int | None = None
+    me: str | None = None
 
 
 class TaskStatus(BaseModel):
@@ -88,7 +90,10 @@ def session_detail(device_id: str, session: int, _=Depends(owner)):
         timeline, failed = db.session_timeline(conn, device_id, session)
         marks = db.session_marks(conn, device_id, session)
         names = db.speaker_names(conn, device_id, session)
-        speakers = sorted({u["speaker"] for u in timeline if u["speaker"] is not None})
+        # Номер говорящего живёт внутри своей части: части уходят в Deepgram
+        # поодиночке, и нумерация в каждой своя.
+        speakers = sorted({(u["part"], u["speaker"]) for u in timeline
+                           if u["speaker"] is not None})
         tasks = with_source(db.task_rows(conn, only_open=False, session=session))
         questions = [q for q in db.question_rows(conn, only_open=False)
                      if q["device_id"] == device_id and q["session"] == session]
@@ -115,23 +120,33 @@ def session_detail(device_id: str, session: int, _=Depends(owner)):
         "summary_error": summary_row["last_error"] if summary_row else None,
         "timeline": timeline,
         "marks": marks,
-        "speakers": [{"speaker": s,
-                      "name": names.get(s, {}).get("name", ""),
-                      "is_me": bool(names.get(s, {}).get("is_me"))} for s in speakers],
+        "speakers": [{"part": part, "speaker": speaker,
+                      "name": names.get((part, speaker), {}).get("name", ""),
+                      "is_me": bool(names.get((part, speaker), {}).get("is_me"))}
+                     for part, speaker in speakers],
         "tasks": tasks,
         "questions": questions,
     }
 
 
+def _speaker_key(raw):
+    """"часть:номер" -> (часть, номер). Кривой ключ — отказ, а не тихий пропуск:
+    молча потерянное имя владелец заметит нескоро."""
+    part, _, speaker = raw.partition(":")
+    try:
+        return int(part), int(speaker)
+    except ValueError:
+        raise HTTPException(400, f"ключ говорящего: ожидается «часть:номер», а не {raw!r}")
+
+
 @router.post("/sessions/{device_id}/{session}/speakers")
 def save_speakers(device_id: str, session: int, body: Speakers, _=Depends(owner)):
+    me = _speaker_key(body.me) if body.me else None
     with closing(db.connect()) as conn:
         for key, name in body.names.items():
-            try:
-                speaker = int(key)
-            except ValueError:
-                continue
-            db.set_speaker(conn, device_id, session, speaker, name[:60], body.me == speaker)
+            part, speaker = _speaker_key(key)
+            db.set_speaker(conn, device_id, session, part, speaker, name[:60],
+                           me == (part, speaker))
     return {"ok": True}
 
 

@@ -13,10 +13,12 @@ import logging
 import sys
 import time
 from contextlib import closing
+from pathlib import Path
 
+import archive
 import db
+import stt
 import summarize
-import transcribe
 
 log = logging.getLogger("worker")
 
@@ -42,8 +44,9 @@ def run_transcription(conn):
     log.info("Расшифровка %s сессия %04d часть %02d", *key)
 
     try:
-        result = transcribe.transcribe_file(row["audio_path"])
-    except transcribe.TranscribeError as error:
+        # Движок выбирается в stt.py: остальной воркер не знает его имени.
+        result = stt.backend().transcribe(row["audio_path"])
+    except stt.TranscribeError as error:
         # Аудио остаётся на месте в любом случае: неудачная расшифровка
         # не повод терять запись.
         if not error.retryable:
@@ -129,11 +132,55 @@ def run_summary(conn):
     return True
 
 
+def run_archive(conn):
+    """Одна часть: принятый WAV -> проверенный FLAC. True, если работа была.
+
+    Порядок шагов держит archive.py; здесь только очередь и удаление WAV,
+    которое делается последним — после того, как путь к проверенной копии
+    уже записан в базу."""
+    if not archive.ENABLED:
+        return False
+    row = db.claim_part_for_archive(conn)
+    if row is None:
+        return False
+
+    key = (row["device_id"], row["session"], row["part"])
+    wav = Path(row["audio_path"])
+    log.info("Архив %s сессия %04d часть %02d", *key)
+
+    try:
+        flac = archive.convert(wav)
+    except archive.ArchiveError as error:
+        if error.retryable:
+            wait = backoff_minutes(row["archive_attempts"])
+            db.fail_archive(conn, key, str(error), wait)
+            log.warning("Сжатие отложено на %d мин, попытка %d: %s",
+                        wait, row["archive_attempts"] + 1, error)
+        else:
+            # Аудио остаётся в WAV и продолжает работать: не сжали — не беда.
+            db.fail_archive(conn, key, str(error), None)
+            log.error("Сжать не удалось, часть остаётся в WAV, %s: %s", key, error)
+        return True
+
+    db.finish_archive(conn, key, flac)
+    try:
+        wav.unlink()
+    except OSError as error:
+        # Проверенный FLAC уже в базе, WAV лишний. Подберёт sweep при старте.
+        log.warning("WAV не удалился, %s: %s", wav, error)
+    # bytes — размер принятого WAV; самого файла уже нет, а строка осталась.
+    log.info("Сжато: %s -> %s, %.0f%% от исходного", wav.name, flac.name,
+             100.0 * flac.stat().st_size / max(1, row["bytes"]))
+    return True
+
+
 def tick(conn):
     """Один проход. True, если что-то сделали."""
     did_work = run_transcription(conn)
     # Саммари после расшифровки: иначе сессия ждала бы лишний цикл.
     did_work = run_summary(conn) or did_work
+    # Сжатие последним: оно ничего не задерживает и может ждать сколько угодно.
+    did_work = run_archive(conn) or did_work
     return did_work
 
 
@@ -150,6 +197,12 @@ def main(argv=None):
     db.init_storage()
 
     with closing(db.connect()) as conn:
+        # Крах между записью пути в базу и удалением WAV оставляет лишний файл.
+        # Проверенный FLAC на него уже заменил, поэтому WAV можно убрать.
+        for leftover in db.stale_wavs(conn):
+            leftover.unlink(missing_ok=True)
+            log.info("Убран WAV, оставшийся от прошлого запуска: %s", leftover.name)
+
         if args.once:
             return 0 if tick(conn) else 0
         log.info("Воркер запущен.")

@@ -79,7 +79,7 @@ def test_resolve_returns_none_instead_of_crashing_on_value_error(site, monkeypat
 def prepared(env, monkeypatch):
     """Сессия 7 с расшифровкой, саммари, задачей и вопросом."""
     upload(env)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     summary_stub(env, monkeypatch)
     run_all(env)
     return env
@@ -139,15 +139,17 @@ def test_session_detail_carries_timeline_summary_and_tasks(env, monkeypatch):
     assert body["timeline"][0]["start_abs"] == 1.0
     assert body["parts"][0]["part"] == 1
     assert body["tasks"][0]["text"] == "Выслать смету"
-    assert body["speakers"] == [{"speaker": 0, "name": "", "is_me": False},
-                                {"speaker": 1, "name": "", "is_me": False}]
+    # Номер говорящего идёт вместе со своей частью: в другой части тот же
+    # номер — другой человек.
+    assert body["speakers"] == [{"part": 1, "speaker": 0, "name": "", "is_me": False},
+                                {"part": 1, "speaker": 1, "name": "", "is_me": False}]
 
 
 def test_marks_land_on_session_scale_with_nearest_reply(env, monkeypatch):
     """Метка кнопкой: абсолютное время сессии и реплика, прозвучавшая до неё."""
     upload(env, part=1, marks=[5.5])
     upload(env, part=2, marker=1, marks=[2.0])
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     summary_stub(env, monkeypatch)
     run_all(env)
 
@@ -180,12 +182,15 @@ def test_speakers_are_saved_as_json(env, monkeypatch):
     prepared(env, monkeypatch)
     with TestClient(env.app) as client:
         response = client.post("/api/ui/sessions/xiao-01/7/speakers", auth=AUTH,
-                               json={"names": {"0": "Игорь", "1": "Мария"}, "me": 0})
+                               json={"names": {"1:0": "Игорь", "1:1": "Мария"},
+                                     "me": "1:0"})
         assert response.status_code == 200
         body = client.get("/api/ui/sessions/xiao-01/7", auth=AUTH).json()
     assert body["timeline"][0]["label"] == "Игорь"
+    assert body["speakers"][0] == {"part": 1, "speaker": 0, "name": "Игорь", "is_me": True}
     with closing(env.db.connect()) as conn:
-        assert env.db.speaker_names(conn, "xiao-01", 7)[0] == {"name": "Игорь", "is_me": True}
+        assert env.db.speaker_names(conn, "xiao-01", 7)[(1, 0)] == {"name": "Игорь",
+                                                                    "is_me": True}
 
 
 def test_api_requires_password(env):
@@ -240,7 +245,7 @@ def test_task_status_is_validated(env, monkeypatch):
 
 def test_questions_state_roundtrip(env, monkeypatch):
     upload(env)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     result = json.loads(json.dumps(SUMMARY_WITH_QUESTION))
     summary_stub(env, monkeypatch, result)
     run_all(env)
@@ -256,7 +261,7 @@ def test_questions_state_roundtrip(env, monkeypatch):
 
 def test_projects_list_feed_and_alias(env, monkeypatch):
     upload(env)
-    monkeypatch.setattr(env.worker.transcribe, "transcribe_file", fake_transcribe(env))
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
     result = json.loads(json.dumps(SUMMARY_WITH_QUESTION))
     result["topics"] = ["Posiflora"]
     summary_stub(env, monkeypatch, result)

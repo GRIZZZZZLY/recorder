@@ -19,11 +19,10 @@ router = APIRouter()
 @router.get("/audio/{device_id}/{session}/{part}")
 def audio(device_id: str, session: int, part: int, _=Depends(owner)):
     with closing(db.connect()) as conn:
-        row = conn.execute(
-            "SELECT audio_path FROM parts WHERE device_id=? AND session=? AND part=?",
-            (device_id, session, part),
-        ).fetchone()
-    if row is None:
+        found = db.audio_file(conn, device_id, session, part)
+    if found is None:
         raise HTTPException(404, "нет такой части")
+    path, media_type = found
     # FileResponse отдаёт Range, без него Safari на iPhone не проигрывает аудио.
-    return FileResponse(row["audio_path"], media_type="audio/wav")
+    # Тип берётся из расширения: часть, уже сжатая в архив, приходит как FLAC.
+    return FileResponse(path, media_type=media_type)

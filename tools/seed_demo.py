@@ -185,8 +185,11 @@ def main():
         # встречи. Смещения — секунды от начала своей части.
         add_part(db, conn, 7, 1, PART1, marks=[21.0])
         add_part(db, conn, 7, 2, PART2, recovered=1, words=PART2_WORDS, marks=[16.0, 24.0])
-        db.set_speaker(conn, DEVICE, 7, 0, "Игорь", True)
-        db.set_speaker(conn, DEVICE, 7, 1, "Мария", False)
+        # Имена задаются для каждой части: номер говорящего живёт внутри своей
+        # части, потому что части распознаются отдельными запросами.
+        for part in (1, 2):
+            db.set_speaker(conn, DEVICE, 7, part, 0, "Игорь", True)
+            db.set_speaker(conn, DEVICE, 7, part, 1, "Мария", False)
         timeline, _ = db.session_timeline(conn, DEVICE, 7)
         result = summarize.attach_sources(json.loads(json.dumps(SUMMARY)), timeline)
         conn.execute(
