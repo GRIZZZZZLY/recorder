@@ -137,6 +137,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
       {/* Нижняя панель телефона. */}
       <nav aria-label="Разделы"
            className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-hairline bg-surface/90 px-2 pt-2.5 pb-[max(1rem,env(safe-area-inset-bottom))] backdrop-blur-xl lg:hidden">
+        {/* Светодиод записи на кромке панели — как на корпусе прибора: виден с
+            любой страницы. Тот же, что у слова «Диктофон» в боковой панели
+            десктопа; состояние словами — в плашке «Диктофон» на сводке. */}
+        <span aria-hidden
+              className={cx("absolute -top-1 right-5 size-2 rounded-chip shadow-lens",
+                            live ? "bg-accent live-dot" : "bg-accent/35")} />
         {TABS.map((key) => {
           const item = NAV.find((entry) => entry.key === key)!;
           const current = selected(item.href);
