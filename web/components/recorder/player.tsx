@@ -195,11 +195,14 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
           <div className="flex min-w-0 flex-1 flex-col gap-1.5">
             <div className="flex items-baseline justify-between gap-3 text-note">
               <span className="truncate">
-                {idle ? "Нажмите «основание» или реплику" : label || "Фрагмент записи"}
+                {idle ? "Нажмите реплику" : label || "Фрагмент записи"}
                 {blocked ? <span className="text-text-secondary"> · браузер не разрешил автозапуск</span> : null}
               </span>
               <span className="flex shrink-0 items-baseline gap-1.5 text-text-secondary">
-                {idle ? `частей ${parts}` : (
+                {/* Части — внутренность прошивки (файл режется по 19,2 МБ). Номер
+                    части показывается только когда их больше одной: иначе
+                    «частей 1» и «01 / 01» — шум без единого сведения. */}
+                {idle ? (parts > 1 ? `частей ${parts}` : null) : (
                   <>
                     {/* Показание прибора: одно крупное число — где сейчас звук.
                         Общая длительность и номер части мелко, на той же базовой линии. */}
@@ -207,9 +210,11 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
                       {formatClock(position)}
                     </span>
                     <span className="font-mono">/ {formatClock(duration)}</span>
-                    <span className="hidden sm:inline">
-                      · {String(part).padStart(2, "0")} / {String(parts).padStart(2, "0")}
-                    </span>
+                    {parts > 1 && (
+                      <span className="hidden sm:inline">
+                        · {String(part).padStart(2, "0")} / {String(parts).padStart(2, "0")}
+                      </span>
+                    )}
                   </>
                 )}
               </span>

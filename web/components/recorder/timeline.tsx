@@ -273,7 +273,8 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
         </div>
 
         <div className="flex items-center gap-3">
-          <span>{dayRows.length ? `${dayRows.length} на шкале` : "записей нет"}</span>
+          {/* Счётчика «N на шкале» здесь нет: под головкой уже написано, что
+              под ней, а «записей нет» повторялось бы дважды на одном экране. */}
           {awayFromNow && (
             <button type="button"
                     onClick={() => { setDay(today); center(nowSeconds, day === today); }}

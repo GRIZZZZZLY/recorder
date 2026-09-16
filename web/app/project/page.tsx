@@ -4,7 +4,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { PageHeader } from "@/components/recorder/page-header";
-import { SessionNo } from "@/components/recorder/list";
+
 import { Empty, Failed, Loading } from "@/components/recorder/states";
 import { useApi } from "@/lib/use-api";
 import { count, formatDay } from "@/lib/format";
@@ -75,8 +75,8 @@ function Body() {
               <div className="flex flex-col gap-1 text-note sm:pt-1">
                 <span>{formatDay(item.day)}</span>
                 <Link href={sessionHref(item.device_id, item.session)}
-                      className="press hover:text-text-primary">
-                  <SessionNo session={item.session} />
+                      className="press text-text-secondary hover:text-text-primary">
+                  открыть запись
                 </Link>
               </div>
               <div className="flex flex-col gap-3.5 rounded-card bg-surface shadow-plate px-5 py-4.5 text-row">

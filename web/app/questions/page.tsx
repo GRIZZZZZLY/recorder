@@ -2,8 +2,9 @@
 
 import { Suspense, useState } from "react";
 import Link from "next/link";
+import { CaretRight } from "@phosphor-icons/react/dist/ssr";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Card, Row, Section, SessionNo } from "@/components/recorder/list";
+import { Card, Row, Section } from "@/components/recorder/list";
 import { PageHeader } from "@/components/recorder/page-header";
 import { Empty, Failed, Loading } from "@/components/recorder/states";
 import { EvidenceLink, Segmented, SourceDot } from "@/components/recorder/ui";
@@ -69,8 +70,9 @@ function QuestionRow({ question, onChanged }: { question: Question; onChanged: (
       <span className="shrink-0 text-note text-text-secondary">{formatDayShort(question.day)}</span>
 
       <Link href={sessionHref(question.device_id, question.session)}
-            className="press hidden shrink-0 md:block" title="Открыть сессию">
-        <SessionNo session={question.session} />
+            className="press hit relative hidden shrink-0 text-text-tertiary hover:text-text-primary md:block"
+            title="Открыть запись" aria-label="Открыть запись">
+        <CaretRight size={14} aria-hidden />
       </Link>
 
       <EvidenceLink href={question.source

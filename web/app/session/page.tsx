@@ -3,7 +3,7 @@
 import { Suspense, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { BookmarkSimple } from "@phosphor-icons/react/dist/ssr";
-import { Card, Row, Section, SessionNo, Time } from "@/components/recorder/list";
+import { Card, Row, Section, Time } from "@/components/recorder/list";
 import { PageHeader } from "@/components/recorder/page-header";
 import { PlayerProvider, usePlayhead, useSeek } from "@/components/recorder/player";
 import { SpeakersForm } from "@/components/recorder/speakers-form";
@@ -273,9 +273,11 @@ function Transcript({ timeline, marked }: { timeline: Utterance[]; marked: Set<s
       <div className="flex flex-col gap-4">
         {byPart.map((group) => (
           <div key={group.part} className="flex flex-col gap-1.5">
-            <span className="px-1 font-mono text-micro text-text-tertiary">
-              часть {String(group.part).padStart(2, "0")}
-            </span>
+            {byPart.length > 1 && (
+              <span className="px-1 font-mono text-micro text-text-tertiary">
+                часть {String(group.part).padStart(2, "0")}
+              </span>
+            )}
             <Card className="py-1.5">
               {group.items.map((utterance) => {
                 const id = `u-${utterance.part}-${utterance.idx}`;
@@ -339,20 +341,25 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
   const toneText = tone === "ok" ? "саммари готово"
     : tone === "accent" ? "саммари не собралось" : "обрабатывается";
   const topic = data.summary?.topics?.[0];
+  const when = data.first_at ? `${formatDay(data.day)}, ${formatTime(data.first_at)}` : null;
   const failedParts = data.parts.filter((part) => part.transcript_status === "failed");
   const openQuestions = data.questions.filter((question) => question.state === "open");
   const doneParts = data.parts.filter((part) => part.transcript_status === "done").length;
 
   return (
     <>
+      {/* Без темы разговор называется своим часом, а не номером: «Сессия 0001»
+          ничего не говорит владельцу, «13 сентября, 17:10» говорит всё.
+          Состояние саммари — только пока оно не готово: «готово» и так видно
+          по тексту под заголовком. */}
       <PageHeader
-        back={{ href: "/records/", title: "Записи", note: <SessionNo session={data.session} /> }}
-        title={topic || `Сессия ${String(data.session).padStart(4, "0")}`}
+        back={{ href: "/records/", title: "Записи" }}
+        title={topic || when || `Разговор ${formatDay(data.day)}`}
         aside={
           <span className="flex flex-wrap items-center gap-x-3.5 gap-y-1">
-            <span>{formatDay(data.day)}{data.first_at ? `, ${formatTime(data.first_at)}` : ""}</span>
+            {topic && when ? <span>{when}</span> : null}
             {duration !== null ? <span className="font-mono">{formatClock(duration)}</span> : null}
-            <span className="flex items-center gap-2"><Dot tone={tone} />{toneText}</span>
+            {tone !== "ok" && <span className="flex items-center gap-2"><Dot tone={tone} />{toneText}</span>}
           </span>
         }
       />
@@ -406,15 +413,16 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
             </Section>
           )}
 
-          <Section note={`Задачи · ${data.tasks.length}`} at={5}>
-            {data.tasks.length === 0 ? <EmptyNote>Задач нет.</EmptyNote> : (
+          {/* Пустая секция — две строки шума ради «нет». Нет задач — нет секции. */}
+          {data.tasks.length > 0 && (
+            <Section note={`Задачи · ${data.tasks.length}`} at={5}>
               <Card className="cascade">
                 {data.tasks.map((task) => (
                   <TaskRow key={task.task_id} task={task} onChanged={reload} />
                 ))}
               </Card>
-            )}
-          </Section>
+            </Section>
+          )}
 
           {openQuestions.length > 0 && (
             <Section note={`Вопросы без ответа · ${openQuestions.length}`} at={6}>
@@ -449,7 +457,8 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
           <RecordedOn deviceId={data.device_id} session={data.session} day={data.day.slice(0, 10)}
                       onSaved={reload} />
           <SpeechShare timeline={data.timeline} />
-          <Parts parts={data.parts} />
+          {/* Одна часть — одна полоска, и сказать ей нечего. */}
+          {data.parts.length > 1 && <Parts parts={data.parts} />}
 
           {(data.summary_error || failedParts.length > 0) && (
             <Section note="Ошибки обработки" at={3}>
@@ -484,9 +493,13 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
             </Section>
           )}
 
-          <p className="px-1 text-note text-text-tertiary">
-            {count(data.parts.length, "часть", "части", "частей")} · расшифровано {doneParts}
-          </p>
+          {/* Счёт частей нужен, пока расшифровка не догнала запись; потом это
+              техническая подробность, которой владелец не пользуется. */}
+          {doneParts < data.parts.length && (
+            <p className="px-1 text-note text-text-tertiary">
+              расшифровано {doneParts} из {count(data.parts.length, "части", "частей", "частей")}
+            </p>
+          )}
         </div>
       </div>
     </>

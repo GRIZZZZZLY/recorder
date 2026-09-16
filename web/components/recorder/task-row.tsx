@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Row, SessionNo } from "@/components/recorder/list";
+import { CaretRight } from "@phosphor-icons/react/dist/ssr";
+import { Row } from "@/components/recorder/list";
 import { SourceDot } from "@/components/recorder/ui";
 import { apiPost, type Task } from "@/lib/api";
 import { formatDayShort } from "@/lib/format";
@@ -85,12 +86,15 @@ export function TaskRow({ task, onChanged }: { task: Task; onChanged: () => void
         {due(task)}
       </span>
 
+      {/* Переход к записи — стрелкой, не номером сессии: номер владельцу ничего
+          не говорит, а «куда ведёт» стрелка говорит сама. */}
       <Link
         href={sessionHref(task.device_id, task.session, task.source?.part, task.source?.idx)}
-        className="press hidden shrink-0 hover:text-text-primary md:block"
-        title="Открыть сессию на этой реплике"
+        className="press hit relative hidden shrink-0 text-text-tertiary hover:text-text-primary md:block"
+        title="Открыть запись на этой реплике"
+        aria-label="Открыть запись на этой реплике"
       >
-        <SessionNo session={task.session} />
+        <CaretRight size={14} aria-hidden />
       </Link>
 
       <span className="flex shrink-0 gap-3 text-note text-text-secondary">

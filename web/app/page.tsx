@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Card, RowLink, Section, SessionNo } from "@/components/recorder/list";
+import { Card, RowLink, Section } from "@/components/recorder/list";
 import { PageHeader } from "@/components/recorder/page-header";
 import { Stats, StatusPill } from "@/components/recorder/stats";
 import { Empty, EmptyNote, Failed, Loading } from "@/components/recorder/states";
@@ -83,22 +83,28 @@ export default function DigestPage() {
         </div>
       )}
 
-      <div className="enter" style={at(7)}>
-        <Stats items={[
-          { value: formatMinutes(data.day.minutes), label: "записано сегодня" },
-          { value: data.day.sessions, label: "разговоров" },
-          { value: data.day.new_tasks, label: "новые задачи" },
-          { value: data.day.review, label: "спорных мест", tone: data.day.review ? "accent" : undefined },
-        ]} />
-      </div>
+      {/* Четыре нуля — не сведения, а шум: пока за день ничего не записано,
+          лента уже сказала «записей нет», и числам добавить нечего. */}
+      {data.day.sessions > 0 && (
+        <div className="enter" style={at(7)}>
+          <Stats items={[
+            { value: formatMinutes(data.day.minutes), label: "записано сегодня" },
+            { value: data.day.sessions, label: "разговоров" },
+            { value: data.day.new_tasks, label: "новые задачи" },
+            { value: data.day.review, label: "спорных мест", tone: data.day.review ? "accent" : undefined },
+          ]} />
+        </div>
+      )}
 
       <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
         <Section
           at={8}
           head="Мои открытые задачи"
-          aside={<Link href="/tasks/?show=mine" className="hover:text-text-primary">
-            все {data.week.my_open_tasks}
-          </Link>}
+          aside={data.week.my_open_tasks > 0 ? (
+            <Link href="/tasks/?show=mine" className="hover:text-text-primary">
+              все {data.week.my_open_tasks}
+            </Link>
+          ) : undefined}
         >
           {!data.has_me ? (
             <EmptyNote>
@@ -137,9 +143,10 @@ export default function DigestPage() {
               {data.recent.map((row) => (
                 <RowLink key={`${row.device_id}-${row.session}`}
                          href={sessionHref(row.device_id, row.session)}>
-                  <SessionNo session={row.session} />
+                  {/* Разговор узнают по часу и теме. Номер сессии — внутренность
+                      системы, ему место только на странице «Состояние». */}
                   <span className="min-w-0 flex-1 truncate">
-                    {formatTime(row.first_at)}
+                    <span className="font-mono text-text-secondary">{formatTime(row.first_at)}</span>
                     {row.topic ? <> · {row.topic}</> : null}
                   </span>
                   <span className="shrink-0 text-note text-text-secondary">
