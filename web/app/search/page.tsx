@@ -21,7 +21,14 @@ function Body() {
   const trimmed = query.trim();
   const [draft, setDraft] = useState(query);
   const field = useRef<HTMLInputElement>(null);
-  useEffect(() => setDraft(query), [query]);
+  // Адрес сменился (нажали «назад», перешли по ссылке) — поле идёт за ним.
+  // Правка прямо во время отрисовки, а не в эффекте: эффект показал бы кадр со
+  // старым текстом в поле и только потом заменил его.
+  const [shown, setShown] = useState(query);
+  if (shown !== query) {
+    setShown(query);
+    setDraft(query);
+  }
 
   // ⌘K / Ctrl+K — в поле. Подсказка нарисована прямо в поле, значит должна
   // работать.
