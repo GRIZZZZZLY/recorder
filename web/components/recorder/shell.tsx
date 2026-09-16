@@ -95,10 +95,13 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
       <aside className="hidden w-[220px] shrink-0 flex-col gap-0.5 border-r border-hairline px-3 py-5 lg:flex">
         <div className="flex items-center gap-2.5 px-2.5 pt-1.5 pb-5">
-          {/* Светодиод записи: горит и дышит, пока диктофон пишет; иначе погашен,
-              а не горит ровно — ровный красный читался бы как «пишет». */}
-          <span className={cx("size-2 rounded-chip shadow-lens", live ? "bg-accent live-dot" : "bg-accent/35")}
-                title={live ? "диктофон пишет" : "диктофон молчит"} />
+          {/* Тот же светодиод, что на кромке нижней панели, и по тому же
+              правилу: в тишине его нет. Место под него не держим — «Диктофон»
+              просто стоит слева, пока запись не началась. */}
+          {live && (
+            <span className="live-dot size-2 rounded-chip bg-accent shadow-lens"
+                  title="диктофон пишет" />
+          )}
           <span className="text-row font-semibold">Диктофон</span>
         </div>
         <nav className="flex flex-col gap-0.5">
@@ -137,12 +140,15 @@ export function Shell({ children }: { children: React.ReactNode }) {
       {/* Нижняя панель телефона. */}
       <nav aria-label="Разделы"
            className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-hairline bg-surface/90 px-2 pt-2.5 pb-[max(1rem,env(safe-area-inset-bottom))] backdrop-blur-xl lg:hidden">
-        {/* Светодиод записи на кромке панели — как на корпусе прибора: виден с
-            любой страницы. Тот же, что у слова «Диктофон» в боковой панели
-            десктопа; состояние словами — в плашке «Диктофон» на сводке. */}
-        <span aria-hidden
-              className={cx("absolute -top-1 right-5 size-2 rounded-chip shadow-lens",
-                            live ? "bg-accent live-dot" : "bg-accent/35")} />
+        {/* Светодиод записи на кромке панели: виден с любой страницы, пока
+            диктофон пишет. В тишине его нет вовсе — точка, которая тлеет
+            круглосуточно и ничего не сообщает, это шум. Появление на пустом
+            месте заметнее смены яркости, а состояние словами живёт в плашке
+            «Диктофон» на сводке и на странице «Состояние». */}
+        {live && (
+          <span aria-hidden
+                className="live-dot absolute -top-1 right-5 size-2 rounded-chip bg-accent shadow-lens" />
+        )}
         {TABS.map((key) => {
           const item = NAV.find((entry) => entry.key === key)!;
           const current = selected(item.href);
