@@ -17,7 +17,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "PartMath.h"
+#include "AudioFormat.h"
 #include "RingBuffer.h"
 #include "Storage.h"
 #include "UploadPolicy.h"
@@ -39,61 +39,10 @@ inline void endPath(char *out, size_t n, uint16_t sessionId, uint16_t parts) {
   snprintf(out, n, "/REC%04u_N%02u.END", sessionId, parts);
 }
 
-inline void putLe16(uint8_t *dst, uint16_t v) {
-  dst[0] = v & 0xFF;
-  dst[1] = (v >> 8) & 0xFF;
-}
-
-inline void putLe32(uint8_t *dst, uint32_t v) {
-  dst[0] = v & 0xFF;
-  dst[1] = (v >> 8) & 0xFF;
-  dst[2] = (v >> 16) & 0xFF;
-  dst[3] = (v >> 24) & 0xFF;
-}
-
-inline uint16_t getLe16(const uint8_t *s) { return s[0] | (s[1] << 8); }
-
-inline uint32_t getLe32(const uint8_t *s) {
-  return static_cast<uint32_t>(s[0]) | (static_cast<uint32_t>(s[1]) << 8) |
-         (static_cast<uint32_t>(s[2]) << 16) | (static_cast<uint32_t>(s[3]) << 24);
-}
-
-inline void buildWavHeader(uint8_t h[44], uint32_t pcmBytes) {
-  using namespace partmath;
-  memset(h, 0, 44);
-  memcpy(h + 0, "RIFF", 4);
-  putLe32(h + 4, 36 + pcmBytes);
-  memcpy(h + 8, "WAVE", 4);
-  memcpy(h + 12, "fmt ", 4);
-  putLe32(h + 16, 16);
-  putLe16(h + 20, 1);                       // PCM
-  putLe16(h + 22, 1);                       // моно
-  putLe32(h + 24, SAMPLE_RATE);
-  putLe32(h + 28, BYTES_PER_SECOND);
-  putLe16(h + 32, FRAME_BYTES);
-  putLe16(h + 34, 16);
-  memcpy(h + 36, "data", 4);
-  putLe32(h + 40, pcmBytes);
-}
-
-// Принимает только файл, который писала эта прошивка.
-inline bool parseOurWavHeader(const uint8_t h[44], uint32_t *pcmBytes) {
-  using namespace partmath;
-  if (memcmp(h, "RIFF", 4) || memcmp(h + 8, "WAVE", 4) || memcmp(h + 12, "fmt ", 4) ||
-      memcmp(h + 36, "data", 4)) {
-    return false;
-  }
-  if (getLe16(h + 20) != 1 || getLe16(h + 22) != 1 || getLe32(h + 24) != SAMPLE_RATE ||
-      getLe16(h + 34) != 16) {
-    return false;
-  }
-  *pcmBytes = getLe32(h + 40);
-  return true;
-}
-
-inline bool writeWavHeader(StorageFile *f, uint32_t pcmBytes) {
+// Заголовок описывает формат, которым писалась ЭТА часть (AudioFormat.h).
+inline bool writeWavHeader(StorageFile *f, const audio::Format &fmt, uint32_t pcmBytes) {
   uint8_t h[44];
-  buildWavHeader(h, pcmBytes);
+  audio::buildWavHeader(h, fmt, pcmBytes);
   return f->seek(0) && f->write(h, 44) == 44;
 }
 
@@ -107,22 +56,30 @@ struct WriterStats {
   uint32_t sd_write_max_ms = 0;
   uint32_t sd_write_errors = 0;
   uint32_t part_switch_max_ms = 0;
-  uint32_t written_samples = 0;
+  uint32_t written_frames = 0;   // кадров дошло до карты (кадр = отсчёт по всем каналам)
 };
 
 class Writer {
  public:
   struct Config {
-    uint32_t partMaxBytes = partmath::PART_MAX_BYTES;
+    // Формат задаётся конструктором Writer вместе с размером части: моно и
+    // стерео различаются только этими двумя числами, вся остальная
+    // арифметика — байты и кадры — от них выводится.
+    audio::Format format = audio::MONO_16K;
+    uint32_t partMaxBytes = audio::MONO_16K.partMaxBytes();
     uint32_t writeChunkBytes = 8192;   // не больше CHUNK_CAP
     int writesPerService = 4;
     uint32_t flushIntervalMs = 1000;
-    uint16_t maxParts = partmath::MAX_PARTS;
+    uint16_t maxParts = audio::MAX_PARTS;
   };
   static constexpr uint32_t CHUNK_CAP = 8192;
 
-  Writer(Storage &fs, RingBuffer &ring, ClockFn now, LogFn log)
-      : m_fs(fs), m_ring(ring), m_now(now), m_log(log) {}
+  Writer(Storage &fs, RingBuffer &ring, ClockFn now, LogFn log,
+         const audio::Format &format = audio::MONO_16K)
+      : m_fs(fs), m_ring(ring), m_now(now), m_log(log) {
+    cfg.format = format;
+    cfg.partMaxBytes = format.partMaxBytes();
+  }
 
   Config cfg;
 
@@ -213,7 +170,7 @@ class Writer {
     const uint32_t offset = pos % cfg.partMaxBytes;
 
     char text[24];
-    int len = partmath::formatMark(text, sizeof(text) - 1, offset);
+    int len = cfg.format.formatMark(text, sizeof(text) - 1, offset);
     text[len++] = '\n';
 
     char path[PATH_MAX_LEN];
@@ -292,7 +249,7 @@ class Writer {
       return false;
     }
     uint8_t h[44];
-    buildWavHeader(h, 0);
+    audio::buildWavHeader(h, cfg.format, 0);
     if (m_file->write(h, 44) != 44) {
       say(m_log, "[rec] ERROR: cannot write WAV header.");
       m_fs.close(m_file);
@@ -310,7 +267,7 @@ class Writer {
   bool closePart(bool healthy) {
     if (!m_file) return false;
     m_file->flush();
-    const bool headerOk = writeWavHeader(m_file, m_partBytes);
+    const bool headerOk = writeWavHeader(m_file, cfg.format, m_partBytes);
     m_file->flush();
     m_fs.close(m_file);
     m_file = nullptr;
@@ -349,7 +306,7 @@ class Writer {
     uint32_t want = limit < CHUNK_CAP ? limit : CHUNK_CAP;
     const uint32_t room = roomInPart();
     if (want > room) want = room;
-    want = partmath::wholeFrames(want);
+    want = cfg.format.wholeFrames(want);
     if (want == 0) return true;
     const uint32_t got = m_ring.pop(m_chunk, want);
     if (got == 0) return true;
@@ -360,9 +317,9 @@ class Writer {
     if (dt > m_stats.sd_write_max_ms) m_stats.sd_write_max_ms = dt;
 
     // Считаем то, что реально дошло до карты, чтобы заголовок описывал файл.
-    const uint32_t kept = partmath::wholeFrames(static_cast<uint32_t>(written));
+    const uint32_t kept = cfg.format.wholeFrames(static_cast<uint32_t>(written));
     m_partBytes += kept;
-    m_stats.written_samples += kept / partmath::FRAME_BYTES;
+    m_stats.written_frames += cfg.format.frames(kept);
     if (written != got) {
       ++m_stats.sd_write_errors;
       logf("[rec] ERROR: SD write incomplete (%u of %u bytes).",
@@ -489,6 +446,10 @@ inline uint16_t maxSessionOnCard(Storage &fs) {
 // заявляет ноль байт. Чиним заголовок по реальному размеру и переименовываем
 // в _R.WAV. Выживает только то, что дошло до карты. Возвращает число
 // восстановленных частей.
+//
+// Формат — из заголовка самого файла, а не из профиля собранной платы: карта
+// из моно-прототипа восстанавливается и в стерео-прошивке, и обрезка до целых
+// кадров идёт по её собственному размеру кадра.
 inline int recoverUnfinished(Storage &fs, LogFn log) {
   detail::Unfinished u;
   fs.listRoot(detail::unfinishedCb, &u);  // список сначала: менять каталог во время обхода нельзя
@@ -500,8 +461,6 @@ inline int recoverUnfinished(Storage &fs, LogFn log) {
   for (int i = 0; i < u.found; ++i) {
     char tmpPath[PATH_MAX_LEN + 1];
     snprintf(tmpPath, sizeof(tmpPath), "/%s", u.names[i]);
-    uint32_t audio = u.sizes[i] > partmath::WAV_HEADER_BYTES ? u.sizes[i] - partmath::WAV_HEADER_BYTES : 0;
-    audio = partmath::wholeFrames(audio);
 
     StorageFile *f = fs.open(tmpPath, Storage::UPDATE);  // WRITE обнулил бы файл
     if (!f) {
@@ -512,12 +471,15 @@ inline int recoverUnfinished(Storage &fs, LogFn log) {
     }
     uint8_t h[44];
     uint32_t declared = 0;
-    const bool ours = f->seek(0) && f->read(h, 44) == 44 && parseOurWavHeader(h, &declared);
-    const bool ok = ours && writeWavHeader(f, audio);
+    audio::Format fmt = audio::MONO_16K;
+    const bool ours = f->seek(0) && f->read(h, 44) == 44 && audio::parseWavHeader(h, &fmt, &declared);
+    const uint32_t raw = u.sizes[i] > audio::WAV_HEADER_BYTES ? u.sizes[i] - audio::WAV_HEADER_BYTES : 0;
+    const uint32_t audioBytes = ours ? fmt.wholeFrames(raw) : 0;
+    const bool ok = ours && writeWavHeader(f, fmt, audioBytes);
     f->flush();
     fs.close(f);
 
-    char line[128];
+    char line[160];  // два пути по 35 байт, размер, каналы: до 131 байта
     if (!ok) {
       snprintf(line, sizeof(line), "[recover] SKIP %s (%s)", tmpPath,
                ours ? "header rewrite failed" : "not our PCM format");
@@ -528,8 +490,8 @@ inline int recoverUnfinished(Storage &fs, LogFn log) {
     snprintf(recoveredPath, sizeof(recoveredPath), "%.*s_R.WAV",
              static_cast<int>(strlen(tmpPath) - 4), tmpPath);
     const bool renamed = fs.rename(tmpPath, recoveredPath);
-    snprintf(line, sizeof(line), "[recover] %s -> %s | %lu audio bytes | renamed=%s", tmpPath,
-             recoveredPath, static_cast<unsigned long>(audio), renamed ? "yes" : "NO");
+    snprintf(line, sizeof(line), "[recover] %s -> %s | %lu audio bytes | %u ch | renamed=%s", tmpPath,
+             recoveredPath, static_cast<unsigned long>(audioBytes), fmt.channels, renamed ? "yes" : "NO");
     say(log, line);
     if (renamed) ++recovered;
   }

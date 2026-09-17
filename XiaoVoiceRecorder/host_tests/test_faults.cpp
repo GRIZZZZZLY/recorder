@@ -43,9 +43,9 @@ static uint32_t audioOnCard(const FakeStorage &fs) {
     const std::string ext = name.substr(name.size() - 4);
     if (ext == ".WAV" || ext == ".TMP" || ext == ".BAD") {
       const size_t bytes = entry.second.size();
-      if (bytes > partmath::WAV_HEADER_BYTES) {
-        total += partmath::wholeFrames(
-            static_cast<uint32_t>(bytes - partmath::WAV_HEADER_BYTES));
+      if (bytes > audio::WAV_HEADER_BYTES) {
+        total += audio::MONO_16K.wholeFrames(
+            static_cast<uint32_t>(bytes - audio::WAV_HEADER_BYTES));
       }
     }
   }
@@ -59,7 +59,7 @@ static uint32_t audioDeclared(const FakeStorage &fs) {
   for (const auto &entry : fs.files) {
     const std::string &name = entry.first;
     if (name.size() > 4 && name.compare(name.size() - 4, 4, ".WAV") == 0) {
-      total += session::getLe32(entry.second.data() + 40);
+      total += audio::getLe32(entry.second.data() + 40);
     }
   }
   return total;
@@ -412,7 +412,7 @@ static void test_mark_uses_the_moment_of_the_press_not_of_the_handling() {
   // Кнопка нажата, затем цикл простоял на TLS-рукопожатии, и только потом
   // метка дошла до карты. Она обязана указывать на момент нажатия.
   Rig r;
-  r.writer.cfg.partMaxBytes = partmath::PART_MAX_BYTES;
+  r.writer.cfg.partMaxBytes = audio::MONO_16K.partMaxBytes();
   r.capture(32000);  // секунда предзаписи
   CHECK(r.writer.start(7));
   const uint32_t headAtPress = r.ring.head();   // ISR снял бы ровно это
@@ -434,7 +434,7 @@ static void test_mark_position_survives_the_counter_wrapping() {
   // Кольцевые счётчики 32-битные. Позиция метки — разность двух из них,
   // поэтому переполнение её не ломает.
   Rig r;
-  r.writer.cfg.partMaxBytes = partmath::PART_MAX_BYTES;
+  r.writer.cfg.partMaxBytes = audio::MONO_16K.partMaxBytes();
   r.ring.testSetCounters(0xFFFFF000u, 0xFFFFF000u);
   r.capture(32000);
   CHECK(r.writer.start(7));

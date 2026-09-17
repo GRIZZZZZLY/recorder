@@ -1,7 +1,9 @@
 /*
- * Индикация: отдельный LED и вибромотор. Железа нет, пины не назначены:
- * задаются через Serial (led_pin=1, vibro_pin=2) и хранятся в NVS, -1 —
- * выключено. Встроенный LED на GPIO21 занят CS карты и здесь не используется.
+ * Индикация: отдельный LED и вибромотор. Пины по умолчанию — из профиля платы
+ * (BoardConfig.h): на XIAO Sense не распаяны (-1), на Recorder RevA LED на
+ * GPIO4 и затвор вибро на GPIO3. Значение из NVS (led_pin=N, vibro_pin=N через
+ * Serial) перекрывает профиль, -1 выключает канал. Встроенный LED Sense на
+ * GPIO21 занят CS карты и здесь не используется.
  *
  * Вибромотор ERM нельзя вешать прямо на GPIO: нужен транзистор/MOSFET,
  * резистор в базу/затвор и диод параллельно мотору. Пин здесь управляет
@@ -89,27 +91,28 @@ void fbApplyPin(fb::Channel &ch, int pin) {
 void feedbackSetup() {
   Preferences prefs;
   prefs.begin(fb::NVS_NAMESPACE, true);
-  const int ledPin = prefs.getInt("led_pin", -1);
-  const int vibroPin = prefs.getInt("vibro_pin", -1);
+  const int ledPin = prefs.getInt("led_pin", board::LED_PIN);
+  const int vibroPin = prefs.getInt("vibro_pin", board::VIBRO_PIN);
   prefs.end();
   fbApplyPin(fb::led, ledPin);
   fbApplyPin(fb::vibro, vibroPin);
-  Serial.printf("[ui] LED pin %d, vibro pin %d (-1 = не подключено)\n", ledPin, vibroPin);
+  Serial.printf("[ui] LED pin %d, vibro pin %d (-1 = не подключено; профиль %s: %d / %d)\n",
+                ledPin, vibroPin, board::ID, board::LED_PIN, board::VIBRO_PIN);
 }
 
 // led_pin=N / vibro_pin=N через Serial. -1 выключает. Пин занятый картой,
-// микрофоном или кнопкой не принимается.
+// микрофоном, кнопкой или АЦП батареи не принимается.
 bool setFeedbackPin(const String &key, const String &value) {
   if (key != "led_pin" && key != "vibro_pin") {
     return false;
   }
   const int pin = value.toInt();
-  static const int reserved[] = {cfg::REC_BUTTON_PIN, cfg::SD_SCK_PIN, cfg::SD_MISO_PIN,
-                                 cfg::SD_MOSI_PIN, cfg::SD_CS_PIN, cfg::PDM_CLK_PIN,
-                                 cfg::PDM_DATA_PIN};
+  static const int reserved[] = {board::REC_BUTTON_PIN, board::SD_SCK_PIN, board::SD_MISO_PIN,
+                                 board::SD_MOSI_PIN, board::SD_CS_PIN, board::PDM_CLK_PIN,
+                                 board::PDM_DATA_PIN, board::BAT_ADC_PIN};
   for (int r : reserved) {
-    if (pin == r) {
-      Serial.printf("[ui] GPIO%d занят картой, микрофоном или кнопкой.\n", pin);
+    if (pin == r && pin >= 0) {
+      Serial.printf("[ui] GPIO%d занят картой, микрофоном, кнопкой или АЦП батареи.\n", pin);
       return true;
     }
   }

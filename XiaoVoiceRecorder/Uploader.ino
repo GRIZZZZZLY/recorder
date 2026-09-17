@@ -246,7 +246,7 @@ SendResult prepareTransfer(const String &name) {
     return SEND_RETRY;
   }
   g_upSize = static_cast<uint32_t>(g_upFile.size());
-  if (g_upSize <= partmath::WAV_HEADER_BYTES) {
+  if (g_upSize <= audio::WAV_HEADER_BYTES) {
     Serial.printf("[up] %s пустой или не читается\n", name.c_str());
     g_upFile.close();
     return SEND_PART_FATAL;
@@ -290,6 +290,9 @@ SendResult openConnection() {
   }
   const String marks = marksHeaderFor(g_upName);
   const uint16_t declared = g_upRecovered ? 0 : declaredPartsFor(g_upSession);
+  // Заряд — только с платы, которая умеет его измерить: на Sense заголовка
+  // нет, и сервер честно показывает «диктофон не сообщал».
+  const battery::Status batt = readBattery();
 
   g_client.stop();
   g_client.setCACert(ISRG_ROOT_X1);
@@ -340,6 +343,17 @@ SendResult openConnection() {
     req += "\r\nX-Session-Parts: ";
     req += buf;
   }
+  if (batt.supported) {
+    snprintf(buf, sizeof(buf), "%u", batt.percent);
+    req += "\r\nX-Battery: ";
+    req += buf;
+  }
+  // Версия плюс профиль платы: "0.4.0+xiao-sense". Разрешённые сервером
+  // символы — буквы, цифры и .-_+ (shared/protocol.md).
+  req += "\r\nX-Firmware: ";
+  req += cfg::FIRMWARE_VERSION;
+  req += "+";
+  req += board::ID;
   req += "\r\nConnection: close\r\n\r\n";
 
   if (g_client.print(req) != req.length()) {

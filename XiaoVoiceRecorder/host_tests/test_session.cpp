@@ -31,10 +31,12 @@ static void fakeLog(const char *line) { g_log.push_back(line); }
 
 struct Rig {
   FakeStorage fs;
-  uint8_t storage[1 << 16];  // 64 КиБ = 2 с звука
+  uint8_t storage[1 << 18];  // 256 КиБ = 8 с моно, 4 с стерео
   RingBuffer ring;
   session::Writer writer;
-  Rig() : writer(fs, ring, fakeNow, fakeLog) {
+  // По умолчанию моно, как на XIAO Sense; стерео-тесты передают STEREO_16K.
+  explicit Rig(const audio::Format &format = audio::MONO_16K)
+      : writer(fs, ring, fakeNow, fakeLog, format) {
     ring.init(storage, sizeof(storage));
     g_log.clear();
     fs.total = 1ull << 40;
@@ -57,7 +59,7 @@ struct Rig {
 
 static uint32_t pcmBytesOf(const FakeStorage &fs, const std::string &path) {
   const std::vector<uint8_t> &d = fs.files.at(path);
-  return session::getLe32(d.data() + 40);
+  return audio::getLe32(d.data() + 40);
 }
 
 static bool logHas(const char *needle) {
@@ -224,7 +226,7 @@ static void test_tail_after_the_part_limit_becomes_the_next_session() {
   for (const auto &entry : r.fs.files) {
     if (entry.first.size() > 4 &&
         entry.first.compare(entry.first.size() - 4, 4, ".WAV") == 0) {
-      stored += session::getLe32(entry.second.data() + 40);
+      stored += audio::getLe32(entry.second.data() + 40);
     }
   }
   CHECK(stored == 30000);
@@ -262,7 +264,7 @@ static void test_recovery_fixes_header_and_renames_to_r() {
   FakeStorage fs;
   fs.total = 1ull << 30;
   uint8_t h[44];
-  session::buildWavHeader(h, 0);
+  audio::buildWavHeader(h, audio::MONO_16K, 0);
   std::vector<uint8_t> tmp(h, h + 44);
   tmp.insert(tmp.end(), 1001, 0x55);  // 1000 байт звука и один лишний
   fs.files["/REC0005_P02.TMP"] = tmp;
@@ -424,7 +426,107 @@ static void test_cleanup_removes_recovered_sent_and_its_marks() {
   CHECK(!fs.has("/REC0004_P01.MRK"));
 }
 
+// --- стерео: Recorder PCB RevA, два IM72D128V -------------------------------------------
+//
+// Та же логика, другой формат. Проверяется, что ни одно место не считает
+// «моно» по привычке: границы частей, заголовок, метка, восстановление.
+
+static uint16_t channelsOf(const FakeStorage &fs, const std::string &path) {
+  return audio::getLe16(fs.files.at(path).data() + 22);
+}
+
+static void test_writer_config_derives_part_size_from_the_format() {
+  Rig mono;
+  CHECK(mono.writer.cfg.format == audio::MONO_16K);
+  CHECK(mono.writer.cfg.partMaxBytes == 19200000u);   // 10 минут моно
+  Rig stereo(audio::STEREO_16K);
+  CHECK(stereo.writer.cfg.format == audio::STEREO_16K);
+  CHECK(stereo.writer.cfg.partMaxBytes == 38400000u); // те же 10 минут, вдвое больше байт
+}
+
+static void test_stereo_parts_rotate_on_the_byte_boundary_and_count_frames() {
+  Rig r(audio::STEREO_16K);
+  r.writer.cfg.partMaxBytes = 64000;  // секунда стерео
+  r.capture(100000);
+  CHECK(r.writer.start(3));
+  CHECK(r.drain());
+  r.capture(30000);
+  CHECK(r.drain());
+  CHECK(r.writer.stop(true));
+
+  CHECK(pcmBytesOf(r.fs, "/REC0003_P01.WAV") == 64000);
+  CHECK(pcmBytesOf(r.fs, "/REC0003_P02.WAV") == 64000);
+  CHECK(pcmBytesOf(r.fs, "/REC0003_P03.WAV") == 2000);
+  CHECK(r.fs.has("/REC0003_N03.END"));
+  CHECK(r.writer.sessionBytes() == 130000);
+  // Кадры, не байты и не моно-сэмплы: 130 000 байт / 4 = 32 500 кадров.
+  CHECK(r.writer.stats().written_frames == 32500u);
+  // Заголовок каждой части описывает стерео.
+  CHECK(channelsOf(r.fs, "/REC0003_P01.WAV") == 2);
+  CHECK(audio::getLe32(r.fs.files.at("/REC0003_P02.WAV").data() + 28) == 64000u);  // byte rate
+  CHECK(audio::getLe16(r.fs.files.at("/REC0003_P03.WAV").data() + 32) == 4);       // block align
+  CHECK(audio::getLe32(r.fs.files.at("/REC0003_P03.WAV").data() + 4) == 36u + 2000u);
+}
+
+static void test_stereo_mark_and_preroll_are_measured_in_seconds() {
+  // Одна секунда стерео — 64 000 байт. Метка и предзапись должны получиться в
+  // тех же секундах, что и в моно; считай кто-то по 32 000 — было бы вдвое больше.
+  Rig r(audio::STEREO_16K);
+  r.capture(64000);
+  CHECK(r.writer.start(9));
+  CHECK(r.writer.preRollBytes() == 64000u);
+  CHECK(r.writer.cfg.format.seconds(r.writer.preRollBytes()) == 1.0);
+  const uint32_t headAtPress = r.ring.head();
+  r.capture(64000 * 2);
+  CHECK(r.drain());
+  CHECK(r.writer.markAt(headAtPress));
+  CHECK(r.writer.mark());
+  const std::vector<uint8_t> &m = r.fs.files["/REC0009_P01.MRK"];
+  CHECK(std::string(m.begin(), m.end()) == "1.00\n3.00\n");
+  CHECK(r.writer.stop(true));
+  CHECK(pcmBytesOf(r.fs, "/REC0009_P01.WAV") == 64000u * 3);
+}
+
+static void test_stereo_power_loss_recovers_with_the_files_own_frame_size() {
+  // Восстановление не знает, какая плата собрана: формат берётся из заголовка
+  // самого .TMP. Рядом моно-часть с карты прототипа — она чинится по своему
+  // кадру в 2 байта, стерео — по 4.
+  Rig r(audio::STEREO_16K);
+  r.capture(20000);
+  CHECK(r.writer.start(5));
+  CHECK(r.drain());  // два куска по 8192 дошли до карты, хвост остался в буфере
+  r.fs.powerLoss();
+  CHECK(r.fs.sizeOf("/REC0005_P01.TMP") == 44 + 16384);
+  CHECK(pcmBytesOf(r.fs, "/REC0005_P01.TMP") == 0);  // заголовок ещё «пустой»
+
+  // Обрывки с нецелым числом кадров: 4003 байта — это 1000 стерео-кадров плюс
+  // три байта, или 2001 моно-кадр плюс байт.
+  uint8_t h[44];
+  audio::buildWavHeader(h, audio::STEREO_16K, 0);
+  std::vector<uint8_t> stereoTmp(h, h + 44);
+  stereoTmp.resize(44 + 4003, 0x5A);
+  r.fs.files["/REC0006_P02.TMP"] = stereoTmp;
+  audio::buildWavHeader(h, audio::MONO_16K, 0);
+  std::vector<uint8_t> monoTmp(h, h + 44);
+  monoTmp.resize(44 + 4003, 0xA5);
+  r.fs.files["/REC0002_P07.TMP"] = monoTmp;
+
+  CHECK(session::recoverUnfinished(r.fs, fakeLog) == 3);
+  CHECK(pcmBytesOf(r.fs, "/REC0005_P01_R.WAV") == 16384u);
+  CHECK(channelsOf(r.fs, "/REC0005_P01_R.WAV") == 2);
+  CHECK(pcmBytesOf(r.fs, "/REC0006_P02_R.WAV") == 4000u);   // целые кадры по 4 байта
+  CHECK(channelsOf(r.fs, "/REC0006_P02_R.WAV") == 2);
+  CHECK(pcmBytesOf(r.fs, "/REC0002_P07_R.WAV") == 4002u);   // целые кадры по 2 байта
+  CHECK(channelsOf(r.fs, "/REC0002_P07_R.WAV") == 1);
+  CHECK(logHas("2 ch"));
+  CHECK(logHas("1 ch"));
+}
+
 int main() {
+  test_writer_config_derives_part_size_from_the_format();
+  test_stereo_parts_rotate_on_the_byte_boundary_and_count_frames();
+  test_stereo_mark_and_preroll_are_measured_in_seconds();
+  test_stereo_power_loss_recovers_with_the_files_own_frame_size();
   test_start_includes_preroll_and_stop_writes_end();
   test_parts_rotate_exactly_on_the_byte_boundary();
   test_mark_lands_in_the_part_where_the_audio_will_land();

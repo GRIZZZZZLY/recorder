@@ -5,8 +5,10 @@
 #include <SD.h>
 #include <SPI.h>
 
+#include "AudioFormat.h"
+#include "Battery.h"
+#include "BoardConfig.h"
 #include "Button.h"
-#include "PartMath.h"
 #include "RingBuffer.h"
 #include "SdStorage.h"
 #include "Session.h"
@@ -14,7 +16,13 @@
 #include "UploadPolicy.h"
 
 /*
- * XIAO ESP32-S3 Sense voice recorder — firmware v0.3
+ * Voice recorder — firmware v0.4
+ *
+ * Одна прошивка, два профиля платы (BoardConfig.h, выбор при сборке):
+ *   XIAO ESP32-S3 Sense     встроенный PDM-микрофон, моно        — по умолчанию
+ *   Recorder PCB V1 RevA    2x IM72D128V, стерео, батарея, вибро — -DRECORDER_BOARD_REVA
+ * Логика записи о плате не знает: формат звука приходит в session::Writer
+ * значением, а пины живут только здесь и в Feedback.ino.
  *
  * Состояния: ARMED -> RECORDING -> ARMED, плюс FAULT.
  *
@@ -45,44 +53,32 @@
  */
 
 namespace cfg {
+// Уходит серверу в X-Firmware вместе с профилем платы: "0.4.0+xiao-sense".
+constexpr const char *FIRMWARE_VERSION = "0.4.0";
 constexpr uint32_t SERIAL_BAUD = 115200;
 
-constexpr int PDM_CLK_PIN = 42;
-constexpr int PDM_DATA_PIN = 41;
-constexpr uint32_t SAMPLE_RATE = partmath::SAMPLE_RATE;
-constexpr size_t FRAME_BYTES = partmath::FRAME_BYTES;
-
-constexpr int SD_SCK_PIN = 7;
-constexpr int SD_MISO_PIN = 8;
-constexpr int SD_MOSI_PIN = 9;
-// GPIO21 — документированный CS microSD платы Sense. Тот же пин — встроенный
-// LED, поэтому он не мигает независимо, пока карта смонтирована.
-constexpr int SD_CS_PIN = 21;
+// Пины и формат звука — в BoardConfig.h. Здесь только то, что от платы не зависит.
+constexpr audio::Format AUDIO = board::AUDIO;
 constexpr uint32_t SD_SPI_HZ = 10000000;
 
 // Сколько секунд до нажатия попадает в запись. Ёмкость буфера округляется
 // вверх до степени двойки (RingBuffer работает маской), поэтому фактическая
-// глубина — RING_BYTES / 32000 с: при 30 с это 1 МиБ = 32,8 с.
+// глубина — RING_BYTES / bytesPerSecond: при 30 с это 1 МиБ = 32,8 с в моно
+// и 2 МиБ = 32,8 с в стерео.
 constexpr uint32_t PRE_RECORD_SECONDS = 30;
-constexpr uint32_t ringBytesFor(uint32_t seconds) {
-  uint32_t need = seconds * partmath::BYTES_PER_SECOND;
-  uint32_t cap = 1;
-  while (cap < need) cap <<= 1;
-  return cap;
-}
-constexpr uint32_t RING_BYTES = ringBytesFor(PRE_RECORD_SECONDS);
+constexpr uint32_t RING_BYTES = AUDIO.ringBytesFor(PRE_RECORD_SECONDS);
 // Если PSRAM не дала буфер: работаем без предзаписи, но не отказываемся писать.
 constexpr uint32_t RING_FALLBACK_BYTES = 64 * 1024;
 
-// Чтение микрофона блокирует до полного куска: 1024 байта = 32 мс. DMA ядра
-// держит 6 x 240 кадров = 90 мс, кусок должен быть заметно короче.
-constexpr size_t MIC_READ_BYTES = 1024;
+// Чтение микрофона блокирует до полного куска: 32 мс звука — 1024 байта в
+// моно, 2048 в стерео. DMA ядра держит 6 x 240 кадров = 90 мс, кусок должен
+// быть заметно короче.
+constexpr size_t MIC_READ_BYTES = AUDIO.wholeFrames(AUDIO.bytesPerSecond() * 32 / 1000);
 constexpr uint32_t STATUS_INTERVAL_MS = 5000;
 
-// Встроенная кнопка BOOT на GPIO0 с внешней подтяжкой: REC без пайки.
-// Удержание при сбросе всё так же уводит в загрузчик.
-// Не проверено на нашем экземпляре: подтвердить при первом включении.
-constexpr int REC_BUTTON_PIN = 0;
+// Сколько чтений АЦП усредняется на одно показание заряда: АЦП ESP32-S3 шумный.
+constexpr int BATTERY_SAMPLES = 16;
+
 constexpr uint32_t BUTTON_DEBOUNCE_MS = 40;
 constexpr uint32_t LONG_PRESS_MS = 2000;
 
@@ -102,8 +98,9 @@ constexpr bool UPLOAD_DURING_RECORDING = false;
 
 // Диагностика для дня приезда платы. Не показатели продукта: числа для
 // измерений, печатаются по команде d. Счётчики записи живут в Writer.
+// Всё в кадрах: кадр — отсчёт по всем каналам, в моно равен сэмплу.
 struct Diag {
-  uint32_t captured_samples = 0;
+  uint32_t captured_frames = 0;
   uint32_t mic_short_reads = 0;   // микрофон вернул меньше, чем просили
   uint32_t buffer_high_watermark = 0;
   uint32_t upload_bytes = 0;
@@ -124,7 +121,8 @@ volatile bool g_captureRunning = false;
 volatile bool g_micFault = false;
 
 SdStorage g_sd;
-session::Writer g_writer(g_sd, g_ring, nowMs, serialLog);
+// Формат — из профиля платы; Writer дальше о плате не знает.
+session::Writer g_writer(g_sd, g_ring, nowMs, serialLog, cfg::AUDIO);
 
 DeviceState g_state = ST_FAULT;
 bool g_audioReady = false;
@@ -181,7 +179,7 @@ void captureTask(void *) {
   static uint8_t chunk[cfg::MIC_READ_BYTES];
   while (g_captureRunning) {
     size_t got = g_mic.readBytes(reinterpret_cast<char *>(chunk), sizeof(chunk));
-    got = partmath::wholeFrames(static_cast<uint32_t>(got));
+    got = cfg::AUDIO.wholeFrames(static_cast<uint32_t>(got));
     if (got == 0) {
       // Таймаут чтения (1 с в ядре): микрофон молчит. Не крутим ядро вхолостую.
       g_micFault = true;
@@ -193,7 +191,7 @@ void captureTask(void *) {
       ++g_diag.mic_short_reads;
     }
     g_ring.push(chunk, static_cast<uint32_t>(got));
-    g_diag.captured_samples += static_cast<uint32_t>(got / cfg::FRAME_BYTES);
+    g_diag.captured_frames += cfg::AUDIO.frames(static_cast<uint32_t>(got));
   }
   g_captureTask = nullptr;
   vTaskDelete(nullptr);
@@ -216,7 +214,7 @@ bool allocateRing() {
   }
   Serial.printf("[ring] %lu байт (%s), предзапись %.1f с\n",
                 static_cast<unsigned long>(bytes), g_ringInPsram ? "PSRAM" : "heap",
-                partmath::seconds(bytes));
+                cfg::AUDIO.seconds(bytes));
   return true;
 }
 
@@ -224,9 +222,12 @@ bool startCapture() {
   if (g_captureRunning) {
     return true;
   }
-  g_mic.setPinsPdmRx(cfg::PDM_CLK_PIN, cfg::PDM_DATA_PIN);
-  if (!g_mic.begin(I2S_MODE_PDM_RX, cfg::SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT,
-                   I2S_SLOT_MODE_MONO)) {
+  g_mic.setPinsPdmRx(board::PDM_CLK_PIN, board::PDM_DATA_PIN);
+  // Стерео: два PDM-микрофона на одной DATA, каждый в своём полупериоде CLK
+  // (SELECT на GND и на 3V3). Аппаратный PDM RX ESP32-S3 раскладывает их по
+  // двум слотам, кадр — L затем R. На железе не проверено ни для одной платы.
+  const i2s_slot_mode_t slots = cfg::AUDIO.channels == 2 ? I2S_SLOT_MODE_STEREO : I2S_SLOT_MODE_MONO;
+  if (!g_mic.begin(I2S_MODE_PDM_RX, cfg::AUDIO.sampleRate, I2S_DATA_BIT_WIDTH_16BIT, slots)) {
     Serial.println("[audio] ERROR: I2S/PDM start failed.");
     return false;
   }
@@ -262,7 +263,7 @@ bool tryMountSd(int csPin) {
   SD.end();
   SPI.end();
   delay(20);
-  SPI.begin(cfg::SD_SCK_PIN, cfg::SD_MISO_PIN, cfg::SD_MOSI_PIN, csPin);
+  SPI.begin(board::SD_SCK_PIN, board::SD_MISO_PIN, board::SD_MOSI_PIN, csPin);
   if (!SD.begin(csPin, SPI, cfg::SD_SPI_HZ)) {
     return false;
   }
@@ -274,17 +275,38 @@ bool tryMountSd(int csPin) {
 }
 
 bool initSd() {
-  Serial.printf("[sd] Mounting microSD, CS=GPIO%d...\n", cfg::SD_CS_PIN);
-  if (tryMountSd(cfg::SD_CS_PIN)) {
-    g_sdCsPin = cfg::SD_CS_PIN;
+  Serial.printf("[sd] Mounting microSD, CS=GPIO%d...\n", board::SD_CS_PIN);
+  if (tryMountSd(board::SD_CS_PIN)) {
+    g_sdCsPin = board::SD_CS_PIN;
     const uint64_t sizeMb = SD.cardSize() / (1024ULL * 1024ULL);
     Serial.printf("[sd] Ready. CS=GPIO%d, card=%llu MB\n",
-                  cfg::SD_CS_PIN, static_cast<unsigned long long>(sizeMb));
+                  board::SD_CS_PIN, static_cast<unsigned long long>(sizeMb));
     return true;
   }
-  Serial.printf("[sd] ERROR: card not mounted with CS=GPIO%d.\n", cfg::SD_CS_PIN);
-  Serial.println("[sd] Check that the Sense expansion board is installed and card is FAT32.");
+  Serial.printf("[sd] ERROR: card not mounted with CS=GPIO%d (%s).\n", board::SD_CS_PIN, board::NAME);
+  Serial.println("[sd] Check the card slot wiring for this board and that the card is FAT32.");
   return false;
+}
+
+// --- батарея -----------------------------------------------------------------------------
+
+// На Sense честно «не поддерживается»: у платы нет ни делителя, ни газометра.
+// На RevA — усреднённое напряжение с делителя на GPIO1 и процент по кривой
+// Li-Po из Battery.h. Не вызывается в записи: только статус и заголовки отправки.
+battery::Status readBattery() {
+  battery::Status s;
+  s.supported = board::HAS_BATTERY_ADC;
+  if (!s.supported) {
+    return s;
+  }
+  uint32_t sum = 0;
+  for (int i = 0; i < cfg::BATTERY_SAMPLES; ++i) {
+    sum += analogReadMilliVolts(static_cast<uint8_t>(board::BAT_ADC_PIN));
+  }
+  const uint32_t mv = battery::packMillivolts(sum / cfg::BATTERY_SAMPLES, board::BAT_DIVIDER);
+  s.millivolts = static_cast<uint16_t>(mv > 0xFFFF ? 0xFFFF : mv);
+  s.percent = battery::percentFromMillivolts(mv);
+  return s;
 }
 
 // Номер следующей сессии: больше всего на карте и всего, что уже выдавали
@@ -338,7 +360,7 @@ bool startRecording() {
   feedbackEvent("start");
   Serial.printf("[rec] START session %04u -> %s | предзапись %.1f с\n",
                 g_writer.sessionId(), g_writer.currentPath(),
-                partmath::seconds(g_writer.preRollBytes()));
+                cfg::AUDIO.seconds(g_writer.preRollBytes()));
   return true;
 }
 
@@ -354,12 +376,12 @@ void stopRecording(StopReason reason) {
 
   const uint32_t elapsedSec = (millis() - g_recordStartedMs) / 1000;
   Serial.printf("[rec] STOP session %04u | %u parts | %lu s | %lu audio bytes | marks %u | "
-                "clean=%s end=%s | dropped %lu samples\n",
+                "clean=%s end=%s | dropped %lu frames\n",
                 g_writer.sessionId(), g_writer.partIndex(),
                 static_cast<unsigned long>(elapsedSec),
                 static_cast<unsigned long>(g_writer.sessionBytes()),
                 g_writer.marks(), clean ? "yes" : "NO", g_writer.endCreated() ? "yes" : "no",
-                static_cast<unsigned long>(g_ring.dropped() / cfg::FRAME_BYTES));
+                static_cast<unsigned long>(cfg::AUDIO.frames(g_ring.dropped())));
 
   // Через тот же helper, а не просто +1: после сессии 9999 номера кончились,
   // и следующий START обязан отказать, а не сделать пятизначное имя.
@@ -400,7 +422,7 @@ void serviceRecording() {
                   g_writer.sessionId(), g_writer.partIndex(), static_cast<unsigned long>(sec),
                   (g_writer.sessionBytes() + g_writer.partBytes()) / (1024.0f * 1024.0f),
                   static_cast<unsigned long>(g_ring.available()),
-                  static_cast<unsigned long>(g_ring.dropped() / cfg::FRAME_BYTES));
+                  static_cast<unsigned long>(cfg::AUDIO.frames(g_ring.dropped())));
     g_lastStatusMs = now;
   }
 }
@@ -482,7 +504,7 @@ void dispatchButton(ButtonDecoder::Event event, uint32_t ringHead) {
 // восьми фронтов не переполняется от одного нажатия.
 void IRAM_ATTR buttonIsr() {
   const uint32_t now = millis();
-  const bool pressed = digitalRead(cfg::REC_BUTTON_PIN) == LOW;
+  const bool pressed = digitalRead(board::REC_BUTTON_PIN) == LOW;
   if (pressed == g_btnLastLevel || now - g_btnLastEdgeMs < cfg::BUTTON_DEBOUNCE_MS) {
     return;
   }
@@ -528,7 +550,7 @@ void handleButton() {
   // раньше уже скормленного.
   const uint32_t now = millis();
   if (now - g_btnLastEdgeMs >= cfg::BUTTON_DEBOUNCE_MS) {
-    dispatchButton(g_button.feed(digitalRead(cfg::REC_BUTTON_PIN) == LOW, now), g_btnPressHead);
+    dispatchButton(g_button.feed(digitalRead(board::REC_BUTTON_PIN) == LOW, now), g_btnPressHead);
   }
 }
 
@@ -570,11 +592,15 @@ void printStatus() {
     Serial.printf(" (CS=GPIO%d)", g_sdCsPin);
   }
   Serial.println();
+  Serial.printf("Board: %s (%s), hardware unverified\n", board::NAME, board::ID);
+  Serial.printf("Audio: %lu Hz / %u bit / %u ch, %lu bytes/s\n",
+                static_cast<unsigned long>(cfg::AUDIO.sampleRate), cfg::AUDIO.bitsPerSample,
+                cfg::AUDIO.channels, static_cast<unsigned long>(cfg::AUDIO.bytesPerSecond()));
   Serial.printf("Ring:  %lu / %lu bytes (%s), pre-record %.1f s\n",
                 static_cast<unsigned long>(g_ring.available()),
                 static_cast<unsigned long>(g_ring.capacity()),
                 g_ringInPsram ? "PSRAM" : "heap",
-                partmath::seconds(g_ring.capacity()));
+                cfg::AUDIO.seconds(g_ring.capacity()));
   if (g_state == ST_RECORDING) {
     Serial.printf("Sess:  %04u, part %02u, marks %u\n", g_writer.sessionId(),
                   g_writer.partIndex(), g_writer.marks());
@@ -592,7 +618,14 @@ void printStatus() {
   } else {
     Serial.println("Time:  unknown (no NTP sync yet)");
   }
-  Serial.println("Batt:  unknown (no gauge connected yet)");
+  const battery::Status batt = readBattery();
+  if (batt.supported) {
+    Serial.printf("Batt:  %u.%03u V, ~%u%% (ADC GPIO%d, divider %.2f unverified)\n",
+                  batt.millivolts / 1000, batt.millivolts % 1000, batt.percent,
+                  board::BAT_ADC_PIN, static_cast<double>(board::BAT_DIVIDER));
+  } else {
+    Serial.println("Batt:  unknown (this board has no battery ADC)");
+  }
   Serial.printf("Heap:  %lu bytes free\n", static_cast<unsigned long>(ESP.getFreeHeap()));
   Serial.printf("PSRAM: %lu / %lu bytes free\n",
                 static_cast<unsigned long>(ESP.getFreePsram()),
@@ -603,9 +636,12 @@ void printStatus() {
 void printDiag() {
   const session::WriterStats &w = g_writer.stats();
   Serial.println("--- DIAG (числа для измерений, не показатели продукта) ---");
-  Serial.printf("captured_samples      %lu\n", static_cast<unsigned long>(g_diag.captured_samples));
-  Serial.printf("written_samples       %lu\n", static_cast<unsigned long>(w.written_samples));
-  Serial.printf("dropped_samples       %lu\n", static_cast<unsigned long>(g_ring.dropped() / cfg::FRAME_BYTES));
+  Serial.printf("frame = %u ch x %u bit = %lu bytes; в моно кадр равен сэмплу\n",
+                cfg::AUDIO.channels, cfg::AUDIO.bitsPerSample,
+                static_cast<unsigned long>(cfg::AUDIO.frameBytes()));
+  Serial.printf("captured_frames       %lu\n", static_cast<unsigned long>(g_diag.captured_frames));
+  Serial.printf("written_frames        %lu\n", static_cast<unsigned long>(w.written_frames));
+  Serial.printf("dropped_frames        %lu\n", static_cast<unsigned long>(cfg::AUDIO.frames(g_ring.dropped())));
   Serial.printf("mic_short_reads       %lu\n", static_cast<unsigned long>(g_diag.mic_short_reads));
   Serial.printf("sd_write_max_ms       %lu\n", static_cast<unsigned long>(w.sd_write_max_ms));
   Serial.printf("sd_write_errors       %lu\n", static_cast<unsigned long>(w.sd_write_errors));
@@ -620,14 +656,15 @@ void printDiag() {
   Serial.printf("uptime_ms             %lu\n", static_cast<unsigned long>(millis()));
   // Ожидание по часам против фактически захваченного: разница — оценка
   // потерь между DMA и задачей захвата, которых буфер не видит.
-  Serial.printf("expected_by_clock     %lu samples\n",
-                static_cast<unsigned long>((millis() / 1000UL) * cfg::SAMPLE_RATE));
+  Serial.printf("expected_by_clock     %lu frames\n",
+                static_cast<unsigned long>((millis() / 1000UL) * cfg::AUDIO.sampleRate));
   Serial.println("------------------------------------------------------------");
 }
 
 void printHelp() {
   Serial.println();
-  Serial.println("XIAO Voice Recorder v0.3. Команда вводится строкой, затем Enter.");
+  Serial.printf("Voice Recorder v%s, плата %s. Команда вводится строкой, затем Enter.\n",
+                cfg::FIRMWARE_VERSION, board::NAME);
   Serial.println("  r  START (в ARMED) или STOP (в RECORDING)");
   Serial.println("  m  метка (только в RECORDING)");
   Serial.println("  s  состояние");
@@ -734,13 +771,17 @@ void setup() {
 
   Serial.println();
   Serial.println("====================================");
-  Serial.println(" XIAO ESP32-S3 Sense Voice Recorder");
-  Serial.println(" Firmware v0.3 (untested on hardware)");
+  Serial.printf(" Voice Recorder — %s\n", board::NAME);
+  Serial.printf(" Firmware v%s+%s (hardware unverified)\n", cfg::FIRMWARE_VERSION, board::ID);
+  Serial.printf(" %u ch x %u bit @ %lu Hz, PDM CLK GPIO%d DATA GPIO%d, SD CS GPIO%d, REC GPIO%d\n",
+                cfg::AUDIO.channels, cfg::AUDIO.bitsPerSample,
+                static_cast<unsigned long>(cfg::AUDIO.sampleRate), board::PDM_CLK_PIN,
+                board::PDM_DATA_PIN, board::SD_CS_PIN, board::REC_BUTTON_PIN);
   Serial.println("====================================");
 
-  pinMode(cfg::REC_BUTTON_PIN, INPUT_PULLUP);
-  g_btnLastLevel = digitalRead(cfg::REC_BUTTON_PIN) == LOW;
-  attachInterrupt(digitalPinToInterrupt(cfg::REC_BUTTON_PIN), buttonIsr, CHANGE);
+  pinMode(board::REC_BUTTON_PIN, INPUT_PULLUP);
+  g_btnLastLevel = digitalRead(board::REC_BUTTON_PIN) == LOW;
+  attachInterrupt(digitalPinToInterrupt(board::REC_BUTTON_PIN), buttonIsr, CHANGE);
   feedbackSetup();
 
   Serial.printf("[sys] Chip: %s\n", ESP.getChipModel());

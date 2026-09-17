@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Сборка прошивки без платы. Проверяет, что код компилируется и влезает во флеш.
-# Использование:  bash tools/build.sh [--clean]
+# Использование:  bash tools/build.sh [--board sense|reva] [--clean]
+#                 RECORDER_BOARD=reva bash tools/build.sh
+#
+# Профиль платы (BoardConfig.h):
+#   sense  XIAO ESP32-S3 Sense, встроенный микрофон, моно      — по умолчанию
+#   reva   Recorder PCB V1 RevA, 2x IM72D128V, стерео           — платы ещё нет,
+#          собирается статически, на железе не проверено
 #
 # Ищет arduino-cli так: $ARDUINO_CLI, затем в PATH, затем на E: (тулчейн
 # владельца). Каталоги ядра можно переопределить через ARDUINO_DIRECTORIES_*:
@@ -10,6 +16,20 @@ set -euo pipefail
 SKETCH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/XiaoVoiceRecorder"
 FQBN="esp32:esp32:XIAO_ESP32S3:PSRAM=opi,FlashSize=8M"
 OWNER_TOOLCHAIN="E:/arduino-toolchain"
+
+BOARD="${RECORDER_BOARD:-sense}"
+if [ "${1:-}" = "--board" ]; then
+  BOARD="${2:?build.sh: --board требует sense или reva}"
+  shift 2
+fi
+# Профиль передаётся флагом препроцессора, а не правкой исходников: один и тот
+# же код собирается под обе платы. Оба варианта пишутся в разные каталоги,
+# чтобы объекты одного профиля не подменяли другой.
+case "$BOARD" in
+  sense) BOARD_FLAGS=() ;;
+  reva)  BOARD_FLAGS=(--build-property "compiler.cpp.extra_flags=-DRECORDER_BOARD_REVA") ;;
+  *) echo "build.sh: неизвестный профиль '$BOARD' (sense | reva)" >&2; exit 2 ;;
+esac
 
 if [ -n "${ARDUINO_CLI:-}" ]; then
   ACLI="$ARDUINO_CLI"
@@ -24,4 +44,7 @@ else
   exit 2
 fi
 
-"$ACLI" compile --fqbn "$FQBN" --warnings all "$@" "$SKETCH"
+echo "build.sh: профиль $BOARD"
+"$ACLI" compile --fqbn "$FQBN" --warnings all \
+  --build-path "${RECORDER_BUILD_DIR:-${TMPDIR:-/tmp}/recorder-build-$BOARD}" \
+  "${BOARD_FLAGS[@]}" "$@" "$SKETCH"
