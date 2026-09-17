@@ -1,6 +1,7 @@
-# Проверки на каждый push и pull request. Четыре независимые работы:
-# сервер с настоящим ffmpeg, хост-тесты прошивки, сборка прошивки под ESP32-S3,
-# сборка фронтенда. Ни одна не требует платы.
+# Проверки на каждый push и pull request. Независимые работы: сервер с
+# настоящим ffmpeg, хост-тесты прошивки (и под санитайзерами), сборка прошивки
+# под ESP32-S3 в обоих профилях платы (XIAO Sense и Recorder RevA), переходная
+# сборка через ESP-IDF, сборка фронтенда. Ни одна не требует платы.
 #
 # Что здесь НЕ проверяется и проверяться не может: микрофон, карта, ток,
 # Wi-Fi — всё это ждёт настоящую XIAO (docs/hardware-bring-up.md).
@@ -29,7 +30,7 @@ jobs:
         run: cd server && python -m pytest -q -rs
 
   firmware-host-tests:
-    name: firmware host tests (g++, 2135 проверки)
+    name: firmware host tests (g++, 2245 проверок)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -69,7 +70,26 @@ jobs:
             https://espressif.github.io/arduino-esp32/package_esp32_index.json
           arduino-cli core update-index
           arduino-cli core install esp32:esp32@3.3.11
-      - run: bash tools/build.sh
+      - name: Профиль XIAO Sense — тот, что поедет на плату в октябре
+        run: bash tools/build.sh --board sense
+      - name: Профиль Recorder RevA — платы нет, только статическая сборка
+        run: bash tools/build.sh --board reva
+
+  firmware-idf:
+    name: firmware build (ESP-IDF 5.5.5 + Arduino 3.3.11 as component)
+    runs-on: ubuntu-22.04
+    # Переходный путь к ESP-IDF: тот же исходный код, что и в Arduino-задании,
+    # собирается через idf.py (firmware/). Ни разу не прогонялось до этого
+    # коммита, поэтому до первого зелёного прогона не блокирует остальные
+    # проверки; после него continue-on-error убирается.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.5
+          target: esp32s3
+          path: firmware
 
   web:
     name: web typecheck + build
