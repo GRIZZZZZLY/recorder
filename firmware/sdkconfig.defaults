@@ -1,0 +1,36 @@
+# Настройки IDF, повторяющие сборку Arduino для XIAO ESP32-S3 (PSRAM=opi, Flash 8M).
+# Полный sdkconfig генерируется idf.py и в репозиторий не кладётся.
+
+CONFIG_IDF_TARGET="esp32s3"
+
+# Флеш 8 МБ, таблица разделов как у Arduino default_8MB: NVS по тому же адресу,
+# поэтому настройки Wi-Fi и сервера переживают смену сборки Arduino <-> IDF.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+
+# Octal PSRAM 8 МБ: кольцевой буфер предзаписи (ps_malloc) живёт здесь.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+
+# Arduino как компонент требует тик 1 кГц (millis/delay) и PSK-режимы mbedTLS.
+CONFIG_FREERTOS_HZ=1000
+CONFIG_MBEDTLS_PSK_MODES=y
+CONFIG_MBEDTLS_KEY_EXCHANGE_PSK=y
+
+# setup()/loop() запускает компонент Arduino; app_main() не пишем.
+CONFIG_AUTOSTART_ARDUINO=y
+# Serial через встроенный USB CDC, как в Arduino-сборке XIAO_ESP32S3 (cdc_on_boot=1).
+CONFIG_ARDUINO_USB_CDC_ON_BOOT=y
+CONFIG_ARDUINO_USB_MODE=1
+
+# Компилятор: оптимизация по размеру, как у Arduino по умолчанию.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_COMPILER_CXX_EXCEPTIONS=n
