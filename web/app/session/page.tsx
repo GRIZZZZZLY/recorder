@@ -12,7 +12,6 @@ import { TaskRow } from "@/components/recorder/task-row";
 import { Empty, EmptyNote, Failed, Loading } from "@/components/recorder/states";
 import { Dot, Evidence, Retry, SourceDot, Tag } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
-import { at } from "@/lib/motion";
 import { revealUtterance } from "@/lib/reveal";
 import { apiPost } from "@/lib/api";
 import type { Mark, Question, Summary, Task, Utterance } from "@/lib/api";
@@ -48,15 +47,14 @@ type Detail = {
  * слева направо по порядку номеров — части и приходили по очереди. */
 function Parts({ parts }: { parts: Part[] }) {
   return (
-    <Section note={`Части · ${parts.length}`} at={2}>
+    <Section note={`Части · ${parts.length}`}>
       <div className="flex gap-1.5 rounded-card bg-surface shadow-plate px-4 py-3.5">
-        {parts.map((part, index) => (
+        {parts.map((part) => (
           <span
             key={part.part}
-            style={at(2, index)}
             title={`часть ${String(part.part).padStart(2, "0")}: ${part.transcript_status ?? "в очереди"}`}
             className={cx(
-              "part-grow h-1 flex-1 rounded-sm",
+              "h-1 flex-1 rounded-sm",
               part.transcript_status === "done" ? "bg-fill"
                 : part.transcript_status === "failed" ? "bg-accent"
                 : "bg-waveform",
@@ -98,7 +96,7 @@ function RecordedOn({ deviceId, session, day, onSaved }: {
   }
 
   return (
-    <Section note="День разговора" at={2}>
+    <Section note="День разговора">
       <Card>
         <Row>
           {/* Нативный выбор даты: календарь телефона и клавиатурный ввод
@@ -151,7 +149,7 @@ function SpeechShare({ timeline }: { timeline: Utterance[] }) {
   const TONES = ["bg-fill", "bg-waveform", "bg-control", "bg-hairline-strong"];
 
   return (
-    <Section note="Кто сколько говорил" at={2}>
+    <Section note="Кто сколько говорил">
       <Card className="flex flex-col gap-3 p-4">
         <div className="flex h-2 gap-px overflow-hidden rounded-chip">
           {shares.map((item, index) => (
@@ -269,7 +267,7 @@ function Transcript({ timeline, marked }: { timeline: Utterance[]; marked: Set<s
   }, [seek]);
 
   return (
-    <Section note="Транскрипт" aside="нажмите реплику, чтобы послушать" at={7}>
+    <Section note="Транскрипт" aside="нажмите реплику, чтобы послушать">
       <div className="flex flex-col gap-4">
         {byPart.map((group) => (
           <div key={group.part} className="flex flex-col gap-1.5">
@@ -371,16 +369,16 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
           {data.summary ? (
             <>
               {/* Табличка «Главное из разговора»: оформление в styles/studio.css. */}
-              <p className="studio-summary enter" style={at(1)}>{data.summary.summary}</p>
+              <p className="studio-summary">{data.summary.summary}</p>
               {data.summary.topics.length > 0 && (
-                <div className="enter flex flex-wrap gap-2" style={at(2)}>
+                <div className="flex flex-wrap gap-2">
                   {data.summary.topics.map((item) => (
                     <Tag key={item} href={`/project/?name=${encodeURIComponent(item)}`}>{item}</Tag>
                   ))}
                 </div>
               )}
-              <SummaryList title="Решения" items={data.summary.decisions} at={3} />
-              <SummaryList title="Факты" items={data.summary.facts} at={4} />
+              <SummaryList title="Решения" items={data.summary.decisions} />
+              <SummaryList title="Факты" items={data.summary.facts} />
             </>
           ) : (
             <Empty title="Саммари ещё не готово"
@@ -389,8 +387,8 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
 
           {data.marks.length > 0 && (
             <Section note={`Метки · ${data.marks.length}`}
-                     aside="кнопка на диктофоне во время записи" at={4}>
-              <Card className="cascade">
+                     aside="кнопка на диктофоне во время записи">
+              <Card>
                 {data.marks.map((mark) => (
                   <Row key={`${mark.part}-${mark.offset}`} className="gap-3.5">
                     <BookmarkSimple size={14} weight="fill" aria-hidden className="shrink-0 text-mark" />
@@ -418,8 +416,8 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
 
           {/* Пустая секция — две строки шума ради «нет». Нет задач — нет секции. */}
           {data.tasks.length > 0 && (
-            <Section note={`Задачи · ${data.tasks.length}`} at={5}>
-              <Card className="cascade">
+            <Section note={`Задачи · ${data.tasks.length}`}>
+              <Card>
                 {data.tasks.map((task) => (
                   <TaskRow key={task.task_id} task={task} onChanged={reload} />
                 ))}
@@ -428,8 +426,8 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
           )}
 
           {openQuestions.length > 0 && (
-            <Section note={`Вопросы без ответа · ${openQuestions.length}`} at={6}>
-              <Card className="cascade">
+            <Section note={`Вопросы без ответа · ${openQuestions.length}`}>
+              <Card>
                 {openQuestions.map((question) => (
                   <Row key={question.question_id} className="gap-3.5">
                     <Time className="shrink-0">{question.time}</Time>
@@ -464,7 +462,7 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
           {data.parts.length > 1 && <Parts parts={data.parts} />}
 
           {(data.summary_error || failedParts.length > 0) && (
-            <Section note="Ошибки обработки" at={3}>
+            <Section note="Ошибки обработки">
               <Card>
                 {data.summary_error ? (
                   <Row className="items-start">

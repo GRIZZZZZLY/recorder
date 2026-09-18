@@ -40,8 +40,8 @@ export default function RecordsPage() {
         <Empty title="Записей ещё нет"
                text="Диктофон не присылал ни одной части. Проверьте, что устройство в сети." />
       ) : (
-        byDay(data).map((group, index) => (
-          <Section key={group.day ?? "no-day"} note={formatDayGroup(group.day)} at={index + 1}>
+        byDay(data).map((group) => (
+          <Section key={group.day ?? "no-day"} note={formatDayGroup(group.day)}>
             {/* Разговор узнают по часу, теме и людям — всё это на карточке. */}
             <div className="studio-record-grid">
               {group.rows.map((row) => (

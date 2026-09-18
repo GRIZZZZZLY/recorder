@@ -10,13 +10,13 @@ import type { SummaryItem } from "@/lib/api";
  * Пункты саммари: время, текст и кнопка «основание» — реплика, из которой
  * пункт взят. Без источника кнопка выключена: слушать нечего.
  */
-export function SummaryList({ title, items, at }: { title: string; items: SummaryItem[]; at?: number }) {
+export function SummaryList({ title, items }: { title: string; items: SummaryItem[] }) {
   const seek = useSeek();
   if (items.length === 0) return null;
 
   return (
-    <Section note={`${title} · ${items.length}`} at={at}>
-      <Card className="cascade">
+    <Section note={`${title} · ${items.length}`}>
+      <Card>
         {items.map((item, index) => (
           <Row key={`${item.time}-${index}`} className="gap-3.5">
             <Time className="shrink-0">{item.time}</Time>

@@ -8,7 +8,6 @@ import { PageHeader } from "@/components/recorder/page-header";
 import { Empty, Failed, Loading } from "@/components/recorder/states";
 import { useApi } from "@/lib/use-api";
 import { count, formatDay } from "@/lib/format";
-import { at } from "@/lib/motion";
 import { sessionHref } from "@/lib/session-link";
 
 type Feed = {
@@ -65,10 +64,10 @@ function Body() {
         <Empty title="Разговоров по этой теме нет"
                text="Тема встречалась в саммари, но записи к ней не привязались." />
       ) : (
-        <div className="relative flex max-w-[900px] flex-col gap-6 cascade" style={at(1)}>
+        <div className="relative flex max-w-[900px] flex-col gap-6">
           {/* Линия хронологии между датой и карточкой — рисуется сверху вниз
               вместе с каскадом. На телефоне колонки нет, линии тоже. */}
-          <span aria-hidden className="feed-line absolute top-1 bottom-1 left-[152px] hidden w-px bg-hairline-strong sm:block" />
+          <span aria-hidden className="absolute top-1 bottom-1 left-[152px] hidden w-px bg-hairline-strong sm:block" />
           {data.sessions.map((item) => (
             <article key={`${item.device_id}-${item.session}`}
                      className="grid gap-3 sm:grid-cols-[140px_1fr] sm:gap-6">

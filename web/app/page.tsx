@@ -10,7 +10,6 @@ import { DayTimeline } from "@/components/recorder/timeline";
 import { useApi } from "@/lib/use-api";
 import type { DigestBody, SessionRow, Task } from "@/lib/api";
 import { count, formatAgo, formatDayLong, formatDayShort, formatMinutes, todayIso } from "@/lib/format";
-import { at } from "@/lib/motion";
 import { sessionHref } from "@/lib/session-link";
 import { useNow } from "@/lib/use-now";
 import { cx } from "@/utils/cx";
@@ -47,7 +46,7 @@ export default function DigestPage() {
   // на втором, дальше секции по порядку. Такт 40 мс.
   return (
     <div className="studio-home">
-      <header className="studio-home-heading enter" style={at(0)}>
+      <header className="studio-home-heading">
         <div>
           <span className="studio-eyebrow">ВАШ ЗВУКОВОЙ ДНЕВНИК</span>
           <h1>Сводка<span className="studio-title-dot">.</span></h1>
@@ -55,7 +54,7 @@ export default function DigestPage() {
         <span className="studio-date">{formatDayLong(todayIso())}</span>
       </header>
 
-      <section className="studio-instrument enter" style={at(1)} aria-label="Лента дня">
+      <section className="studio-instrument" aria-label="Лента дня">
         <div className="studio-instrument-label">
           <span><WaveIcon size={17} aria-hidden /> Лента дня</span>
           <span className="studio-engraved" aria-hidden>24 H / AUDIO LOG</span>
@@ -64,7 +63,7 @@ export default function DigestPage() {
         {/* Лента живёт своей жизнью: по ней ходят в прошлые дни, даже когда
             сегодня записей не было. Пусто она выглядит только пока их нет вовсе. */}
         {sessions && sessions.length > 0 ? (
-          <DayTimeline rows={sessions} now={now} at={2} />
+          <DayTimeline rows={sessions} now={now} />
         ) : (
           <Empty
             title="Записей ещё нет"
@@ -108,21 +107,21 @@ export default function DigestPage() {
         </div>
       </section>
 
-      <div className="studio-section-heading enter" style={at(3)}>
+      <div className="studio-section-heading">
         <h2>Последние записи</h2>
         <Link href="/records/">Все записи <ArrowRight size={16} aria-hidden /></Link>
       </div>
       {data.recent.length > 0 ? (
-        <div className="studio-record-grid enter" style={at(4)}>
+        <div className="studio-record-grid">
           {data.recent.slice(0, 4).map((row) => (
             <StudioRecord key={`${row.device_id}-${row.session}`} row={row} compact />
           ))}
         </div>
       ) : (
-        <p className="studio-empty enter" style={at(4)}>Здесь появится ваш первый разговор.</p>
+        <p className="studio-empty">Здесь появится ваш первый разговор.</p>
       )}
 
-      <section className="studio-tasks-panel enter" style={at(5)} aria-label="Мои задачи">
+      <section className="studio-tasks-panel" aria-label="Мои задачи">
         <div className="studio-section-heading">
           <h2>Мои задачи{data.week.my_open_tasks > 0 && <span>{data.week.my_open_tasks}</span>}</h2>
           <Link href="/tasks/?show=mine" aria-label="Все мои задачи"><ArrowRight size={18} aria-hidden /></Link>
@@ -145,7 +144,7 @@ export default function DigestPage() {
       </section>
 
       {data.day.review > 0 && (
-        <Link href="/review/" className="studio-review-note enter" style={at(6)}>
+        <Link href="/review/" className="studio-review-note">
           <WarningCircle size={17} aria-hidden /> Проверить спорные места
           <span>{data.day.review}</span>
           <ArrowRight size={15} aria-hidden />

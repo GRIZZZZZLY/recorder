@@ -7,7 +7,6 @@ import { Empty, Failed, Loading } from "@/components/recorder/states";
 import { Dot, Retry } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import { count, formatAgo, formatDuration } from "@/lib/format";
-import { at } from "@/lib/motion";
 import { isLive, useNow } from "@/lib/use-now";
 
 type Status = {
@@ -59,19 +58,17 @@ export default function StatusPage() {
         }
       />
 
-      <div className="enter" style={at(1)}>
-        <Stats items={[
-          { value: data.transcripts_pending, label: "в очереди расшифровки",
-            dot: data.transcripts_pending ? "warn" : "ok" },
-          { value: data.summaries_pending, label: "ждут саммари",
-            dot: data.summaries_pending ? "warn" : "ok" },
-          { value: broken, label: "с ошибкой", tone: broken ? "accent" : undefined,
-            dot: broken ? "accent" : "ok" },
-        ]} />
-      </div>
+      <Stats items={[
+        { value: data.transcripts_pending, label: "в очереди расшифровки",
+          dot: data.transcripts_pending ? "warn" : "ok" },
+        { value: data.summaries_pending, label: "ждут саммари",
+          dot: data.summaries_pending ? "warn" : "ok" },
+        { value: broken, label: "с ошибкой", tone: broken ? "accent" : undefined,
+          dot: broken ? "accent" : "ok" },
+      ]} />
 
       <div className="grid gap-5 lg:grid-cols-2">
-        <Section note="Устройство" at={2}>
+        <Section note="Устройство">
           <Card>
             {upload ? (
               <>
@@ -111,7 +108,7 @@ export default function StatusPage() {
           </Card>
         </Section>
 
-        <Section note="Конвейер" at={3}>
+        <Section note="Конвейер">
           <Card>
             <Fact title="Расшифровка">
               <span className="flex items-center justify-end gap-2">
@@ -136,8 +133,8 @@ export default function StatusPage() {
       </div>
 
       {data.failed_parts.length > 0 && (
-        <Section note={`Части с ошибкой · ${data.failed_parts.length}`} at={4}>
-          <Card className="cascade">
+        <Section note={`Части с ошибкой · ${data.failed_parts.length}`}>
+          <Card>
             {data.failed_parts.map((row) => (
               <Row key={`${row.session}-${row.part}`} className="flex-wrap gap-y-2">
                 <Dot tone="accent" />
@@ -160,8 +157,8 @@ export default function StatusPage() {
       )}
 
       {data.stuck_summaries.length > 0 && (
-        <Section note={`Саммари с ошибкой · ${data.stuck_summaries.length}`} at={5}>
-          <Card className="cascade">
+        <Section note={`Саммари с ошибкой · ${data.stuck_summaries.length}`}>
+          <Card>
             {data.stuck_summaries.map((row) => (
               <Row key={row.session} className="flex-wrap gap-y-2">
                 <Dot tone="accent" />
@@ -179,9 +176,9 @@ export default function StatusPage() {
       )}
 
       {data.gaps.length > 0 && (
-        <Section note={`Пропуски частей · ${data.gaps.length}`} at={6}
+        <Section note={`Пропуски частей · ${data.gaps.length}`}
                  aside="номера отсутствуют: запись потеряна или ещё не выгружена">
-          <Card className="cascade">
+          <Card>
             {data.gaps.map((row) => (
               <Row key={row.session}>
                 <Dot tone="warn" />
@@ -196,9 +193,9 @@ export default function StatusPage() {
       )}
 
       {data.duration_mismatch.length > 0 && (
-        <Section note={`Расхождение длительности · ${data.duration_mismatch.length}`} at={7}
+        <Section note={`Расхождение длительности · ${data.duration_mismatch.length}`}
                  aside="размер файла и ответ Deepgram расходятся больше чем на 2%">
-          <Card className="cascade">
+          <Card>
             {data.duration_mismatch.map((row) => (
               <Row key={`${row.session}-${row.part}`}>
                 <Dot tone="warn" />
@@ -216,9 +213,9 @@ export default function StatusPage() {
       )}
 
       {data.recovered_parts.length > 0 && (
-        <Section note={`Восстановленные части · ${data.recovered_parts.length}`} at={8}
+        <Section note={`Восстановленные части · ${data.recovered_parts.length}`}
                  aside="питание пропало во время записи, заголовок починен при старте">
-          <Card className="cascade">
+          <Card>
             {data.recovered_parts.map((row) => (
               <Row key={`${row.session}-${row.part}`}>
                 <Dot tone="ok" />

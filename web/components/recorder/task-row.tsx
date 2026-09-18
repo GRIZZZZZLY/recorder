@@ -59,7 +59,7 @@ export function TaskRow({ task, onChanged }: { task: Task; onChanged: () => void
   return (
     <Row className="flex-wrap gap-y-2">
       {/* Просроченная задача: точка источника загорается при входе строки. */}
-      <SourceDot source={task.source} flash={task.overdue} />
+      <SourceDot source={task.source} />
 
       {/* Гашение текста — 150 мс, как в макете: закрытая задача не мигает. */}
       <span className={cx("min-w-0 flex-1 transition-colors duration-150", closed && "text-text-secondary")}>

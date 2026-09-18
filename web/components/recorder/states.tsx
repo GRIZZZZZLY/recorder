@@ -2,7 +2,6 @@ import { ArrowClockwise } from "@phosphor-icons/react/dist/ssr";
 import { Card } from "@/components/recorder/list";
 import { Button, Dot } from "@/components/recorder/ui";
 import { AuthError } from "@/lib/api";
-import { at } from "@/lib/motion";
 import { cx } from "@/utils/cx";
 
 /**
@@ -42,16 +41,15 @@ export function Empty({ title, text, action }: {
   text?: string;
   action?: React.ReactNode;
 }) {
-  // Тишина рисуется ровной линией, которая опадает из случайной волны: это
-  // единственное место, где форма выдумана, и она ничего не изображает.
+  // Тишина рисуется ровной линией: это единственное место, где форма
+  // выдумана, и она ничего не изображает — поэтому и неподвижна.
   const flat = new Array(40).fill(3);
-  const loud = Array.from({ length: 40 }, (_, index) => 4 + ((index * 7) % 13));
   return (
-    <div className="enter flex flex-col items-center gap-2 rounded-card bg-surface shadow-plate px-6 py-9 text-center" style={at(1)}>
+    <div className="flex flex-col items-center gap-2 rounded-card bg-surface shadow-plate px-6 py-9 text-center">
       <div aria-hidden className="flex h-6 items-center gap-0.5 opacity-50">
         {flat.map((value, index) => (
-          <span key={index} className="settle w-0.5 rounded-[1px] bg-text-tertiary"
-                style={{ height: value, ...at(1, index), "--peak": loud[index] / value } as React.CSSProperties} />
+          <span key={index} className="w-0.5 rounded-[1px] bg-text-tertiary"
+                style={{ height: value }} />
         ))}
       </div>
       <p className="mt-2 text-section text-text-primary">{title}</p>

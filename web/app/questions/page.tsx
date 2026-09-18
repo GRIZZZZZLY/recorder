@@ -128,7 +128,7 @@ function Body() {
                  text="Саммари не нашло в разговорах ничего, что осталось без ответа." />
         ) : (
           <Section className={cx(loading && "stale")}>
-            <Card className="cascade">
+            <Card>
               {data.map((question) => (
                 <QuestionRow key={`${question.session}-${question.question_id}`}
                              question={question} onChanged={reload} />

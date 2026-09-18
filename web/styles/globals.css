@@ -295,27 +295,6 @@ textarea {
   to   { opacity: 1; translate: 0 0; }
 }
 
-/* Тот же вход, но из лёгкой расфокусировки: строка не просто проявляется, а
- * наводится на резкость. Дороже — только для строк каскада и блоков ленты. */
-@keyframes cascade-in-soft {
-  from { opacity: 0; translate: 0 8px; filter: blur(6px); }
-  to   { opacity: 1; translate: 0 0; filter: blur(0); }
-}
-
-/* Красная «сейчас» опускается сверху и коротко вспыхивает: последний штрих
- * линейки, единственное на ленте, что относится к текущей минуте. */
-@keyframes now-flash {
-  from { box-shadow: var(--shadow-glow-accent); }
-  to   { box-shadow: 0 0 0 0 transparent; }
-}
-
-/* Точка плашки состояния «загорается» при появлении: свечение цветом точки
- * (currentColor задан классом тона), 480 мс, затем ровно. */
-@keyframes dot-flash {
-  from { box-shadow: 0 0 14px 3px currentColor; }
-  to   { box-shadow: 0 0 0 0 transparent; }
-}
-
 /* 6 · Подложка реплики, к которой привело «основание»: загорается и гаснет за
  * 1200 мс. Пункт саммари и реплика в транскрипте — одно и то же место записи,
  * и это единственное, что их связывает на экране. */
@@ -328,12 +307,6 @@ textarea {
 @keyframes live-ring {
   from { scale: 1; opacity: 0.6; }
   to   { scale: 2.4; opacity: 0; }
-}
-
-/* 3 · Волна в блоке ленты дня растёт снизу. */
-@keyframes wave-grow {
-  from { scale: 1 0; }
-  to   { scale: 1 1; }
 }
 
 /* 7 · Плеер выезжает снизу один раз за загрузку страницы. */
@@ -401,50 +374,25 @@ textarea {
   }
 }
 
-/* Каскад появления: строки списка выезжают по очереди, шаг 30 мс. Задержки
- * перечислены вручную до двенадцатой строки — дальше ждать нечего, остальные
- * появляются вместе с ней. Через sibling-index() было бы короче, но функция
- * слишком свежая, чтобы на неё опираться. */
-/* Все входы отсчитываются от одной шкалы: --i — номер такта страницы (шаг
- * --stagger), задаётся инлайном и наследуется вглубь. Так шапка, плашки,
- * лента, числа и списки собираются сверху вниз одной хореографией, а не
- * возникают разом после скелетона. Первый текст виден на нулевом такте. */
-@utility enter {
+/* Вход страницы — одно движение и ровно один раз за открытие сайта.
+ *
+ * До 18 сентября 2026 вход был пошаговым: каждая секция, строка списка,
+ * деление линейки и подпись часа появлялись со своей задержкой от общей шкалы
+ * тактов. Замер на замедленном вчетверо процессоре: 65 анимаций на сводке, из
+ * них 48 на линейке дня, последняя приходила через секунду, худший кадр
+ * 150 мс. И всё это повторялось при каждом переходе между разделами, потому
+ * что страница собирается заново. Ожидание сборки — не характер, а задержка.
+ *
+ * Теперь движется контейнер `main`: он объявлен в оболочке (components/
+ * recorder/shell.tsx) и при переходах не пересоздаётся, поэтому вход виден
+ * один раз за открытие сайта, а смена раздела мгновенна. Остальное движение —
+ * ответ на действие: нажатие, вкладка, ползунок, найденное слово, подсветка
+ * реплики-основания, лист «Ещё», плеер. */
+@utility page-in {
   animation: cascade-in var(--duration-base) var(--ease-out) both;
-  animation-delay: calc(var(--i, 0) * var(--stagger));
 
   @media (prefers-reduced-motion: reduce) {
     animation-name: rise-in-flat;
-  }
-}
-
-/* Каскад строк начинается с такта --i контейнера. Каждая строка получает свой
- * номер --n: его читают волна в строке, вспышка точки и подсветка найденного
- * слова, чтобы появляться вместе со своей строкой, а не раньше неё. */
-@utility cascade {
-  & > * {
-    --n: 12;
-    animation: cascade-in-soft var(--duration-base) var(--ease-out) both;
-    animation-delay: calc((var(--i, 0) + var(--n)) * var(--stagger));
-  }
-
-  & > *:nth-child(1)  { --n: 0; }
-  & > *:nth-child(2)  { --n: 1; }
-  & > *:nth-child(3)  { --n: 2; }
-  & > *:nth-child(4)  { --n: 3; }
-  & > *:nth-child(5)  { --n: 4; }
-  & > *:nth-child(6)  { --n: 5; }
-  & > *:nth-child(7)  { --n: 6; }
-  & > *:nth-child(8)  { --n: 7; }
-  & > *:nth-child(9)  { --n: 8; }
-  & > *:nth-child(10) { --n: 9; }
-  & > *:nth-child(11) { --n: 10; }
-  & > *:nth-child(12) { --n: 11; }
-
-  @media (prefers-reduced-motion: reduce) {
-    & > * {
-      animation-name: rise-in-flat;
-    }
   }
 }
 
@@ -463,24 +411,6 @@ textarea {
 @utility stale {
   opacity: 0.5;
   transition: opacity var(--duration-fast) var(--ease-out);
-}
-
-/* Пустое состояние: столбики опадают из случайной волны в ровную линию за
- * 560 мс — «записей нет» показано как тишина. --peak — во сколько раз столбик
- * был выше, задаётся инлайном из той же волны, что и в списке. */
-@keyframes settle {
-  from { scale: 1 var(--peak, 3); }
-  to   { scale: 1 1; }
-}
-
-@utility settle {
-  animation: settle var(--duration-slow) var(--ease-out) both;
-  animation-delay: calc(var(--n, 0) * 8ms);
-  transform-origin: center;
-
-  @media (prefers-reduced-motion: reduce) {
-    animation: none;
-  }
 }
 
 /* Вкладка нижней панели: при выборе иконка коротко «нажимается» пружиной. */
@@ -511,94 +441,11 @@ textarea {
   background-color: transparent;
   background-image: linear-gradient(var(--color-fill), var(--color-fill));
   background-repeat: no-repeat;
-  animation: mark-sweep var(--duration-slow) var(--ease-out) both;
-  animation-delay: calc((var(--i, 0) + var(--n, 0)) * var(--stagger) + 200ms);
+  animation: mark-sweep var(--duration-slow) var(--ease-out) 200ms both;
 
   @media (prefers-reduced-motion: reduce) {
     animation: none;
     background-color: var(--color-fill);
-  }
-}
-
-/* Полоски частей сессии вырастают слева направо по порядку номеров: части
- * приходили по очереди, так и появляются. */
-@keyframes part-grow {
-  from { scale: 0 1; }
-  to   { scale: 1 1; }
-}
-
-@utility part-grow {
-  animation: part-grow var(--duration-base) var(--ease-out) both;
-  animation-delay: calc((var(--i, 0) + var(--n, 0)) * var(--stagger));
-  transform-origin: left;
-
-  @media (prefers-reduced-motion: reduce) {
-    animation: none;
-  }
-}
-
-/* Линия хронологии в ленте проекта рисуется сверху вниз вместе с каскадом. */
-@utility feed-line {
-  animation: wave-grow var(--duration-slow) var(--ease-out) both;
-  animation-delay: calc(var(--i, 0) * var(--stagger));
-  transform-origin: top;
-
-  @media (prefers-reduced-motion: reduce) {
-    animation: none;
-  }
-}
-
-/* Линейка ленты дня рисуется слева направо: часовая линия вырастает снизу,
- * подпись часа проявляется под ней, шаг 25 мс — пятнадцать часов за 375 мс.
- * --n — номер часа, --i — такт ленты на странице. */
-@utility ruler-line {
-  animation: wave-grow var(--duration-base) var(--ease-out) both;
-  animation-delay: calc(var(--i, 0) * var(--stagger) + var(--n, 0) * 25ms);
-  transform-origin: bottom;
-
-  @media (prefers-reduced-motion: reduce) {
-    animation: none;
-  }
-}
-
-@utility ruler-label {
-  animation: rise-in var(--duration-base) var(--ease-out) both;
-  animation-delay: calc(var(--i, 0) * var(--stagger) + var(--n, 0) * 25ms);
-
-  @media (prefers-reduced-motion: reduce) {
-    animation: none;
-  }
-}
-
-/* «Сейчас» приходит после линейки: 375 мс на часы плюс пауза 100 мс, потом
- * линия опускается сверху за 320 мс и вспыхивает на 600 мс. */
-@utility now-line {
-  transform-origin: top;
-  animation:
-    wave-grow var(--duration-base) var(--ease-out) calc(var(--i, 0) * var(--stagger) + 475ms) both,
-    now-flash 600ms var(--ease-out) calc(var(--i, 0) * var(--stagger) + 795ms) both;
-
-  @media (prefers-reduced-motion: reduce) {
-    animation: rise-in-flat var(--duration-fast) var(--ease-out) calc(var(--i, 0) * var(--stagger) + 475ms) both;
-  }
-}
-
-@utility now-label {
-  animation: rise-in var(--duration-base) var(--ease-out) both;
-  animation-delay: calc(var(--i, 0) * var(--stagger) + 475ms);
-
-  @media (prefers-reduced-motion: reduce) {
-    animation-name: rise-in-flat;
-  }
-}
-
-/* Вспышка точки — через 240 мс после входа своей плашки или строки. */
-@utility dot-flash {
-  animation: dot-flash 480ms var(--ease-out) both;
-  animation-delay: calc((var(--i, 0) + var(--n, 0)) * var(--stagger) + 240ms);
-
-  @media (prefers-reduced-motion: reduce) {
-    animation: none;
   }
 }
 
@@ -609,28 +456,6 @@ textarea {
  * признак, по которому видно нужную реплику. */
 @utility flash-source {
   animation: flash-source 1200ms var(--ease-out) both;
-}
-
-/* 3 · Блок ленты дня. Вход тот же, что у строки списка, но задержка приходит
- * из раскладки: блоки наполняют шкалу слева направо, а не в порядке выгрузки. */
-@utility cascade-block {
-  animation: cascade-in-soft var(--duration-base) var(--ease-out) both;
-
-  @media (prefers-reduced-motion: reduce) {
-    animation: none;
-  }
-}
-
-@utility wave-grow {
-  animation: wave-grow var(--duration-base) var(--ease-out) both;
-  /* Внутри каскада волна растёт вместе со своей строкой; лента дня задаёт
-   * задержку инлайном и перекрывает эту. */
-  animation-delay: calc((var(--i, 0) + var(--n, 0)) * var(--stagger));
-  transform-origin: bottom;
-
-  @media (prefers-reduced-motion: reduce) {
-    animation: none;
-  }
 }
 
 /* Решётка микрофона: точечная сетка 6 px белым 5 %. Только на «приборе» —

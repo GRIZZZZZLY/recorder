@@ -136,7 +136,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
             до глаз, а не прятаться под панелью. */}
         <main
           id="content"
-          className="mx-auto flex w-full max-w-[1250px] flex-col gap-[23px] px-[15px] pt-[23px] pb-[calc(8rem+env(safe-area-inset-bottom))] min-[361px]:px-[21px] sm:px-8 lg:gap-[30px] lg:px-12 lg:pt-[30px] lg:pb-14"
+          className="page-in mx-auto flex w-full max-w-[1250px] flex-col gap-[23px] px-[15px] pt-[23px] pb-[calc(8rem+env(safe-area-inset-bottom))] min-[361px]:px-[21px] sm:px-8 lg:gap-[30px] lg:px-12 lg:pt-[30px] lg:pb-14"
         >
           {/* Шильдик прибора: имя, модель и состояние диктофона словами. Виден
               с любой страницы и на телефоне тоже — десктопный aside не считается. */}

@@ -10,7 +10,6 @@ import {
   formatClock, formatDayShort, formatDuration, formatTime, hoursOfDay, todayIso,
 } from "@/lib/format";
 import { magnetTarget } from "@/lib/magnet";
-import { at } from "@/lib/motion";
 import { sessionHref } from "@/lib/session-link";
 import { STATUS_TEXT, statusTone } from "@/lib/session-status";
 import { cx } from "@/utils/cx";
@@ -77,10 +76,9 @@ function label(row: SessionRow) {
   return row.topic || `Сессия ${String(row.session).padStart(4, "0")}`;
 }
 
-export function DayTimeline({ rows, now, at: tick = 0 }: {
+export function DayTimeline({ rows, now }: {
   rows: SessionRow[];
   now: Date;
-  at?: number;
 }) {
   const router = useRouter();
   const today = todayIso();
@@ -255,7 +253,7 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
   const awayFromNow = day !== today || Math.abs(head - nowSeconds) > 1800;
 
   return (
-    <div className="recorder-timeline enter flex flex-col gap-2.5 rounded-card bg-surface px-5 pt-4 pb-3.5 shadow-plate" style={at(tick)}>
+    <div className="recorder-timeline flex flex-col gap-2.5 rounded-card bg-surface px-5 pt-4 pb-3.5 shadow-plate">
       <div className="flex items-center justify-between gap-3 text-note text-text-secondary">
         <div className="flex items-center gap-1">
           <button type="button" aria-label="Предыдущий день" disabled={index <= 0}
@@ -313,8 +311,8 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
           <div className="relative h-[72px]" style={{ width: DAY_PX }}>
             <div aria-hidden className="absolute inset-0">
               {Array.from({ length: 24 }, (_, hour) => (
-                <div key={hour} style={{ left: hour * PX_PER_HOUR, width: PX_PER_HOUR, ...at(tick, hour) }}
-                     className="ruler-line absolute top-0 bottom-0 border-l border-hairline-strong" />
+                <div key={hour} style={{ left: hour * PX_PER_HOUR, width: PX_PER_HOUR }}
+                     className="absolute top-0 bottom-0 border-l border-hairline-strong" />
               ))}
               {/* Гравировка четвертей часа по верхней кромке: 20 px — 15 минут. */}
               <div className="absolute inset-x-0 top-0 h-1"
@@ -331,7 +329,7 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
               </span>
             )}
 
-            {dayRows.map((row, position) => {
+            {dayRows.map((row) => {
               const start = startSeconds(row)!;
               const left = (start / 3600) * PX_PER_HOUR;
               const width = Math.max((row.seconds / 3600) * PX_PER_HOUR, MIN_BLOCK_PX);
@@ -341,7 +339,6 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
               // «запись под головкой» — одно и то же.
               const gap = Math.max(left - headPx, headPx - (left + width), 0);
               const near = gap === 0 ? 3 : gap <= SNAP_PX / 2 ? 2 : gap <= SNAP_PX ? 1 : 0;
-              const delay = `calc(var(--i, 0) * var(--stagger) + 375ms + ${Math.min(position, 12)} * var(--stagger))`;
               return (
                 <Fragment key={`${row.device_id}-${row.session}`}>
                   {/* Запись — это её громкость, и больше ничего. Время читается
@@ -352,27 +349,23 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
                     aria-label={`${label(row)}, ${formatTime(row.first_at)}, ${formatDuration(row.seconds)}, ${STATUS_TEXT[tone]}`}
                     title={`${label(row)} · ${formatDuration(row.seconds)} · ${STATUS_TEXT[tone]}`}
                     className={cx(
-                      "cascade-block press-row hit absolute top-4 flex h-10 items-center rounded-inner px-px hover:bg-hairline",
+                      "press-row hit absolute top-4 flex h-10 items-center rounded-inner px-px hover:bg-hairline",
                       NEAR_BG[near],
                       // Запись под головкой — чуть ярче и резче соседей.
                       near === 3 && "brightness-110",
                     )}
-                    style={{ left, width, animationDelay: delay }}
+                    style={{ left, width }}
                   >
                     <Waveform values={row.envelope} bar={2} gap={1}
-                              height={32} tone={WAVE[tone]} className="w-full"
-                              style={{ animationDelay: delay }} />
+                              height={32} tone={WAVE[tone]} className="w-full" />
                   </Link>
 
                   {/* Метки владельца — треугольники над волной. */}
                   {row.marks?.map((mark) => (
                     <span key={mark} aria-hidden
                           title="отмечено кнопкой"
-                          style={{
-                            left: left + clamp((mark / 3600) * PX_PER_HOUR, 0, width),
-                            animationDelay: delay,
-                          }}
-                          className="cascade-block absolute top-1.5 -translate-x-1/2 border-x-[3px] border-t-[5px] border-x-transparent border-t-mark" />
+                          style={{ left: left + clamp((mark / 3600) * PX_PER_HOUR, 0, width) }}
+                          className="absolute top-1.5 -translate-x-1/2 border-x-[3px] border-t-[5px] border-x-transparent border-t-mark" />
                   ))}
                 </Fragment>
               );
@@ -382,8 +375,8 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
           {/* Часы подписаны под плёнкой и едут вместе с ней. */}
           <div aria-hidden className="relative h-4" style={{ width: DAY_PX }}>
             {Array.from({ length: 24 }, (_, hour) => (
-              <span key={hour} style={{ left: hour * PX_PER_HOUR, ...at(tick, hour) }}
-                    className="ruler-label absolute pl-1 font-mono text-[11px] text-text-tertiary">
+              <span key={hour} style={{ left: hour * PX_PER_HOUR }}
+                    className="absolute pl-1 font-mono text-[11px] text-text-tertiary">
                 {String(hour).padStart(2, "0")}
               </span>
             ))}

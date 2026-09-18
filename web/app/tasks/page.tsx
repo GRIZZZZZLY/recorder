@@ -92,10 +92,9 @@ function Body() {
           <Empty title="Задач нет"
                  text={show === "overdue" ? "Ничего не просрочено." : "В этом фильтре пусто."} />
         ) : (
-          group(data.tasks, todayIso()).map((bucket, index) => (
-            <Section key={bucket.title} note={`${bucket.title} · ${bucket.rows.length}`}
-                     at={index + 1} className={cx(loading && "stale")}>
-              <Card className="cascade">
+          group(data.tasks, todayIso()).map((bucket) => (
+            <Section key={bucket.title} note={`${bucket.title} · ${bucket.rows.length}`} className={cx(loading && "stale")}>
+              <Card>
                 {bucket.rows.map((task) => (
                   <TaskRow key={`${task.session}-${task.task_id}`} task={task} onChanged={reload} />
                 ))}

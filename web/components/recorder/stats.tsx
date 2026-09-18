@@ -27,7 +27,7 @@ export function Stats({ items }: {
             {item.value}
           </span>
           <span className="flex items-center gap-2 text-note text-text-secondary lg:text-row">
-            {item.dot ? <Dot tone={item.dot} size={6} flash /> : null}
+            {item.dot ? <Dot tone={item.dot} size={6} /> : null}
             {item.label}
           </span>
         </div>

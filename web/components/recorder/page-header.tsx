@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { CaretLeft } from "@phosphor-icons/react/dist/ssr";
-import { at } from "@/lib/motion";
 
 /**
  * Шапка страницы: крошки, заголовок 44/600 и правая подпись на той же
@@ -12,9 +11,8 @@ export function PageHeader({ back, title, aside }: {
   title: string;
   aside?: React.ReactNode;
 }) {
-  // Нулевой такт хореографии: шапка первой, дальше секции по своим тактам.
   return (
-    <header className="recorder-page-header enter flex flex-col gap-2.5" style={at(0)}>
+    <header className="recorder-page-header flex flex-col gap-2.5">
       {back ? (
         <div className="flex items-center gap-2 text-note text-text-secondary">
           <Link href={back.href} className="press inline-flex items-center gap-1 hover:text-text-primary">

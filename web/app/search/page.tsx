@@ -10,7 +10,6 @@ import { Button } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import type { SearchHit } from "@/lib/api";
 import { count, formatClock } from "@/lib/format";
-import { at } from "@/lib/motion";
 import { sessionHref } from "@/lib/session-link";
 
 function Body() {
@@ -59,8 +58,7 @@ function Body() {
 
       {/* Рамка проявляется на фокусе за 150 мс; каретка красная по умолчанию. */}
       <form onSubmit={(event) => { event.preventDefault(); go(draft); }}
-            className="enter flex items-center gap-3 rounded-card border border-transparent bg-surface px-4 py-3 transition-colors duration-150 focus-within:border-control"
-            style={at(1)}>
+            className="flex items-center gap-3 rounded-card border border-transparent bg-surface px-4 py-3 transition-colors duration-150 focus-within:border-control">
         <MagnifyingGlass size={20} aria-hidden className="shrink-0 text-text-secondary" />
         <input
           ref={field}
@@ -109,9 +107,8 @@ function Body() {
           <Section
             note={`${count(data.length, "совпадение", "совпадения", "совпадений")} в ${count(sessions, "сессии", "сессиях", "сессиях")}`}
             aside="сначала новые"
-            at={2}
           >
-            <Card className="cascade">
+            <Card>
               {data.map((hit) => (
                 <RowLink
                   key={`${hit.device_id}-${hit.session}-${hit.part}-${hit.idx}`}

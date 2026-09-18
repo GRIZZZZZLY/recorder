@@ -214,11 +214,9 @@ const DOT_TONES = {
 } as const;
 
 /** Точка светофора. Размер 8 px в строке, 6 px в подписи. */
-export function Dot({ tone, live, flash, size = 8, title }: {
+export function Dot({ tone, live, size = 8, title }: {
   tone: keyof typeof DOT_TONES;
   live?: boolean;
-  /** Загореться при появлении — для плашек состояния на сводке. */
-  flash?: boolean;
   size?: 6 | 8;
   title?: string;
 }) {
@@ -234,7 +232,6 @@ export function Dot({ tone, live, flash, size = 8, title }: {
         // Линза светодиода; у пустого контура «не найден» подсвечивать нечего.
         tone !== "missing" && "shadow-lens",
         live && "live-dot",
-        flash && tone !== "missing" && tone !== "muted" && "dot-flash",
         // Красная точка без пульса — ошибка: светится ровно, её надо видеть.
         tone === "accent" && !live && "shadow-glow-accent-soft",
       )}
@@ -243,10 +240,10 @@ export function Dot({ tone, live, flash, size = 8, title }: {
 }
 
 /** Точка источника по данным саммари: зелёная, жёлтая или пустой контур. */
-export function SourceDot({ source, flash }: { source: { confirmed: boolean } | null; flash?: boolean }) {
+export function SourceDot({ source }: { source: { confirmed: boolean } | null }) {
   if (!source) return <Dot tone="missing" title="источник не найден" />;
-  if (source.confirmed) return <Dot tone="ok" title="цитата найдена в записи" flash={flash} />;
-  return <Dot tone="warn" title="источник не подтверждён" flash={flash} />;
+  if (source.confirmed) return <Dot tone="ok" title="цитата найдена в записи" />;
+  return <Dot tone="warn" title="источник не подтверждён" />;
 }
 
 const EVIDENCE =

@@ -10,7 +10,6 @@ import { Button, Input } from "@/components/recorder/ui";
 import { apiPost } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { count, formatDayShort } from "@/lib/format";
-import { at } from "@/lib/motion";
 import { cx } from "@/utils/cx";
 
 type Listing = {
@@ -66,7 +65,7 @@ export default function ProjectsPage() {
         <Empty title="Тем пока нет"
                text="Тема разговора появляется в саммари. Обработайте несколько записей — темы соберутся сами." />
       ) : (
-        <div className="grid gap-3 cascade sm:grid-cols-2 lg:grid-cols-3" style={at(1)}>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {data.projects.map((project) => (
             <Link
               key={project.name}
@@ -91,7 +90,7 @@ export default function ProjectsPage() {
         </div>
       )}
 
-      <Section head="Псевдонимы" aside="как тема звучит в разговоре → как называется в системе" at={3}>
+      <Section head="Псевдонимы" aside="как тема звучит в разговоре → как называется в системе">
         <Card>
           <Row className="flex-wrap items-end gap-3">
             <Input className="min-w-40 flex-1" label="Как прозвучало" placeholder="Пози флора"

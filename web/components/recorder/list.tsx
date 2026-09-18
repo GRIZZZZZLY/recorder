@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { at } from "@/lib/motion";
 import { cx } from "@/utils/cx";
 
 /**
@@ -10,19 +9,16 @@ import { cx } from "@/utils/cx";
 
 /**
  * Секция с заголовком. `head` крупный (17/600), `note` мелкий (13).
- * `at` — такт хореографии страницы (по умолчанию первый после шапки);
- * каскад карточки внутри наследует его и стартует вместе с секцией.
  */
-export function Section({ head, note, aside, className, at: tick = 1, children }: {
+export function Section({ head, note, aside, className, children }: {
   head?: string;
   note?: string;
   aside?: React.ReactNode;
   className?: string;
-  at?: number;
   children: React.ReactNode;
 }) {
   return (
-    <section className={cx("recorder-section enter flex flex-col", head ? "gap-2.5" : "gap-2", className)} style={at(tick)}>
+    <section className={cx("recorder-section flex flex-col", head ? "gap-2.5" : "gap-2", className)}>
       {(head || note || aside) && (
         <div className="flex items-baseline justify-between gap-4 px-1">
           {head ? <h2 className="text-section text-text-primary">{head}</h2> : null}
@@ -37,14 +33,12 @@ export function Section({ head, note, aside, className, at: tick = 1, children }
 }
 
 /** Карточка: контейнер строк. */
-export function Card({ className, style, children }: {
+export function Card({ className, children }: {
   className?: string;
-  /** Для такта хореографии (`at(i)`), больше ни для чего. */
-  style?: React.CSSProperties;
   children: React.ReactNode;
 }) {
   return (
-    <div className={cx("recorder-card overflow-hidden rounded-card bg-surface text-row shadow-plate", className)} style={style}>
+    <div className={cx("recorder-card overflow-hidden rounded-card bg-surface text-row shadow-plate", className)}>
       {children}
     </div>
   );
