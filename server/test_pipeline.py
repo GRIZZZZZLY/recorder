@@ -20,14 +20,21 @@ PASSWORD = "owner-secret"
 AUTH = ("owner", PASSWORD)
 
 
-def wav(seconds=1, marker=0):
-    payload = bytes([marker]) * (16000 * 2 * seconds)
+def wav(seconds=1, marker=0, channels=1):
+    """Канонический 44-байтный заголовок плюс тишина, как пишет прошивка.
+
+    channels=2 — Recorder RevA с двумя микрофонами: та же секунда весит вдвое
+    больше, и заголовок описывает это целиком, включая байты в секунду и
+    выравнивание кадра.
+    """
+    frame = channels * 2
+    payload = bytes([marker]) * (16000 * frame * seconds)
     h = bytearray(44)
     h[0:4] = b"RIFF"
     struct.pack_into("<I", h, 4, 36 + len(payload))
     h[8:12] = b"WAVE"
     h[12:16] = b"fmt "
-    struct.pack_into("<IHHIIHH", h, 16, 16, 1, 1, 16000, 32000, 2, 16)
+    struct.pack_into("<IHHIIHH", h, 16, 16, 1, channels, 16000, 16000 * frame, frame, 16)
     h[36:40] = b"data"
     struct.pack_into("<I", h, 40, len(payload))
     return bytes(h) + payload
@@ -117,8 +124,8 @@ def env(tmp_path, monkeypatch):
 
 
 def upload(env, session=7, part=1, marker=0, seconds=1, marks=None, session_parts=None,
-           extra=None):
-    body = wav(seconds=seconds, marker=marker)
+           extra=None, channels=1, body=None):
+    body = wav(seconds=seconds, marker=marker, channels=channels) if body is None else body
     headers = {
         "Authorization": f"Bearer {TOKEN}",
         "X-Device-Id": "xiao-01",

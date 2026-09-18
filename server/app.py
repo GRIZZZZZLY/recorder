@@ -17,6 +17,7 @@ import audio
 import envelope
 import login
 import static_site
+import wavfmt
 from auth import owner
 from db import AUDIO_DIR, connect, init_storage, save_marks, set_device_state
 
@@ -187,16 +188,21 @@ async def upload(
             )
 
         tmp_path.replace(final_path)
+        # Формат — из заголовка самого файла: у моно с XIAO Sense секунда весит
+        # 32 000 байт, у стерео с Recorder RevA 64 000. Шкала времени и волна
+        # считаются из размера, поэтому множитель обязан быть свой у каждой
+        # части. None (заголовок не прочитался) означает «считать как моно».
+        bps = wavfmt.bytes_per_second(final_path)
         conn.execute(
             "INSERT INTO parts (device_id, session, part, bytes, crc32, recovered,"
-            " audio_path, expected_parts) VALUES (?,?,?,?,?,?,?,?)",
+            " audio_path, expected_parts, bytes_per_second) VALUES (?,?,?,?,?,?,?,?,?)",
             (x_device_id, session, part, received, actual_crc, recovered,
-             str(final_path), expected_parts),
+             str(final_path), expected_parts, bps),
         )
         save_marks(conn, x_device_id, session, part, marks)
         set_device_state(conn, x_device_id, battery, firmware)
         # Огибающая считается сразу: файл уже на диске и ещё горячий в кэше.
-        envelope.store(conn, x_device_id, session, part, final_path)
+        envelope.store(conn, x_device_id, session, part, final_path, bps)
         conn.commit()
 
     return JSONResponse({"status": "stored", **body}, status_code=201)

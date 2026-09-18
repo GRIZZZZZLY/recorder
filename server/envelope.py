@@ -21,25 +21,31 @@ import sys
 # плеере они растягивались в широкие прямоугольники. Лента дня и список
 # всё равно сжимают до своей ширины (db.session_envelopes, resample).
 BUCKET_SECONDS = 0.5
-SAMPLES_PER_BUCKET = int(16000 * BUCKET_SECONDS)
 # Тишина всё равно рисуется волоском: пустая полоса выглядела бы как дыра.
 FLOOR = 2
 
 
-def from_wav(path):
+def from_wav(path, bytes_per_second=None):
     """[0..100] по полсекунды на значение. None, если файл не читается.
 
     Нормировка внутри своей части: важно, где в разговоре говорили громче, а
     не абсолютный уровень микрофона, который всё равно неизвестен.
+
+    Столбик отмеряется в БАЙТАХ своего формата, а не в отсчётах: у стерео с
+    Recorder RevA секунда весит вдвое больше, и постоянный кусок нарезал бы
+    вдвое больше столбиков — волна растянулась бы во всю ширину плеера. Пик
+    берётся по всему куску, поэтому чередование каналов внутри значения роли
+    не играет: громкий момент виден в любом из них.
     """
     import db
 
+    bucket_bytes = round((bytes_per_second or db.BYTES_PER_SECOND) * BUCKET_SECONDS)
     try:
         with open(path, "rb") as handle:
             handle.seek(db.WAV_HEADER_BYTES)
             peaks = []
             while True:
-                chunk = handle.read(SAMPLES_PER_BUCKET * 2)
+                chunk = handle.read(bucket_bytes)
                 if not chunk:
                     break
                 # Нечётный хвост байта — обрезанная запись; последний сэмпл
@@ -62,9 +68,9 @@ def from_wav(path):
     return [max(FLOOR, round(peak * 100 / top)) for peak in peaks]
 
 
-def store(conn, device_id, session, part, path):
+def store(conn, device_id, session, part, path, bytes_per_second=None):
     """Посчитать и записать. Ошибка чтения не рвёт приёмку: аудио уже цело."""
-    values = from_wav(path)
+    values = from_wav(path, bytes_per_second)
     if values is None:
         return None
     conn.execute(

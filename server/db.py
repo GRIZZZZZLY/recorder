@@ -28,8 +28,23 @@ AUDIO_DIR = DATA_DIR / "audio"
 # в работу посреди незаконченной выгрузки.
 SESSION_QUIET_MINUTES = int(os.environ.get("RECORDER_QUIET_MINUTES", 12))
 
+# Формат прототипа на XIAO Sense: 16 кГц, 16 бит, моно. Остаётся запасным
+# значением для частей, принятых до появления колонки bytes_per_second, и для
+# файлов с нечитаемым заголовком: все они моно, других диктофон не слал.
+# Настоящий множитель части лежит в parts.bytes_per_second (wavfmt.py).
 BYTES_PER_SECOND = 16000 * 2
 WAV_HEADER_BYTES = 44
+
+
+def part_seconds(part_bytes, bytes_per_second=None):
+    """Длительность части: её размер, делённый на её собственный формат.
+
+    Клэмп по части, а не по сумме: часть короче заголовка (битая, обрезанная)
+    иначе съедала бы чужие байты у соседней. NULL в колонке — часть принята
+    до появления колонки, то есть моно.
+    """
+    audio = max(0, (part_bytes or 0) - WAV_HEADER_BYTES)
+    return audio / (bytes_per_second or BYTES_PER_SECOND)
 
 # Ниже этой уверенности распознавания число в факте показывается владельцу
 # как спорное. 0,7 — начальное значение, его надо проверить на живых записях.
@@ -47,6 +62,11 @@ CREATE TABLE IF NOT EXISTS parts (
     -- Огибающая громкости: JSON [0..100], одно число на две секунды звука.
     -- Считается один раз при приёме (envelope.py). NULL — не посчитана.
     envelope    TEXT,
+    -- Байт PCM в секунде звука у ЭТОЙ части: 32000 у моно с XIAO Sense,
+    -- 64000 у стерео с Recorder RevA. Читается из заголовка файла при приёмке
+    -- (wavfmt.py). NULL — часть принята до появления колонки или заголовок не
+    -- прочитался; тогда считаем моно, потому что других частей и не было.
+    bytes_per_second INTEGER,
     -- Сколько частей диктофон закрыл в этой сессии при STOP (X-Session-Parts).
     -- NULL — не объявлено: часть восстановлена после сбоя или прошивка старая.
     -- Когда пришло столько частей, саммари не ждёт тишины.
@@ -225,6 +245,9 @@ def init_storage():
         for name, kind in (
             ("envelope", "TEXT"),
             ("expected_parts", "INTEGER"),
+            # Старым частям остаётся NULL, и это верно: до Recorder RevA
+            # диктофон писал только моно, а NULL и означает «моно».
+            ("bytes_per_second", "INTEGER"),
             # Части, принятые до появления архива, становятся кандидатами на
             # сжатие: значение по умолчанию у них такое же, как у новых.
             # datetime('now') в ALTER TABLE не примут: значение по умолчанию
@@ -556,13 +579,14 @@ def part_offsets(conn, device_id, session):
     """{часть: смещение в секундах}. Из размера файла: он есть у любой части,
     включая нерасшифрованные, поэтому шкала не едет от ошибок Deepgram."""
     rows = conn.execute(
-        "SELECT part, bytes FROM parts WHERE device_id=? AND session=? ORDER BY part",
+        "SELECT part, bytes, bytes_per_second FROM parts"
+        " WHERE device_id=? AND session=? ORDER BY part",
         (device_id, session),
     ).fetchall()
     offsets, cursor = {}, 0.0
     for row in rows:
         offsets[row["part"]] = cursor
-        cursor += max(0, row["bytes"] - WAV_HEADER_BYTES) / BYTES_PER_SECOND
+        cursor += part_seconds(row["bytes"], row["bytes_per_second"])
     return offsets
 
 
@@ -657,14 +681,14 @@ def session_envelopes(conn, buckets):
     """
     found = {}
     for row in conn.execute(
-        "SELECT device_id, session, part, bytes, envelope FROM parts"
+        "SELECT device_id, session, part, bytes, bytes_per_second, envelope FROM parts"
         " ORDER BY device_id, session, part"
     ):
         key = (row["device_id"], row["session"])
         if row["envelope"]:
             values = json.loads(row["envelope"])
         else:
-            seconds = max(0, row["bytes"] - WAV_HEADER_BYTES) / BYTES_PER_SECOND
+            seconds = part_seconds(row["bytes"], row["bytes_per_second"])
             values = [envelope.FLOOR] * max(1, round(seconds / envelope.BUCKET_SECONDS))
         found.setdefault(key, []).extend(values)
     return {key: envelope.resample(values, buckets) for key, values in found.items()}
@@ -680,12 +704,13 @@ def mark_offsets(conn):
     bases = {}
     cursor = {}
     for row in conn.execute(
-        "SELECT device_id, session, part, bytes FROM parts"
+        "SELECT device_id, session, part, bytes, bytes_per_second FROM parts"
         " ORDER BY device_id, session, part"
     ):
         key = (row["device_id"], row["session"])
         bases[(*key, row["part"])] = cursor.get(key, 0.0)
-        cursor[key] = cursor.get(key, 0.0) + max(0, row["bytes"] - WAV_HEADER_BYTES) / BYTES_PER_SECOND
+        cursor[key] = (cursor.get(key, 0.0)
+                       + part_seconds(row["bytes"], row["bytes_per_second"]))
 
     found = {}
     for row in conn.execute(
@@ -1219,10 +1244,13 @@ def session_rows(conn, limit=None):
     """
     sql = (
         "SELECT p.device_id, p.session, COUNT(*) AS parts, SUM(p.bytes) AS bytes,"
-        # Клэмп по части, а не по сумме: часть короче заголовка (битая, обрезанная)
-        # иначе съедала бы чужие байты у соседней части. part_offsets (шкала
-        # реплик) считает так же поэлементно — список сессий обязан совпадать.
-        "       SUM(MAX(p.bytes - ?, 0)) AS clamped_bytes,"
+        # Секунды суммируются по частям, а не байты: у моно и стерео разная
+        # цена секунды, и сложить их размеры было бы сложением разных единиц.
+        # Клэмп тоже по части: часть короче заголовка (битая, обрезанная) иначе
+        # съедала бы чужие байты у соседней. part_offsets (шкала реплик) считает
+        # так же поэлементно — список сессий обязан совпадать.
+        "       SUM(MAX(p.bytes - ?, 0) * 1.0 / COALESCE(p.bytes_per_second, ?))"
+        "         AS seconds,"
         "       MIN(p.received_at) AS first_at, MAX(p.received_at) AS last_at,"
         "       (SELECT status FROM summaries s"
         "         WHERE s.device_id=p.device_id AND s.session=p.session) AS summary_status,"
@@ -1237,7 +1265,7 @@ def session_rows(conn, limit=None):
         " FROM parts p GROUP BY p.device_id, p.session"
         " ORDER BY p.received_at DESC"
     )
-    args = [WAV_HEADER_BYTES]
+    args = [WAV_HEADER_BYTES, BYTES_PER_SECOND]
     if limit is not None:
         sql += " LIMIT ?"
         args.append(int(limit))
@@ -1249,7 +1277,7 @@ def session_rows(conn, limit=None):
     for row in conn.execute(sql, args).fetchall():
         item = dict(row)
         item["day"] = item["first_at"][:10] if item["first_at"] else None
-        item["seconds"] = (item.pop("clamped_bytes") or 0) / BYTES_PER_SECOND
+        item["seconds"] = item["seconds"] or 0.0
         item["envelope"] = envelopes.get((item["device_id"], item["session"]), [])
         # Метки отдаются секундами от начала сессии: списку нужно их число,
         # ленте дня — засечки на своих местах.
@@ -1268,12 +1296,15 @@ def digest(conn, days):
     one = lambda sql, *args: conn.execute(sql, args).fetchone()[0]
 
     recorded = one(
-        "SELECT COALESCE(SUM(MAX(bytes - ?, 0)), 0) FROM parts"
-        " WHERE received_at >= datetime('now', ?)", WAV_HEADER_BYTES, window)
+        "SELECT COALESCE(SUM(MAX(bytes - ?, 0) * 1.0"
+        "                    / COALESCE(bytes_per_second, ?)), 0) FROM parts"
+        " WHERE received_at >= datetime('now', ?)",
+        WAV_HEADER_BYTES, BYTES_PER_SECOND, window)
     tasks = task_rows(conn, only_open=True)
     return {
         "days": days,
-        "minutes": recorded / BYTES_PER_SECOND / 60.0,
+        # recorded уже в секундах: у моно и стерео разная цена секунды.
+        "minutes": recorded / 60.0,
         "sessions": one(
             "SELECT COUNT(*) FROM (SELECT 1 FROM parts"
             " WHERE received_at >= datetime('now', ?)"
@@ -1345,12 +1376,13 @@ def processing_status(conn):
     # Deepgram насчитал заметно другую длительность, чем размер файла: часть
     # аудио могла не обработаться или файл битый.
     for row in conn.execute(
-        "SELECT p.device_id, p.session, p.part, p.bytes, t.duration_sec"
+        "SELECT p.device_id, p.session, p.part, p.bytes, p.bytes_per_second,"
+        "       t.duration_sec"
         " FROM parts p JOIN transcripts t"
         "   ON t.device_id=p.device_id AND t.session=p.session AND t.part=p.part"
         " WHERE t.status='done' AND t.duration_sec > 0"
     ).fetchall():
-        by_size = max(0, row["bytes"] - WAV_HEADER_BYTES) / BYTES_PER_SECOND
+        by_size = part_seconds(row["bytes"], row["bytes_per_second"])
         if by_size and abs(by_size - row["duration_sec"]) / by_size > 0.02:
             status["duration_mismatch"].append({
                 "device_id": row["device_id"], "session": row["session"],
