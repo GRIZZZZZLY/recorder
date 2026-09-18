@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { ArrowUpRight, BookmarkSimple, Play } from "@phosphor-icons/react/dist/ssr";
 import type { SessionRow } from "@/lib/api";
-import { count, formatDuration, formatTime } from "@/lib/format";
+import { count, formatDay, formatDuration, formatTime } from "@/lib/format";
 import { sessionHref } from "@/lib/session-link";
 import { statusTone, STATUS_TEXT } from "@/lib/session-status";
 import { Waveform } from "./waveform";
@@ -22,6 +22,13 @@ export function StudioRecord({ row, compact = false }: {
 }) {
   const tone = statusTone(row);
   const lagging = row.done_parts < row.parts;
+  // Без темы разговор зовётся своим днём и часом. «Тема появится после
+  // саммари» — обещание, и оно верно, только пока саммари действительно
+  // считается: у готового саммари тем может не быть вовсе (бытовая запись),
+  // и обещать там нечего.
+  const pending = tone === "warn";
+  const title = row.topic
+    || (pending ? null : row.day ? `${formatDay(row.day)}, ${formatTime(row.first_at)}` : null);
   return (
     <Link className="studio-record" href={sessionHref(row.device_id, row.session)}>
       <div className="studio-record-meta">
@@ -30,9 +37,11 @@ export function StudioRecord({ row, compact = false }: {
         <span className={`studio-record-status ${tone}`}><i aria-hidden />{STATUS_TEXT[tone]}</span>
       </div>
       <h3>
-        {row.topic
-          ? <span>{row.topic}</span>
-          : <span className="muted">тема появится после саммари</span>}
+        {title
+          ? <span>{title}</span>
+          : <span className="muted">
+              {pending ? "тема появится после саммари" : "разговор без темы"}
+            </span>}
         <ArrowUpRight size={17} aria-hidden />
       </h3>
       {row.speakers.length > 0 && (
