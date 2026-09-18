@@ -180,9 +180,16 @@
   position: relative;
   padding: 22px 24px 0;
   border-radius: 23px;
-  border: 1px solid rgb(255 255 255 / 0.075);
-  background: linear-gradient(145deg, #373737, #2b2c2e 40%, #242627);
-  box-shadow: inset 0 1px rgb(255 255 255 / 0.07), inset 0 -1px rgb(0 0 0 / 0.53), 0 15px 35px -18px rgb(0 0 0 / 0.8);
+  border: 1px solid rgb(255 255 255 / 0.1);
+  /* Корпус под лампой слева сверху: свет скользит по крышке и уходит в тень у
+   * нижней кромки. Четыре остановки, а не две — иначе градиент читается как
+   * заливка, а не как освещённый металл. */
+  background: linear-gradient(152deg, #404142 0%, #313234 26%, #272829 62%, #202123 100%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.13),
+    inset 0 -1px 0 rgb(0 0 0 / 0.6),
+    0 1px 0 rgb(0 0 0 / 0.55),
+    0 22px 44px -22px rgb(0 0 0 / 0.95);
 }
 
 .studio-instrument-label {
@@ -209,13 +216,20 @@
 
 /* Лента дня внутри прибора — утопленный дисплей: своя ниша не нужна,
  * поэтому внутренняя ниша плёнки гаснет, а головка светится кораллом. */
+/* Дисплей утоплен в корпус: стекло темнее корпуса, по верхней кромке тень от
+ * борта, по нижней — отражённый свет, поверх — слабый блик стекла. */
 .studio-instrument .recorder-timeline {
   gap: 14px;
   padding: 14px 16px;
   border-radius: 12px;
   border: 1px solid #050607;
-  background: #17191b;
-  box-shadow: 0 1px rgb(255 255 255 / 0.125), inset 0 4px 14px rgb(0 0 0 / 0.53);
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 0.035), transparent 38%),
+    #121417;
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 0.15),
+    inset 0 7px 16px -6px rgb(0 0 0 / 0.85),
+    inset 0 -1px 0 rgb(255 255 255 / 0.05);
 }
 
 .studio-instrument .recorder-timeline > .relative {
@@ -283,6 +297,12 @@
 .studio-meter-stats > div:not(:first-child) strong {
   font-family: var(--font-mono);
   font-weight: 400;
+}
+
+.studio-meter-stats strong.studio-meter-date {
+  font-size: 26px;
+  letter-spacing: -0.5px;
+  white-space: nowrap;
 }
 
 /* Строка состояния обработки: лампочки очереди, стрелка на «Состояние».
@@ -366,21 +386,29 @@
   gap: 15px;
 }
 
+/* Карточка — пластина на корпусе: освещённая кромка сверху, тёмный волос снизу
+ * и рассеянная тень под ней. */
 .studio-record {
   display: block;
   min-width: 0;
   padding: 21px 23px 15px;
-  border: 1px solid rgb(255 255 255 / 0.047);
+  border: 1px solid rgb(255 255 255 / 0.07);
   border-radius: 17px;
-  background: linear-gradient(125deg, #303133, #26282a 80%);
-  box-shadow: inset 0 1px rgb(255 255 255 / 0.027), 0 1px rgb(0 0 0 / 0.7), 0 5px 15px rgb(0 0 0 / 0.13);
+  background: linear-gradient(135deg, #37383a 0%, #2c2e30 45%, #232527 100%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.07),
+    0 1px 0 rgb(0 0 0 / 0.7),
+    0 12px 24px -14px rgb(0 0 0 / 0.85);
   transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
 }
 
 .studio-record:hover {
-  border-color: rgb(221 204 181 / 0.21);
+  border-color: rgb(221 204 181 / 0.28);
   transform: translateY(-2px);
-  box-shadow: inset 0 1px rgb(255 255 255 / 0.08), 0 7px 20px rgb(0 0 0 / 0.27);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.12),
+    0 1px 0 rgb(0 0 0 / 0.7),
+    0 18px 30px -16px rgb(0 0 0 / 0.9);
 }
 
 .studio-record:active {
@@ -472,19 +500,24 @@
   margin: 21px 0 16px;
 }
 
-/* Малая клавиша Play — рельеф карточки; играет сама страница записи. */
+/* Клавиша воспроизведения на карточке — та же светлая клавиша, что у плеера:
+ * единственное светлое пятно на пластине, к нему и тянется рука. Тень клавиши
+ * общая с плеером (--shadow-key): выпуклость, паз вокруг и тень под ней. */
 .studio-small-play {
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 39px;
-  height: 39px;
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
-  border: 1px solid rgb(255 255 255 / 0.075);
-  background: linear-gradient(#484948, #313335);
-  box-shadow: inset 0 1px rgb(255 255 255 / 0.08), 0 2px 5px rgb(0 0 0 / 0.53);
-  color: #d9d4c8;
+  background: linear-gradient(150deg, #ede5d4, #d5cbb8 65%, #bfb8a8);
+  box-shadow: var(--shadow-key);
+  color: var(--color-canvas);
+}
+
+.studio-record:hover .studio-small-play {
+  box-shadow: var(--shadow-key-lit);
 }
 
 .studio-small-play svg {

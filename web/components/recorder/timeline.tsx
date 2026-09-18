@@ -73,7 +73,9 @@ function clamp(value: number, low: number, high: number) {
 }
 
 function label(row: SessionRow) {
-  return row.topic || `Сессия ${String(row.session).padStart(4, "0")}`;
+  // Без темы разговор зовётся своим часом. Номер сессии — внутренность
+  // системы, на ленте ему делать нечего.
+  return row.topic || `Разговор в ${formatTime(row.first_at)}`;
 }
 
 export function DayTimeline({ rows, now }: {
@@ -82,7 +84,10 @@ export function DayTimeline({ rows, now }: {
 }) {
   const router = useRouter();
   const today = todayIso();
-  const [day, setDay] = useState(today);
+  // Открываемся на дне последней записи, а не на «сегодня»: в день без записей
+  // дисплей показывал бы пустую линейку, а прибор без показаний — просто
+  // тёмный корпус. Кнопка «сейчас» возвращает на текущий час.
+  const [day, setDay] = useState(() => rows.find((row) => row.day)?.day ?? today);
   const [head, setHead] = useState(0);
   // Поля по половине видимой ширины с каждой стороны: и полночь, и конец суток
   // должны доезжать до головки, которая стоит по центру.
@@ -173,7 +178,13 @@ export function DayTimeline({ rows, now }: {
   // ней обычно и приходят. В дне без записей: сегодня — «сейчас», в прошлом —
   // середина рабочего дня. dayRows отсортированы по началу, последняя — свежая.
   useEffect(() => {
-    const latest = dayRows.length ? startSeconds(dayRows[dayRows.length - 1])! : null;
+    // Головка встаёт внутрь последней записи, а не на её начало: на начале она
+    // оказывается в долях секунды перед записью, и подпись честно пишет
+    // «записи нет» — вместо имени разговора. Середина считается по настоящей
+    // длине, а не по минимальной ширине блока: иначе короткая запись показала
+    // бы смещение больше собственной длительности.
+    const last = dayRows[dayRows.length - 1];
+    const latest = last ? startSeconds(last)! + Math.min(last.seconds, spanSeconds(last)) / 2 : null;
     center(latest ?? (day === today ? nowSeconds : 12 * 3600));
     sync();
     // nowSeconds меняется каждую минуту — перематывать плёнку из-за этого нельзя,

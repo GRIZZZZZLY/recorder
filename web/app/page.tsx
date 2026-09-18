@@ -9,7 +9,9 @@ import { StudioRecord } from "@/components/recorder/studio-record";
 import { DayTimeline } from "@/components/recorder/timeline";
 import { useApi } from "@/lib/use-api";
 import type { DigestBody, SessionRow, Task } from "@/lib/api";
-import { count, formatAgo, formatDayLong, formatDayShort, formatMinutes, todayIso } from "@/lib/format";
+import {
+  count, formatAgo, formatDayLong, formatDayShort, formatDuration, formatMinutes, todayIso,
+} from "@/lib/format";
 import { sessionHref } from "@/lib/session-link";
 import { useNow } from "@/lib/use-now";
 import { cx } from "@/utils/cx";
@@ -42,8 +44,14 @@ export default function DigestPage() {
   const queue = status?.transcripts_pending ?? 0;
   const waiting = status?.summaries_pending ?? 0;
 
-  // Хореография: шапка на нулевом такте, прибор на первом, лента внутри него
-  // на втором, дальше секции по порядку. Такт 40 мс.
+  // Показания прибора. В день, когда что-то записано, это счётчики дня. В день
+  // без записей нулей не будет: шкала переключается на архив — сколько звука
+  // лежит всего и когда был последний разговор. Считается из того же списка
+  // сессий, который уже загружен ради ленты; новых запросов нет.
+  const today = data.day.sessions > 0;
+  const archiveSeconds = sessions?.reduce((sum, row) => sum + row.seconds, 0) ?? 0;
+  const archiveDay = sessions?.find((row) => row.day)?.day ?? null;
+
   return (
     <div className="studio-home">
       <header className="studio-home-heading">
@@ -77,9 +85,8 @@ export default function DigestPage() {
           />
         )}
 
-        {/* Три нуля — не сведения, а шум: пока за день ничего не записано,
-            лента уже сказала «записей нет», и счётчикам добавить нечего. */}
-        {data.day.sessions > 0 && (
+        {/* Нулей на шкале не бывает: пустой день переводит прибор на архив. */}
+        {today ? (
           <div className="studio-meter-stats">
             <div>
               <span className="studio-meter-label"><Clock size={13} aria-hidden /> Записано сегодня</span>
@@ -94,7 +101,24 @@ export default function DigestPage() {
               <strong>{String(data.day.new_tasks).padStart(2, "0")}</strong>
             </div>
           </div>
-        )}
+        ) : archiveSeconds > 0 ? (
+          <div className="studio-meter-stats">
+            <div>
+              <span className="studio-meter-label"><Clock size={13} aria-hidden /> Всего записано</span>
+              <strong>{formatDuration(archiveSeconds)}</strong>
+            </div>
+            <div>
+              <span className="studio-meter-label"><WaveIcon size={13} aria-hidden /> Разговоров</span>
+              <strong>{String(sessions?.length ?? 0).padStart(2, "0")}</strong>
+            </div>
+            <div>
+              <span className="studio-meter-label"><CheckCircle size={13} aria-hidden /> Последний</span>
+              {/* Дата — не показание шкалы, поэтому мельче: иначе «13 сен»
+                  ломается на две строки и ряд перестаёт быть рядом. */}
+              <strong className="studio-meter-date">{formatDayShort(archiveDay)}</strong>
+            </div>
+          </div>
+        ) : null}
 
         <div className="studio-processing">
           <span className={cx(queue && "pending")}>
