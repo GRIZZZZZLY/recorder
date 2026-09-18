@@ -11,6 +11,68 @@
  * карточек записей, которые целиком принадлежат этому дизайну.
  * --------------------------------------------------------------------------- */
 
+/* ----- Включение прибора ----------------------------------------------------
+ *
+ * Единственная хореография в интерфейсе, и она играет один раз за открытие
+ * сайта: пока оболочка не поставила на html атрибут data-entered (1,2 с после
+ * загрузки, см. components/recorder/shell.tsx), содержимое входит с движением;
+ * дальше смена раздела и приход новых данных происходят без него.
+ *
+ * Порядок читается как включение прибора: сначала загорается дисплей, за ним
+ * приходят показания, последними — карточки записей. Девять элементов, все
+ * движутся прозрачностью и сдвигом. Прежняя версия поднимала 65 анимаций и
+ * повторяла их при каждом переходе — это и была дёрганность.
+ * --------------------------------------------------------------------------- */
+
+@keyframes studio-display-on {
+  from { opacity: 0.2; filter: brightness(0.45); }
+  to   { opacity: 1; filter: brightness(1); }
+}
+
+@keyframes studio-rise {
+  from { opacity: 0; translate: 0 10px; }
+  to   { opacity: 1; translate: 0 0; }
+}
+
+@keyframes studio-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+html:not([data-entered]) .studio-instrument .recorder-timeline {
+  animation: studio-display-on 520ms var(--ease-out) 120ms both;
+}
+
+html:not([data-entered]) .studio-meter-stats > div {
+  animation: studio-rise 420ms var(--ease-out) both;
+}
+
+html:not([data-entered]) .studio-meter-stats > div:nth-child(1) { animation-delay: 360ms; }
+html:not([data-entered]) .studio-meter-stats > div:nth-child(2) { animation-delay: 420ms; }
+html:not([data-entered]) .studio-meter-stats > div:nth-child(3) { animation-delay: 480ms; }
+
+html:not([data-entered]) .studio-processing {
+  animation: studio-fade 400ms var(--ease-out) 560ms both;
+}
+
+html:not([data-entered]) .studio-record {
+  animation: studio-rise 420ms var(--ease-out) both;
+}
+
+html:not([data-entered]) .studio-record-grid > *:nth-child(1) { animation-delay: 560ms; }
+html:not([data-entered]) .studio-record-grid > *:nth-child(2) { animation-delay: 620ms; }
+html:not([data-entered]) .studio-record-grid > *:nth-child(3) { animation-delay: 680ms; }
+html:not([data-entered]) .studio-record-grid > *:nth-child(n + 4) { animation-delay: 740ms; }
+
+/* При запрете движения прибор всё равно включается — но только светом. */
+@media (prefers-reduced-motion: reduce) {
+  html:not([data-entered]) .studio-instrument .recorder-timeline,
+  html:not([data-entered]) .studio-meter-stats > div,
+  html:not([data-entered]) .studio-record {
+    animation-name: studio-fade;
+  }
+}
+
 /* ----- Каркас: боковая панель десктопа ------------------------------------ */
 
 .recorder-sidebar {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -83,6 +83,38 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
   const lastAt = data?.recent?.[0]?.last_at ?? null;
   const live = isLive(lastAt, now);
+
+  // Прибор включается один раз за открытие сайта. Пока на html нет
+  // data-entered, содержимое входит с движением (правила в styles/studio.css);
+  // как только атрибут поставлен, всё, что появится позже — смена раздела,
+  // приход новых данных — возникает без движения. Оболочка живёт в разметке и
+  // при переходах не пересоздаётся, поэтому эффект срабатывает ровно один раз.
+  //
+  // Момент выбирается не таймером от загрузки: содержимое появляется после
+  // ответа сервера, и на медленном телефоне оно опаздывало бы к сроку, а вход
+  // не состоялся бы вовсе. Считаем вход законченным через 400 мс после
+  // последней его анимации; запас в 6 с закрывает случай, когда не пришло ни
+  // одной — пустая страница или запрет движения в системе.
+  useEffect(() => {
+    let timer = window.setTimeout(finish, 6000);
+
+    function finish() {
+      document.documentElement.dataset.entered = "1";
+      window.removeEventListener("animationend", onEnd, true);
+    }
+
+    function onEnd(event: AnimationEvent) {
+      if (!event.animationName.startsWith("studio-")) return;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(finish, 400);
+    }
+
+    window.addEventListener("animationend", onEnd, true);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("animationend", onEnd, true);
+    };
+  }, []);
 
   return (
     <div className="flex min-h-dvh">
