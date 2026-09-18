@@ -1,22 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { Card, RowLink, Section } from "@/components/recorder/list";
-import { PageHeader } from "@/components/recorder/page-header";
-import { Stats, StatusPill } from "@/components/recorder/stats";
-import { Empty, EmptyNote, Failed, Loading } from "@/components/recorder/states";
+import {
+  ArrowRight, CheckCircle, Clock, Waveform as WaveIcon, WarningCircle,
+} from "@phosphor-icons/react/dist/ssr";
+import { Empty, Failed, Loading } from "@/components/recorder/states";
+import { StudioRecord } from "@/components/recorder/studio-record";
 import { DayTimeline } from "@/components/recorder/timeline";
-import { Dot, SourceDot } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import type { DigestBody, SessionRow, Task } from "@/lib/api";
-import {
-  count, formatAgo, formatDayLong, formatDayShort, formatDuration, formatMinutes,
-  formatTime, todayIso,
-} from "@/lib/format";
+import { count, formatAgo, formatDayLong, formatDayShort, formatMinutes, todayIso } from "@/lib/format";
 import { at } from "@/lib/motion";
 import { sessionHref } from "@/lib/session-link";
-import { statusTone } from "@/lib/session-status";
-import { isLive, useNow } from "@/lib/use-now";
+import { useNow } from "@/lib/use-now";
 import { cx } from "@/utils/cx";
 
 type Status = { transcripts_pending: number; summaries_pending: number };
@@ -26,6 +22,12 @@ function due(task: Task) {
   return `${task.due_said || "срок"} · ${formatDayShort(task.due_date)}`;
 }
 
+/**
+ * Сводка — лицевая панель прибора: лента дня в дисплее, под ней счётчики дня
+ * и лампочки обработки; ниже — последние записи карточками, мои задачи и
+ * спорные места. Состояние диктофона словами живёт в шильдике над страницей
+ * (Shell) и на странице «Состояние».
+ */
 export default function DigestPage() {
   const { data, error, loading, reload } = useApi<DigestBody>("/digest");
   const { data: status } = useApi<Status>("/status");
@@ -37,39 +39,33 @@ export default function DigestPage() {
   if (error) return <Failed error={error} onRetry={reload} />;
   if (loading || !data) return <Loading />;
 
-  const today = todayIso();
   const lastAt = data.recent[0]?.last_at ?? null;
-  const live = isLive(lastAt, now);
   const queue = status?.transcripts_pending ?? 0;
   const waiting = status?.summaries_pending ?? 0;
 
-  // Хореография: шапка на нулевом такте, плашки 1–3, лента 5, числа 7, блок
-  // списков 8, строки в них — с девятого. Такт 40 мс: страница собирается
-  // сверху вниз за ~700 мс, первый текст виден сразу.
+  // Хореография: шапка на нулевом такте, прибор на первом, лента внутри него
+  // на втором, дальше секции по порядку. Такт 40 мс.
   return (
-    <>
-      <PageHeader title="Сводка" aside={formatDayLong(today)} />
+    <div className="studio-home">
+      <header className="studio-home-heading enter" style={at(0)}>
+        <div>
+          <span className="studio-eyebrow">ВАШ ЗВУКОВОЙ ДНЕВНИК</span>
+          <h1>Сводка<span className="studio-title-dot">.</span></h1>
+        </div>
+        <span className="studio-date">{formatDayLong(todayIso())}</span>
+      </header>
 
-      <div className="flex flex-wrap gap-3">
-        <StatusPill
-          at={1}
-          tone={live ? "accent" : lastAt ? "ok" : "missing"}
-          live={live}
-          title="Диктофон"
-          value={live ? "пишет · выгрузка идёт" : `последняя выгрузка ${formatAgo(lastAt, now)}`}
-        />
-        <StatusPill at={2} tone={queue ? "warn" : "ok"} title="Расшифровка"
-                    value={queue ? `${count(queue, "часть", "части", "частей")} в очереди` : "очередь пуста"} />
-        <StatusPill at={3} tone={waiting ? "warn" : "ok"} title="Саммари"
-                    value={waiting ? `${waiting} ждёт` : "все собраны"} />
-      </div>
+      <section className="studio-instrument enter" style={at(1)} aria-label="Лента дня">
+        <div className="studio-instrument-label">
+          <span><WaveIcon size={17} aria-hidden /> Лента дня</span>
+          <span className="studio-engraved" aria-hidden>24 H / AUDIO LOG</span>
+        </div>
 
-      {/* Лента живёт своей жизнью: по ней ходят в прошлые дни, даже когда
-          сегодня записей не было. Пусто она выглядит только пока их нет вовсе. */}
-      {sessions && sessions.length > 0 ? (
-        <DayTimeline rows={sessions} now={now} at={5} />
-      ) : (
-        <div className="enter" style={at(5)}>
+        {/* Лента живёт своей жизнью: по ней ходят в прошлые дни, даже когда
+            сегодня записей не было. Пусто она выглядит только пока их нет вовсе. */}
+        {sessions && sessions.length > 0 ? (
+          <DayTimeline rows={sessions} now={now} at={2} />
+        ) : (
           <Empty
             title="Записей ещё нет"
             text={lastAt
@@ -80,85 +76,81 @@ export default function DigestPage() {
               Открыть состояние
             </Link>}
           />
+        )}
+
+        {/* Три нуля — не сведения, а шум: пока за день ничего не записано,
+            лента уже сказала «записей нет», и счётчикам добавить нечего. */}
+        {data.day.sessions > 0 && (
+          <div className="studio-meter-stats">
+            <div>
+              <span className="studio-meter-label"><Clock size={13} aria-hidden /> Записано сегодня</span>
+              <strong>{formatMinutes(data.day.minutes)}</strong>
+            </div>
+            <div>
+              <span className="studio-meter-label"><WaveIcon size={13} aria-hidden /> Разговоров</span>
+              <strong>{String(data.day.sessions).padStart(2, "0")}</strong>
+            </div>
+            <div>
+              <span className="studio-meter-label"><CheckCircle size={13} aria-hidden /> Новых задач</span>
+              <strong>{String(data.day.new_tasks).padStart(2, "0")}</strong>
+            </div>
+          </div>
+        )}
+
+        <div className="studio-processing">
+          <span className={cx(queue && "pending")}>
+            <i aria-hidden />Расшифровка · {queue ? `${count(queue, "часть", "части", "частей")} в очереди` : "готово"}
+          </span>
+          <span className={cx(waiting && "pending")}>
+            <i aria-hidden />Саммари · {waiting ? count(waiting, "ждёт", "ждут", "ждут") : "готово"}
+          </span>
+          <Link href="/status/" aria-label="Состояние обработки"><ArrowRight size={16} aria-hidden /></Link>
         </div>
-      )}
+      </section>
 
-      {/* Четыре нуля — не сведения, а шум: пока за день ничего не записано,
-          лента уже сказала «записей нет», и числам добавить нечего. */}
-      {data.day.sessions > 0 && (
-        <div className="enter" style={at(7)}>
-          <Stats items={[
-            { value: formatMinutes(data.day.minutes), label: "записано сегодня" },
-            { value: data.day.sessions, label: "разговоров" },
-            { value: data.day.new_tasks, label: "новые задачи" },
-            { value: data.day.review, label: "спорных мест", tone: data.day.review ? "accent" : undefined },
-          ]} />
-        </div>
-      )}
-
-      <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
-        <Section
-          at={8}
-          head="Мои открытые задачи"
-          aside={data.week.my_open_tasks > 0 ? (
-            <Link href="/tasks/?show=mine" className="hover:text-text-primary">
-              все {data.week.my_open_tasks}
-            </Link>
-          ) : undefined}
-        >
-          {!data.has_me ? (
-            <EmptyNote>
-              Ни один говорящий не отмечен как «это я» — отметьте себя на странице сессии.
-            </EmptyNote>
-          ) : data.my_tasks.length === 0 ? (
-            <EmptyNote>Открытых задач нет.</EmptyNote>
-          ) : (
-            <Card className="cascade" style={at(9)}>
-              {data.my_tasks.slice(0, 5).map((task) => (
-                <RowLink key={`${task.session}-${task.task_id}`}
-                         href={sessionHref(task.device_id, task.session,
-                                           task.source?.part, task.source?.idx)}>
-                  <SourceDot source={task.source} />
-                  <span className="min-w-0 flex-1 truncate">{task.text}</span>
-                  {task.owner ? <span className="hidden text-text-tertiary sm:block">{task.owner}</span> : null}
-                  <span className={cx("shrink-0 text-right text-note",
-                                      task.overdue ? "text-accent-text" : "text-text-secondary")}>
-                    {due(task)}
-                  </span>
-                </RowLink>
-              ))}
-            </Card>
-          )}
-        </Section>
-
-        <Section
-          at={8}
-          head="Последние записи"
-          aside={<Link href="/records/" className="hover:text-text-primary">все записи</Link>}
-        >
-          {data.recent.length === 0 ? (
-            <EmptyNote>Записей ещё не было.</EmptyNote>
-          ) : (
-            <Card className="cascade" style={at(9)}>
-              {data.recent.map((row) => (
-                <RowLink key={`${row.device_id}-${row.session}`}
-                         href={sessionHref(row.device_id, row.session)}>
-                  {/* Разговор узнают по часу и теме. Номер сессии — внутренность
-                      системы, ему место только на странице «Состояние». */}
-                  <span className="min-w-0 flex-1 truncate">
-                    <span className="font-mono text-text-secondary">{formatTime(row.first_at)}</span>
-                    {row.topic ? <> · {row.topic}</> : null}
-                  </span>
-                  <span className="shrink-0 text-note text-text-secondary">
-                    {formatDuration(row.seconds)}
-                  </span>
-                  <Dot tone={statusTone(row)} />
-                </RowLink>
-              ))}
-            </Card>
-          )}
-        </Section>
+      <div className="studio-section-heading enter" style={at(3)}>
+        <h2>Последние записи</h2>
+        <Link href="/records/">Все записи <ArrowRight size={16} aria-hidden /></Link>
       </div>
-    </>
+      {data.recent.length > 0 ? (
+        <div className="studio-record-grid enter" style={at(4)}>
+          {data.recent.slice(0, 4).map((row) => (
+            <StudioRecord key={`${row.device_id}-${row.session}`} row={row} compact />
+          ))}
+        </div>
+      ) : (
+        <p className="studio-empty enter" style={at(4)}>Здесь появится ваш первый разговор.</p>
+      )}
+
+      <section className="studio-tasks-panel enter" style={at(5)} aria-label="Мои задачи">
+        <div className="studio-section-heading">
+          <h2>Мои задачи{data.week.my_open_tasks > 0 && <span>{data.week.my_open_tasks}</span>}</h2>
+          <Link href="/tasks/?show=mine" aria-label="Все мои задачи"><ArrowRight size={18} aria-hidden /></Link>
+        </div>
+        {!data.has_me ? (
+          <p>Ни один говорящий не отмечен как «это я» — отметьте себя на странице записи, и здесь появятся ваши задачи.</p>
+        ) : data.my_tasks.length === 0 ? (
+          <p>Открытых задач нет.</p>
+        ) : (
+          data.my_tasks.slice(0, 5).map((task) => (
+            <Link key={`${task.session}-${task.task_id}`} className="studio-task-link"
+                  href={sessionHref(task.device_id, task.session, task.source?.part, task.source?.idx)}>
+              <span className="studio-check-square" aria-hidden />
+              <span className="studio-task-text">{task.text}</span>
+              <span className={cx("studio-task-due", task.overdue && "overdue")}>{due(task)}</span>
+              <ArrowRight size={15} aria-hidden />
+            </Link>
+          ))
+        )}
+      </section>
+
+      {data.day.review > 0 && (
+        <Link href="/review/" className="studio-review-note enter" style={at(6)}>
+          <WarningCircle size={17} aria-hidden /> Проверить спорные места
+          <span>{data.day.review}</span>
+          <ArrowRight size={15} aria-hidden />
+        </Link>
+      )}
+    </div>
   );
 }

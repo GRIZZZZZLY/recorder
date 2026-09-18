@@ -14,7 +14,7 @@ export function PageHeader({ back, title, aside }: {
 }) {
   // Нулевой такт хореографии: шапка первой, дальше секции по своим тактам.
   return (
-    <header className="enter flex flex-col gap-2.5" style={at(0)}>
+    <header className="recorder-page-header enter flex flex-col gap-2.5" style={at(0)}>
       {back ? (
         <div className="flex items-center gap-2 text-note text-text-secondary">
           <Link href={back.href} className="press inline-flex items-center gap-1 hover:text-text-primary">

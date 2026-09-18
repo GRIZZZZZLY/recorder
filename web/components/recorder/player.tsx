@@ -43,13 +43,17 @@ const RATE_KEY = "recorder.rate";
 export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes = {}, children }: {
   deviceId: string;
   session: number;
-  parts: number;
+  /** Номера частей, которые сервер принял: только у них есть файл. */
+  parts: number[];
   /** Метки кнопкой: засечки на волне той части, которая сейчас открыта. */
   marks?: Mark[];
   /** Громкость по номеру части: волна плеера рисует ту, что играет. */
   envelopes?: Record<number, number[]>;
   children: React.ReactNode;
 }) {
+  // Play без выбранной реплики играет с начала первой принятой части — не
+  // «части 1», которой могло не дойти, а той, что действительно лежит на сервере.
+  const first = parts.length ? Math.min(...parts) : null;
   const audio = useRef<HTMLAudioElement>(null);
   // Слушатель loadedmetadata предыдущей, ещё не догрузившейся части —
   // при быстром переключении отменяем его, иначе сработают все подряд.
@@ -125,7 +129,12 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
 
   function toggle() {
     const element = audio.current;
-    if (!element || part === null) return;
+    if (!element) return;
+    if (part === null) {
+      // Ничего не выбрано: клавиша Play запускает запись с самого начала.
+      if (first !== null) seek(first, 0, "Запись разговора");
+      return;
+    }
     if (element.paused) element.play().then(() => setBlocked(false)).catch(() => setBlocked(true));
     else element.pause();
   }
@@ -167,17 +176,16 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
             под его карточкой. */}
         <div className="pb-32">{children}</div>
 
-        <div className={cx(
-          "player-in grille fixed right-3 bottom-24 left-3 z-20 flex items-center gap-3 rounded-card bg-surface-elevated px-3 py-2.5 shadow-player",
-          "lg:right-12 lg:bottom-7 lg:left-[268px] lg:gap-4 lg:px-4 lg:py-3.5",
-        )}>
+        {/* Корпус плеера, решётка динамика, размеры клавиш и отступы под
+            телефон и десктоп — в styles/studio.css по хукам recorder-*. */}
+        <div className="recorder-player player-in fixed z-20 flex items-center">
           <button
             type="button"
             onClick={toggle}
-            disabled={idle}
+            disabled={idle && first === null}
             aria-label={playing ? "Пауза" : "Играть"}
             className={cx(
-              "press hit relative flex size-9 shrink-0 items-center justify-center rounded-chip bg-fill text-canvas disabled:opacity-40 lg:size-10",
+              "recorder-play-key press hit relative flex shrink-0 items-center justify-center rounded-chip bg-fill text-canvas disabled:opacity-40",
               // Клавиша выпуклая; нажатие коротко уводит её в поверхность.
               "shadow-key active:translate-y-px active:shadow-key-pressed",
               // Свечение — пока идёт звук; пауза гасит.
@@ -192,17 +200,19 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
                   className={cx("absolute transition-opacity duration-120", playing ? "opacity-0" : "opacity-100")} />
           </button>
 
-          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+          <div className="recorder-player-body flex min-w-0 flex-1 flex-col gap-1.5">
             <div className="flex items-baseline justify-between gap-3 text-note">
               <span className="truncate">
-                {idle ? "Нажмите реплику" : label || "Фрагмент записи"}
+                {idle
+                  ? (first === null ? "Звук ещё не пришёл" : "Слушать запись")
+                  : label || "Фрагмент записи"}
                 {blocked ? <span className="text-text-secondary"> · браузер не разрешил автозапуск</span> : null}
               </span>
               <span className="flex shrink-0 items-baseline gap-1.5 text-text-secondary">
                 {/* Части — внутренность прошивки (файл режется по 19,2 МБ). Номер
                     части показывается только когда их больше одной: иначе
                     «частей 1» и «01 / 01» — шум без единого сведения. */}
-                {idle ? (parts > 1 ? `частей ${parts}` : null) : (
+                {idle ? (parts.length > 1 ? `частей ${parts.length}` : null) : (
                   <>
                     {/* Показание прибора: одно крупное число — где сейчас звук.
                         Общая длительность и номер части мелко, на той же базовой линии. */}
@@ -210,9 +220,9 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
                       {formatClock(position)}
                     </span>
                     <span className="font-mono">/ {formatClock(duration)}</span>
-                    {parts > 1 && (
+                    {parts.length > 1 && (
                       <span className="hidden sm:inline">
-                        · {String(part).padStart(2, "0")} / {String(parts).padStart(2, "0")}
+                        · {String(part).padStart(2, "0")} / {String(parts.length).padStart(2, "0")}
                       </span>
                     )}
                   </>
@@ -227,11 +237,13 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
               onPointerUp={onScrubEnd}
               onPointerCancel={onScrubEnd}
               // Дорожка лежит в своей нише: у клавиши, таймера и звука разные роли.
-              className={cx("hit relative flex h-7 items-center rounded-inner bg-well px-1.5 shadow-well touch-pan-y select-none lg:h-8",
+              className={cx("recorder-player-wave hit relative flex items-center rounded-inner bg-well px-1.5 touch-pan-y select-none",
                             !idle && "cursor-pointer")}
             >
+              {/* Пока ничего не выбрано, в нише лежит волна той части, которую
+                  запустит Play: дисплей показывает, что будет звучать. */}
               <Waveform
-                values={envelopes[part ?? 0] ?? []}
+                values={envelopes[part ?? first ?? 0] ?? []}
                 height={idle ? 12 : 28}
                 played={duration ? position / duration : 0}
                 className="w-full"
@@ -252,19 +264,25 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
             onClick={cycleRate}
             aria-label={`Скорость ${rate}×, нажмите чтобы сменить`}
             className={cx(
-              "press hit relative flex h-9 shrink-0 items-center justify-center rounded-chip px-2.5 font-mono text-note lg:h-10",
+              "recorder-speed-key press hit relative flex h-9 shrink-0 items-center justify-center rounded-chip px-2.5 font-mono text-note lg:h-10",
               "shadow-key active:translate-y-px active:shadow-key-pressed",
+              // Ускорение включено — клавиша светлая, как Play: состояние видно
+              // с расстояния, а не только по цифре.
               rate === 1
                 ? "bg-hairline text-text-secondary"
-                : "bg-fill text-canvas",
+                : "is-active bg-fill text-canvas",
             )}
           >
             {rate}×
           </button>
 
+          {/* preload="metadata", не "none": с "none" Chromium откладывает загрузку
+              назначенного src до play(), и loadedmetadata, которого ждёт seek(),
+              не приходит никогда — Play и реплики молчали. Пока src не назначен,
+              ничего не грузится и так. */}
           <audio
             ref={audio}
-            preload="none"
+            preload="metadata"
             onPlay={() => { setPlaying(true); setBlocked(false); }}
             onPause={() => setPlaying(false)}
             onEnded={() => setPlaying(false)}

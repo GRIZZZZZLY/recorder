@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter_Tight, JetBrains_Mono } from "next/font/google";
 import "@/styles/globals.css";
+import "@/styles/studio.css";
 import { Shell } from "@/components/recorder/shell";
 
 // subsets с cyrillic обязателен: интерфейс русский. Сборка падает, если
@@ -30,12 +31,15 @@ export const metadata: Metadata = {
 
 // Тёмный цвет адресной строки мобильного браузера: со светлым по умолчанию
 // над тёмной страницей висит белая полоса. Значение — текущий канвас.
-export const viewport: Viewport = { themeColor: "#15171c" };
+export const viewport: Viewport = { themeColor: "#191a1c" };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ru" className={`${interTight.variable} ${jetBrainsMono.variable}`}>
-      <body className="bg-canvas text-text-primary">
+      {/* Фон у body не задаётся: канвас рисует html, а фактуру корпуса — слой
+          body::before под содержимым (styles/globals.css). Заливка body легла
+          бы поверх фактуры и спрятала её. */}
+      <body className="text-text-primary">
         <Shell>{children}</Shell>
       </body>
     </html>

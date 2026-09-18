@@ -22,7 +22,7 @@ export function Section({ head, note, aside, className, at: tick = 1, children }
   children: React.ReactNode;
 }) {
   return (
-    <section className={cx("enter flex flex-col", head ? "gap-2.5" : "gap-2", className)} style={at(tick)}>
+    <section className={cx("recorder-section enter flex flex-col", head ? "gap-2.5" : "gap-2", className)} style={at(tick)}>
       {(head || note || aside) && (
         <div className="flex items-baseline justify-between gap-4 px-1">
           {head ? <h2 className="text-section text-text-primary">{head}</h2> : null}
@@ -44,7 +44,7 @@ export function Card({ className, style, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <div className={cx("overflow-hidden rounded-card bg-surface text-row shadow-plate", className)} style={style}>
+    <div className={cx("recorder-card overflow-hidden rounded-card bg-surface text-row shadow-plate", className)} style={style}>
       {children}
     </div>
   );
@@ -52,7 +52,7 @@ export function Card({ className, style, children }: {
 
 // Разделитель между строками рисует сама строка сверху: так первая строка
 // остаётся без линии независимо от того, чем её отрисовали.
-const ROW = "flex items-center gap-3 px-4 py-3.5 not-first:border-t not-first:border-hairline";
+const ROW = "recorder-row flex items-center gap-3 px-4 py-3.5 not-first:border-t not-first:border-hairline";
 
 export function Row({ className, children }: { className?: string; children: React.ReactNode }) {
   return <div className={cx(ROW, className)}>{children}</div>;

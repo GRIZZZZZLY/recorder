@@ -1,0 +1,1019 @@
+/* ---------------------------------------------------------------------------
+ * «Студийный прибор» — компоновка и материал поверх токенов из globals.css.
+ *
+ * Токены (цвета, радиусы, тени) живут в @theme рядом с остальными; здесь —
+ * то, что утилитами не выразить одной строкой: градиенты корпуса, паз вокруг
+ * клавиши, решётка динамика, гравировка подписей. Правила без слоя (@layer),
+ * поэтому побеждают утилиты Tailwind независимо от специфичности.
+ *
+ * Хуки `.recorder-*` стоят на каркасных компонентах (Shell, Section, Card,
+ * PageHeader, DayTimeline, PlayerProvider); классы `.studio-*` — у сводки и
+ * карточек записей, которые целиком принадлежат этому дизайну.
+ * --------------------------------------------------------------------------- */
+
+/* ----- Каркас: боковая панель десктопа ------------------------------------ */
+
+.recorder-sidebar {
+  position: sticky;
+  top: 0;
+  width: 235px;
+  height: 100dvh;
+  padding: 30px 16px;
+  background: linear-gradient(100deg, #151617, #1b1c1e);
+  border-right: 1px solid rgb(255 255 255 / 0.035);
+  box-shadow: inset -1px 0 rgb(0 0 0 / 0.53);
+}
+
+.recorder-sidebar > div {
+  padding-bottom: 40px;
+  font-size: 18px;
+}
+
+.recorder-sidebar nav {
+  gap: 7px;
+}
+
+.recorder-sidebar nav a {
+  padding: 13px 14px;
+  border: 1px solid transparent;
+}
+
+/* Активный раздел — выступающая клавиша с тёплой подписью. */
+.recorder-sidebar a[aria-current="page"] {
+  background: linear-gradient(#323335, #282a2b);
+  border-color: rgb(255 255 255 / 0.06);
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.035), 0 4px 8px rgb(0 0 0 / 0.2);
+  color: #efe3ca;
+}
+
+.recorder-sidebar a[aria-current="page"] svg {
+  color: #e2cfa7;
+}
+
+/* ----- Шильдик прибора над содержимым -------------------------------------- */
+
+.studio-brandline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid rgb(255 255 255 / 0.047);
+}
+
+.studio-wordmark {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  font-size: 16px;
+  letter-spacing: -0.3px;
+  white-space: nowrap;
+}
+
+/* Диск с коралловой сердцевиной — линза индикатора на корпусе. */
+.studio-brand-disc {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  border: 1px solid rgb(183 175 161 / 0.3);
+  border-radius: 50%;
+  background: #191a1b;
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.67), 0 1px rgb(255 255 255 / 0.07);
+}
+
+.studio-brand-disc::after {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border-radius: 50%;
+  background: linear-gradient(#f3977d, #b74536);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.53), inset 0 1px #ffc2a4;
+}
+
+/* Гравировка: моноширинная, разрядка 1,5 px. */
+.studio-model,
+.studio-engraved,
+.studio-eyebrow,
+.studio-rec-no {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  font-weight: 400;
+}
+
+.studio-model {
+  margin-left: 10px;
+  color: #94958f;
+}
+
+.studio-device-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #aaa9a2;
+  font-size: 12px;
+  text-align: right;
+}
+
+.studio-device-state .studio-led {
+  flex-shrink: 0;
+}
+
+.studio-led {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #696c62;
+  box-shadow: 0 0 0 3px rgb(0 0 0 / 0.2), inset 0 1px rgb(255 255 255 / 0.27);
+}
+
+.studio-led.is-live {
+  background: #f36b51;
+  box-shadow: 0 0 8px rgb(243 107 81 / 0.6);
+}
+
+/* ----- Сводка ---------------------------------------------------------------- */
+
+.studio-home {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.studio-home-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 6px 0 4px;
+}
+
+.studio-eyebrow {
+  color: #9a9890;
+  font-size: 10px;
+  letter-spacing: 1.9px;
+}
+
+.studio-home-heading h1 {
+  margin-top: 9px;
+  font-size: 64px;
+  line-height: 1.06;
+  letter-spacing: -3px;
+  font-weight: 550;
+}
+
+.studio-title-dot {
+  color: #ee785d;
+}
+
+.studio-date {
+  padding-bottom: 7px;
+  font-size: 14px;
+  color: #aaa9a2;
+  text-align: right;
+}
+
+/* Приборный блок: корпус с освещённой кромкой, внутри — дисплей ленты дня,
+ * счётчики и строка состояния обработки. */
+.studio-instrument {
+  position: relative;
+  padding: 22px 24px 0;
+  border-radius: 23px;
+  border: 1px solid rgb(255 255 255 / 0.075);
+  background: linear-gradient(145deg, #373737, #2b2c2e 40%, #242627);
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.07), inset 0 -1px rgb(0 0 0 / 0.53), 0 15px 35px -18px rgb(0 0 0 / 0.8);
+}
+
+.studio-instrument-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 17px;
+}
+
+.studio-instrument-label > span:first-child {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.studio-engraved {
+  color: #a29f93;
+  font-size: 10px;
+  letter-spacing: 1.4px;
+  text-shadow: 0 1px rgb(0 0 0 / 0.7);
+}
+
+/* Лента дня внутри прибора — утопленный дисплей: своя ниша не нужна,
+ * поэтому внутренняя ниша плёнки гаснет, а головка светится кораллом. */
+.studio-instrument .recorder-timeline {
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid #050607;
+  background: #17191b;
+  box-shadow: 0 1px rgb(255 255 255 / 0.125), inset 0 4px 14px rgb(0 0 0 / 0.53);
+}
+
+.studio-instrument .recorder-timeline > .relative {
+  padding-top: 10px;
+  padding-bottom: 4px;
+}
+
+.studio-instrument .recorder-timeline .bg-well {
+  background: transparent;
+  box-shadow: none;
+}
+
+.studio-instrument .recorder-timeline [role="slider"] > span:first-child {
+  background: #f0795c;
+  box-shadow: 0 0 9px rgb(240 121 92 / 0.3);
+}
+
+.studio-instrument .recorder-timeline > .flex:last-child {
+  padding-top: 10px;
+  border-top: 1px solid rgb(255 255 255 / 0.03);
+}
+
+.studio-instrument .recorder-timeline .text-accent-text {
+  font-size: 24px;
+  letter-spacing: -1px;
+  color: #f2b39b;
+}
+
+.studio-meter-stats {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  margin-top: 24px;
+  margin-bottom: 4px;
+}
+
+.studio-meter-stats > div {
+  padding: 0 24px;
+  border-left: 1px solid rgb(255 255 255 / 0.047);
+  box-shadow: -1px 0 rgb(0 0 0 / 0.2);
+}
+
+.studio-meter-stats > div:first-child {
+  padding-left: 0;
+  border: 0;
+  box-shadow: none;
+}
+
+.studio-meter-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 9px;
+  color: #aaa9a3;
+  font-size: 12px;
+}
+
+.studio-meter-stats strong {
+  font-size: 38px;
+  line-height: 1.1;
+  font-weight: 450;
+  letter-spacing: -1.3px;
+  color: #e8e2d6;
+}
+
+.studio-meter-stats > div:not(:first-child) strong {
+  font-family: var(--font-mono);
+  font-weight: 400;
+}
+
+/* Строка состояния обработки: лампочки очереди, стрелка на «Состояние».
+ * Отступ сверху свой, а не у счётчиков: в пустой день счётчиков нет. */
+.studio-processing {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  margin-top: 18px;
+  padding: 13px 0;
+  border-top: 1px solid rgb(0 0 0 / 0.33);
+  box-shadow: 0 -1px rgb(255 255 255 / 0.027);
+  font-size: 12px;
+  color: #a9aaa3;
+}
+
+.studio-processing > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.studio-processing i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-ok);
+  box-shadow: 0 0 0 2px rgb(0 0 0 / 0.13);
+}
+
+.studio-processing .pending i {
+  background: var(--color-warn);
+}
+
+.studio-processing .failed i {
+  background: var(--color-accent);
+}
+
+.studio-processing > a {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+  padding: 3px;
+}
+
+.studio-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 9px;
+}
+
+.studio-section-heading h2 {
+  font-size: 21px;
+  line-height: 1.3;
+  font-weight: 550;
+  letter-spacing: -0.5px;
+}
+
+.studio-section-heading h2 span {
+  margin-left: 10px;
+  font: 12px var(--font-mono);
+  color: #b6b0a3;
+}
+
+.studio-section-heading > a {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  font-size: 13px;
+  color: #b4b0a4;
+}
+
+/* ----- Карточка записи ------------------------------------------------------- */
+
+.studio-record-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 15px;
+}
+
+.studio-record {
+  display: block;
+  min-width: 0;
+  padding: 21px 23px 15px;
+  border: 1px solid rgb(255 255 255 / 0.047);
+  border-radius: 17px;
+  background: linear-gradient(125deg, #303133, #26282a 80%);
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.027), 0 1px rgb(0 0 0 / 0.7), 0 5px 15px rgb(0 0 0 / 0.13);
+  transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+}
+
+.studio-record:hover {
+  border-color: rgb(221 204 181 / 0.21);
+  transform: translateY(-2px);
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.08), 0 7px 20px rgb(0 0 0 / 0.27);
+}
+
+.studio-record:active {
+  transform: translateY(1px);
+}
+
+.studio-record-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #b1ada3;
+}
+
+.studio-rec-no {
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  color: #a7a397;
+}
+
+.studio-record-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  color: #acb3a9;
+}
+
+.studio-record-status i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--color-ok);
+}
+
+.studio-record-status.warn i {
+  background: var(--color-warn);
+}
+
+.studio-record-status.accent i {
+  background: #ec826b;
+}
+
+.studio-record h3 {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  font-size: 23px;
+  font-weight: 500;
+  letter-spacing: -0.6px;
+  line-height: 1.25;
+}
+
+/* Тема бывает длиннее карточки: переносить по любому месту, но не
+ * выталкивать стрелку и не растягивать сетку. */
+.studio-record h3 > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.studio-record h3 svg {
+  flex-shrink: 0;
+  margin-top: 6px;
+  color: #aaa495;
+}
+
+.studio-record h3 .muted {
+  font-size: 17px;
+  font-weight: 400;
+  color: var(--color-text-secondary);
+}
+
+.studio-record-person {
+  margin-top: 7px;
+  font-size: 13px;
+  color: #a3a39c;
+  overflow-wrap: anywhere;
+}
+
+.studio-record-audio {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  margin: 21px 0 16px;
+}
+
+/* Малая клавиша Play — рельеф карточки; играет сама страница записи. */
+.studio-small-play {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 39px;
+  height: 39px;
+  border-radius: 50%;
+  border: 1px solid rgb(255 255 255 / 0.075);
+  background: linear-gradient(#484948, #313335);
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.08), 0 2px 5px rgb(0 0 0 / 0.53);
+  color: #d9d4c8;
+}
+
+.studio-small-play svg {
+  margin-left: 2px;
+}
+
+.studio-wave-preview {
+  flex: 1;
+  min-width: 0;
+  opacity: 0.85;
+}
+
+.studio-duration {
+  font: 12px var(--font-mono);
+  color: #c6c2b5;
+  white-space: nowrap;
+}
+
+.studio-record-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 11px;
+  border-top: 1px solid rgb(255 255 255 / 0.03);
+  font-size: 11px;
+  color: #a8a79f;
+}
+
+.studio-bookmark {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  color: #d7b879;
+}
+
+/* ----- Задачи и спорные места на сводке -------------------------------------- */
+
+.studio-tasks-panel {
+  margin-top: 3px;
+  padding: 0 4px;
+}
+
+.studio-tasks-panel p,
+.studio-empty {
+  margin: 14px 0;
+  font-size: 14px;
+  line-height: 1.65;
+  color: #aaa9a3;
+}
+
+.studio-task-link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 17px 0;
+  border-top: 1px solid rgb(255 255 255 / 0.04);
+  font-size: 15px;
+}
+
+.studio-task-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.studio-task-due {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  text-align: right;
+}
+
+.studio-task-due.overdue {
+  color: var(--color-accent-text);
+}
+
+.studio-check-square {
+  flex-shrink: 0;
+  width: 17px;
+  height: 17px;
+  border-radius: 5px;
+  border: 1px solid #969991;
+  background: #16181a;
+  box-shadow: inset 0 2px 3px rgb(0 0 0 / 0.33);
+}
+
+.studio-review-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 15px 17px;
+  border: 1px solid rgb(219 182 110 / 0.13);
+  border-radius: 12px;
+  background: rgb(219 182 110 / 0.027);
+  font-size: 13px;
+  color: #c4b48f;
+}
+
+.studio-review-note span {
+  margin-left: auto;
+}
+
+/* ----- Остальные страницы: шапка, карточки, строки, поля -------------------- */
+
+.recorder-page-header h1 {
+  font-size: 48px;
+  line-height: 1.08;
+  letter-spacing: -1.8px;
+  font-weight: 550;
+}
+
+.recorder-card {
+  border: 1px solid rgb(255 255 255 / 0.04);
+  background: linear-gradient(120deg, #2d2f30, #252729);
+  box-shadow: var(--shadow-plate);
+}
+
+.recorder-section {
+  gap: 12px;
+}
+
+.recorder-section > div:first-child > span:first-child {
+  font-size: 13px;
+  color: #bab6ab;
+}
+
+.recorder-row {
+  padding: 17px 19px;
+}
+
+/* Поля ввода утоплены в панель; переключатели и радиокнопки — свои. */
+input:not([type="checkbox"]):not([type="radio"]) {
+  background: #181a1c;
+  box-shadow: inset 0 2px 5px rgb(0 0 0 / 0.47);
+  border-color: #787b74;
+}
+
+/* Саммари — табличка на панели с гравированной подписью. */
+.studio-summary {
+  position: relative;
+  padding: 25px 27px;
+  border-radius: 17px;
+  border: 1px solid rgb(255 255 255 / 0.043);
+  background: linear-gradient(130deg, #363532, #282a2b);
+  box-shadow: var(--shadow-plate);
+  font-size: 20px;
+  line-height: 1.7;
+  color: #e2dbce;
+}
+
+.studio-summary::before {
+  content: "Главное из разговора";
+  display: block;
+  margin-bottom: 13px;
+  font: 10px var(--font-mono);
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: #b9ad94;
+}
+
+/* ----- Плеер: корпус с решёткой динамика, клавиши, дисплей волны ------------ */
+
+.recorder-player {
+  left: 275px;
+  right: 40px;
+  bottom: 25px;
+  gap: 20px;
+  padding: 17px 20px;
+  border: 1px solid rgb(152 155 144 / 0.31);
+  border-radius: 23px;
+  background: linear-gradient(170deg, #494a48 0%, #333537 28%, #242728 90%);
+  box-shadow: 0 0 0 3px rgb(17 20 22 / 0.73), inset 0 1px rgb(233 222 196 / 0.19), inset 0 -1px rgb(0 0 0 / 0.67), 0 15px 38px rgb(0 0 0 / 0.53);
+}
+
+/* Решётка динамика слева от клавиши. */
+.recorder-player::before {
+  content: "";
+  flex-shrink: 0;
+  align-self: stretch;
+  width: 19px;
+  border-radius: 7px;
+  background: radial-gradient(circle, #080a0b 1.1px, rgb(255 255 255 / 0.07) 1.4px, transparent 1.6px) 0 0 / 5px 5px;
+  opacity: 0.9;
+}
+
+.recorder-play-key {
+  width: 51px;
+  height: 51px;
+  background: linear-gradient(150deg, #ede5d4, #d5cbb8 65%, #bfb8a8);
+}
+
+.recorder-play-key svg {
+  width: 19px;
+  height: 19px;
+}
+
+.recorder-player-body {
+  gap: 10px;
+}
+
+.recorder-player-body > div:first-child {
+  font-size: 14px;
+}
+
+.recorder-player-wave {
+  height: 37px;
+  border: 1px solid #0c0e0f;
+  box-shadow: inset 0 3px 6px rgb(0 0 0 / 0.53), 0 1px rgb(255 255 255 / 0.08);
+}
+
+.recorder-speed-key {
+  border: 1px solid rgb(255 255 255 / 0.06);
+  background: linear-gradient(#464846, #303335);
+  box-shadow: inset 0 1px rgb(255 255 255 / 0.07), 0 2px 3px rgb(0 0 0 / 0.33);
+  font-size: 12px;
+  color: #ded8c9;
+}
+
+/* Ускорение включено: клавиша светлая, как Play. */
+.recorder-speed-key.is-active {
+  border-color: rgb(255 255 255 / 0.2);
+  background: linear-gradient(150deg, #ede5d4, #d5cbb8 65%, #bfb8a8);
+  color: var(--color-canvas);
+}
+
+/* ----- Телефон и планшет ----------------------------------------------------- */
+
+@media (max-width: 1023px) {
+  .studio-brandline {
+    padding-bottom: 16px;
+  }
+
+  .studio-wordmark {
+    gap: 8px;
+    font-size: 14px;
+  }
+
+  .studio-model {
+    margin-left: 3px;
+    font-size: 9px;
+    letter-spacing: 1px;
+  }
+
+  .studio-device-state {
+    gap: 6px;
+    font-size: 11px;
+  }
+
+  .studio-home {
+    gap: 19px;
+  }
+
+  .studio-home-heading {
+    display: block;
+    margin: 0 0 3px;
+  }
+
+  .studio-home-heading h1 {
+    margin-top: 6px;
+    font-size: 49px;
+    letter-spacing: -2.5px;
+  }
+
+  .studio-eyebrow {
+    font-size: 9px;
+    letter-spacing: 1.55px;
+  }
+
+  .studio-date {
+    display: block;
+    margin-top: 9px;
+    padding: 0;
+    font-size: 13px;
+    text-align: left;
+  }
+
+  .studio-instrument {
+    padding: 17px 15px 0;
+    border-radius: 19px;
+  }
+
+  .studio-instrument-label {
+    padding-bottom: 14px;
+  }
+
+  .studio-instrument-label > span:first-child {
+    font-size: 14px;
+  }
+
+  .studio-engraved {
+    font-size: 8px;
+    letter-spacing: 1px;
+  }
+
+  .studio-instrument .recorder-timeline {
+    gap: 10px;
+    padding: 11px 10px 10px;
+  }
+
+  .studio-meter-stats {
+    grid-template-columns: 1.5fr 1fr 1fr;
+    margin: 20px 0 19px;
+  }
+
+  .studio-meter-stats > div {
+    padding: 0 10px;
+  }
+
+  .studio-meter-label {
+    gap: 4px;
+    font-size: 10px;
+    white-space: nowrap;
+  }
+
+  .studio-meter-label svg {
+    display: none;
+  }
+
+  .studio-meter-stats strong {
+    font-size: 27px;
+    letter-spacing: -1px;
+  }
+
+  .studio-processing {
+    gap: 13px;
+    padding: 12px 0;
+    font-size: 10px;
+  }
+
+  .studio-processing > span {
+    gap: 5px;
+  }
+
+  .studio-section-heading {
+    margin-top: 5px;
+  }
+
+  .studio-section-heading h2 {
+    font-size: 20px;
+  }
+
+  .studio-section-heading > a {
+    gap: 6px;
+    font-size: 12px;
+  }
+
+  .studio-record-grid {
+    grid-template-columns: 1fr;
+    gap: 13px;
+  }
+
+  .studio-record {
+    padding: 17px 17px 13px;
+    border-radius: 15px;
+  }
+
+  .studio-record h3 {
+    margin-top: 13px;
+    font-size: 21px;
+  }
+
+  .studio-record-meta {
+    gap: 8px;
+    font-size: 11px;
+  }
+
+  .studio-rec-no {
+    font-size: 9px;
+  }
+
+  .studio-record-person {
+    font-size: 12px;
+  }
+
+  .studio-record-audio {
+    gap: 12px;
+    margin: 17px 0 13px;
+  }
+
+  .studio-record-bottom,
+  .studio-record-status {
+    font-size: 10px;
+  }
+
+  .recorder-page-header h1 {
+    font-size: 35px;
+    letter-spacing: -1.1px;
+  }
+
+  .studio-tasks-panel p {
+    font-size: 13px;
+  }
+
+  /* Нижняя панель — отдельный корпус над краем экрана, с запасом под
+   * жестовую полосу iPhone. */
+  .recorder-tabs {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    padding: 9px 5px max(9px, env(safe-area-inset-bottom));
+    border: 1px solid rgb(255 255 255 / 0.07);
+    border-radius: 22px;
+    background: linear-gradient(#383a3b, #242729);
+    box-shadow: inset 0 1px rgb(255 255 255 / 0.07), 0 0 0 3px rgb(19 21 22 / 0.67), 0 8px 24px rgb(0 0 0 / 0.4);
+    backdrop-filter: blur(22px);
+  }
+
+  .recorder-tabs > a,
+  .recorder-tabs > button {
+    gap: 5px;
+    min-height: 48px;
+    border-radius: 14px;
+    font-size: 10px;
+    color: #aaa9a0;
+  }
+
+  .recorder-tabs a[aria-current="page"] {
+    background: linear-gradient(#181c1e, #262a2c);
+    box-shadow: inset 0 2px 5px rgb(0 0 0 / 0.47), 0 1px rgb(255 255 255 / 0.06);
+    color: #e8d3aa;
+  }
+
+  /* Плеер над нижней панелью. */
+  .recorder-player {
+    left: 13px;
+    right: 13px;
+    bottom: calc(100px + env(safe-area-inset-bottom, 0px));
+    gap: 12px;
+    padding: 13px 12px;
+    border-radius: 19px;
+  }
+
+  .recorder-player::before {
+    display: none;
+  }
+
+  .recorder-play-key {
+    width: 43px;
+    height: 43px;
+  }
+
+  .recorder-player-body {
+    gap: 7px;
+  }
+
+  .recorder-player-body > div:first-child {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+    font-size: 12px;
+  }
+
+  .recorder-player-body > div:first-child > span:first-child {
+    max-width: 100%;
+  }
+
+  .recorder-player-body > div:first-child > span:last-child {
+    font-size: 10px;
+  }
+
+  .recorder-player-body .text-\[20px\] {
+    font-size: 19px;
+  }
+
+  .recorder-player-wave {
+    height: 29px;
+  }
+
+  .studio-summary {
+    padding: 19px;
+    font-size: 17px;
+    line-height: 1.65;
+  }
+
+  .recorder-row {
+    padding: 16px;
+  }
+}
+
+@media (min-width: 700px) and (max-width: 1023px) {
+  .studio-record-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .studio-home-heading {
+    display: flex;
+  }
+
+  .studio-date {
+    text-align: right;
+  }
+
+  .studio-meter-stats strong {
+    font-size: 38px;
+  }
+}
+
+/* Уже 390 px — модели на шильдике не хватает места рядом с состоянием
+ * «В ожидании · 37 минут назад»; имя и состояние важнее гравировки. */
+@media (max-width: 389px) {
+  .studio-model {
+    display: none;
+  }
+}
+
+@media (max-width: 360px) {
+  .studio-meter-stats strong {
+    font-size: 24px;
+  }
+
+  .studio-processing {
+    gap: 8px;
+    font-size: 9px;
+  }
+
+  .studio-meter-label {
+    font-size: 9px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-record {
+    transition: none;
+  }
+
+  .studio-record:hover {
+    transform: none;
+  }
+}

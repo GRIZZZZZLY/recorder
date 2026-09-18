@@ -10,6 +10,7 @@ import {
 import type { Icon } from "@phosphor-icons/react";
 import { useApi } from "@/lib/use-api";
 import type { DigestBody } from "@/lib/api";
+import { formatAgo } from "@/lib/format";
 import { isLive, useNow } from "@/lib/use-now";
 import { cx } from "@/utils/cx";
 
@@ -80,7 +81,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
     return null;
   }
 
-  const live = isLive(data?.recent?.[0]?.last_at, now);
+  const lastAt = data?.recent?.[0]?.last_at ?? null;
+  const live = isLive(lastAt, now);
 
   return (
     <div className="flex min-h-dvh">
@@ -93,7 +95,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         К содержимому
       </a>
 
-      <aside className="hidden w-[220px] shrink-0 flex-col gap-0.5 border-r border-hairline px-3 py-5 lg:flex">
+      <aside className="recorder-sidebar hidden w-[220px] shrink-0 flex-col gap-0.5 border-r border-hairline px-3 py-5 lg:flex">
         <div className="flex items-center gap-2.5 px-2.5 pt-1.5 pb-5">
           {/* Тот же светодиод, что на кромке нижней панели, и по тому же
               правилу: в тишине его нет. Место под него не держим — «Диктофон»
@@ -129,17 +131,33 @@ export function Shell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
+        {/* Отступ снизу на телефоне — под плавающую панель разделов и жестовую
+            полосу iPhone: последняя строка длинной страницы должна доезжать
+            до глаз, а не прятаться под панелью. */}
         <main
           id="content"
-          className="mx-auto flex w-full max-w-[1200px] flex-col gap-7 px-4 pt-8 pb-28 sm:px-8 lg:px-12 lg:pt-10 lg:pb-14"
+          className="mx-auto flex w-full max-w-[1250px] flex-col gap-[23px] px-[15px] pt-[23px] pb-[calc(8rem+env(safe-area-inset-bottom))] min-[361px]:px-[21px] sm:px-8 lg:gap-[30px] lg:px-12 lg:pt-[30px] lg:pb-14"
         >
+          {/* Шильдик прибора: имя, модель и состояние диктофона словами. Виден
+              с любой страницы и на телефоне тоже — десктопный aside не считается. */}
+          <div className="studio-brandline">
+            <span className="studio-wordmark">
+              <span className="studio-brand-disc" aria-hidden />
+              Диктофон
+              <span className="studio-model" aria-hidden>STUDIO / 01</span>
+            </span>
+            <Link href="/status/" className="studio-device-state">
+              <span className={cx("studio-led", live && "is-live")} aria-hidden />
+              {live ? "Идёт запись" : lastAt ? `В ожидании · ${formatAgo(lastAt, now)}` : "В ожидании"}
+            </Link>
+          </div>
           {children}
         </main>
       </div>
 
       {/* Нижняя панель телефона. */}
       <nav aria-label="Разделы"
-           className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-hairline bg-surface/90 px-2 pt-2.5 pb-[max(1rem,env(safe-area-inset-bottom))] backdrop-blur-xl lg:hidden">
+           className="recorder-tabs fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-hairline bg-surface/90 px-2 pt-2.5 pb-[max(1rem,env(safe-area-inset-bottom))] backdrop-blur-xl lg:hidden">
         {/* Светодиод записи на кромке панели: виден с любой страницы, пока
             диктофон пишет. В тишине его нет вовсе — точка, которая тлеет
             круглосуточно и ничего не сообщает, это шум. Появление на пустом

@@ -364,11 +364,14 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
         }
       />
 
-      <div className="grid items-start gap-6 lg:grid-cols-[1fr_340px]">
+      {/* Колонка не уже нуля: иначе длинная тема или цитата раздвигает сетку
+          и страница уезжает вбок. */}
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
         <div className="flex min-w-0 flex-col gap-6">
           {data.summary ? (
             <>
-              <p className="enter text-[17px] leading-normal text-text-primary" style={at(1)}>{data.summary.summary}</p>
+              {/* Табличка «Главное из разговора»: оформление в styles/studio.css. */}
+              <p className="studio-summary enter" style={at(1)}>{data.summary.summary}</p>
               {data.summary.topics.length > 0 && (
                 <div className="enter flex flex-wrap gap-2" style={at(2)}>
                   {data.summary.topics.map((item) => (
@@ -451,7 +454,7 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
             : <Transcript timeline={data.timeline} marked={marked} />}
         </div>
 
-        <div className="flex flex-col gap-6">
+        <div className="flex min-w-0 flex-col gap-6">
           <SpeakersForm key={JSON.stringify(data.speakers)} deviceId={data.device_id}
                         session={data.session} speakers={data.speakers} onSaved={reload} />
           <RecordedOn deviceId={data.device_id} session={data.session} day={data.day.slice(0, 10)}
@@ -519,7 +522,7 @@ function Body() {
   if (loading || !data) return <Loading />;
 
   return (
-    <PlayerProvider deviceId={data.device_id} session={data.session} parts={data.parts.length}
+    <PlayerProvider deviceId={data.device_id} session={data.session} parts={data.parts.map((p) => p.part)}
                     marks={data.marks}
                     envelopes={Object.fromEntries(data.parts.map((p) => [p.part, p.envelope]))}>
       <Content data={data} reload={reload} />

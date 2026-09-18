@@ -171,11 +171,12 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
     return () => observer.disconnect();
   }, []);
 
-  // При открытии и при смене дня головка встаёт на осмысленное место: сегодня
-  // это «сейчас», в прошлом дне — первая запись, в пустом — середина рабочего дня.
+  // При открытии и при смене дня головка встаёт на последнюю запись дня — за
+  // ней обычно и приходят. В дне без записей: сегодня — «сейчас», в прошлом —
+  // середина рабочего дня. dayRows отсортированы по началу, последняя — свежая.
   useEffect(() => {
-    const first = dayRows.length ? Math.min(...dayRows.map((row) => startSeconds(row)!)) : null;
-    center(day === today ? nowSeconds : first ?? 12 * 3600);
+    const latest = dayRows.length ? startSeconds(dayRows[dayRows.length - 1])! : null;
+    center(latest ?? (day === today ? nowSeconds : 12 * 3600));
     sync();
     // nowSeconds меняется каждую минуту — перематывать плёнку из-за этого нельзя,
     // поэтому его в зависимостях нет намеренно. pad — есть: до первого замера
@@ -254,7 +255,7 @@ export function DayTimeline({ rows, now, at: tick = 0 }: {
   const awayFromNow = day !== today || Math.abs(head - nowSeconds) > 1800;
 
   return (
-    <div className="enter flex flex-col gap-2.5 rounded-card bg-surface px-5 pt-4 pb-3.5 shadow-plate" style={at(tick)}>
+    <div className="recorder-timeline enter flex flex-col gap-2.5 rounded-card bg-surface px-5 pt-4 pb-3.5 shadow-plate" style={at(tick)}>
       <div className="flex items-center justify-between gap-3 text-note text-text-secondary">
         <div className="flex items-center gap-1">
           <button type="button" aria-label="Предыдущий день" disabled={index <= 0}
