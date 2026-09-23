@@ -34,7 +34,11 @@
 
 namespace upl {
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
-constexpr uint32_t HANDSHAKE_TIMEOUT_MS = 15000;
+// В СЕКУНДАХ: NetworkClientSecure::setHandshakeTimeout сам умножает на 1000
+// (arduino-esp32 3.3.11). Прежние 15000 давали 4 ч 10 мин блокировки loop().
+// 5 с соединения плюс 15 с рукопожатия короче предзаписи (32,8 с): REC,
+// нажатый в это время, ждёт, но звук с момента нажатия уже лежит в буфере.
+constexpr unsigned long HANDSHAKE_TIMEOUT_S = 15;
 constexpr uint32_t SOCKET_TIMEOUT_MS = 5000;   // одна операция записи в сокет
 constexpr uint32_t REPLY_TIMEOUT_MS = 30000;
 constexpr uint32_t EMPTY_QUEUE_RECHECK_MS = 60UL * 60UL * 1000UL;
@@ -296,7 +300,7 @@ SendResult openConnection() {
 
   g_client.stop();
   g_client.setCACert(ISRG_ROOT_X1);
-  g_client.setHandshakeTimeout(upl::HANDSHAKE_TIMEOUT_MS);
+  g_client.setHandshakeTimeout(upl::HANDSHAKE_TIMEOUT_S);
   // Рукопожатие блокирует loop() на секунду-две: буфер это переживает,
   // задача захвата не останавливается.
   if (!g_client.connect(g_upHost, g_upPort, upl::SOCKET_TIMEOUT_MS)) {
@@ -432,7 +436,11 @@ SendResult classifyReply() {
   char buf[16];
   snprintf(buf, sizeof(buf), "%08lx", static_cast<unsigned long>(g_upCrc));
   const bool crcEchoed = body.indexOf(String("\"crc32\":\"") + buf + "\"") >= 0;
-  const bool sizeEchoed = body.indexOf("\"bytes\":" + String(static_cast<unsigned long>(g_upSize))) >= 0;
+  // Число целиком: "bytes":32044 без этой проверки нашлось бы и в "bytes":320440.
+  const String sizeKey = "\"bytes\":" + String(static_cast<unsigned long>(g_upSize));
+  const int sizeAt = body.indexOf(sizeKey);
+  const unsigned int sizeEnd = static_cast<unsigned int>(sizeAt) + sizeKey.length();
+  const bool sizeEchoed = sizeAt >= 0 && (sizeEnd >= body.length() || !isDigit(body[sizeEnd]));
   if (!crcEchoed || !sizeEchoed) {
     Serial.printf("[up] Сервер подтвердил не то: %s\n", body.c_str());
     return SEND_RETRY;
