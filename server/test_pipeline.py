@@ -858,6 +858,27 @@ def test_one_voice_is_marked_as_a_note_for_the_model(env, monkeypatch):
     assert "один голос" not in talk, "разговор двоих объявлен заметкой"
 
 
+def test_one_number_in_every_part_is_not_one_voice(env, monkeypatch):
+    """Номера говорящих у каждой части свои: «Говорящий 1» первой части и
+    «Говорящий 1» второй могут быть двумя людьми. Один голос доказывает
+    только одно имя, которое дал владелец."""
+    upload(env, session=13, part=1)
+    upload(env, session=13, part=2, marker=1)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, {
+        1: [(1.0, 0, "Я рассказываю про смету.")],
+        2: [(1.0, 0, "А я — про договор.")],
+    }))
+    summary_stub(env, monkeypatch)
+    run_all(env)
+
+    with closing(env.db.connect()) as conn:
+        assert "один голос" not in env.db.session_transcript(conn, "xiao-01", 13)
+        for part in (1, 2):
+            env.db.set_speaker(conn, "xiao-01", 13, part, 0, "Игорь", True)
+        conn.commit()
+        assert "[во всей записи один голос]" in env.db.session_transcript(conn, "xiao-01", 13)
+
+
 def test_my_tasks_come_from_speaker_marked_as_me(env, monkeypatch):
     upload(env)
     monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))

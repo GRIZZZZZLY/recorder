@@ -100,6 +100,53 @@ def test_same_part_with_different_audio_is_rejected_not_overwritten(client):
     assert stored.read_bytes() == original
 
 
+def test_parallel_uploads_of_one_part_do_not_touch_the_accepted_file(client):
+    """Повтор диктофона может прийти, пока сервер ещё принимает прошлую
+    попытку той же части. Опоздавший запрос не должен дописать уже принятый
+    и подтверждённый файл."""
+    import asyncio
+    import httpx
+    import app as app_module
+
+    first, second = wav(marker=1), wav(marker=2)
+    half = len(first) // 2
+
+    async def run():
+        first_half_in, second_half_in, first_done = (asyncio.Event() for _ in range(3))
+
+        async def body_first():
+            yield first[:half]
+            first_half_in.set()
+            await second_half_in.wait()
+            yield first[half:]
+
+        async def body_second():
+            await first_half_in.wait()
+            yield second[:half]
+            second_half_in.set()
+            await first_done.wait()
+            yield second[half:]
+
+        transport = httpx.ASGITransport(app=app_module.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as http:
+            async def send(body, data):
+                sent = headers(data) | {"Content-Length": str(len(data))}
+                return await http.post("/api/v1/upload", content=body(), headers=sent)
+
+            async def send_first():
+                try:
+                    return await send(body_first, first)
+                finally:
+                    first_done.set()
+
+            return await asyncio.gather(send_first(), send(body_second, second))
+
+    accepted, late = asyncio.run(run())
+    assert (accepted.status_code, late.status_code) == (201, 409)
+    assert (client.audio_dir / "xiao-01_S0007_P01.wav").read_bytes() == first
+    assert list(client.audio_dir.glob("*.part")) == []
+
+
 def test_wrong_crc_is_rejected_and_leaves_nothing_behind(client):
     body = wav()
     response = client.post(

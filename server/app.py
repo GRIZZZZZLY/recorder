@@ -6,6 +6,7 @@
 """
 import os
 import re
+import uuid
 import zlib
 from contextlib import asynccontextmanager, closing
 
@@ -132,80 +133,86 @@ async def upload(
     final_path = AUDIO_DIR / name
     # Пишем во временный файл: незавершённая загрузка не должна выглядеть как
     # готовый файл, ровно по той же причине, что и .TMP на карте диктофона.
-    tmp_path = final_path.with_suffix(".part")
-
-    received = 0
-    crc = 0
+    # Имя своё у каждого запроса: повтор диктофона может прийти, пока сервер
+    # ещё принимает прошлую попытку той же части, и общий .part дал бы
+    # опоздавшему дописать уже принятый и подтверждённый WAV.
+    tmp_path = final_path.with_name(f"{final_path.stem}.{uuid.uuid4().hex}.part")
     try:
-        with open(tmp_path, "wb") as handle:
+        received = 0
+        crc = 0
+        with open(tmp_path, "xb") as handle:
             async for chunk in request.stream():
                 received += len(chunk)
                 if received > declared:
                     raise HTTPException(400, "тело длиннее Content-Length")
                 crc = zlib.crc32(chunk, crc)
                 handle.write(chunk)
-    except HTTPException:
-        tmp_path.unlink(missing_ok=True)
-        raise
+            # Подтверждение диктофону разрешает ему со временем стереть часть с
+            # карты, поэтому до ответа байты обязаны лежать на диске, а не в кэше.
+            handle.flush()
+            os.fsync(handle.fileno())
 
-    actual_crc = f"{crc & 0xFFFFFFFF:08x}"
+        actual_crc = f"{crc & 0xFFFFFFFF:08x}"
 
-    if received != declared:
-        tmp_path.unlink(missing_ok=True)
-        raise HTTPException(400, f"получено {received} байт вместо {declared}")
-    if actual_crc != x_crc32:
-        tmp_path.unlink(missing_ok=True)
-        raise HTTPException(422, f"CRC не совпал: {actual_crc} вместо {x_crc32}")
+        if received != declared:
+            raise HTTPException(400, f"получено {received} байт вместо {declared}")
+        if actual_crc != x_crc32:
+            raise HTTPException(422, f"CRC не совпал: {actual_crc} вместо {x_crc32}")
 
-    body = {
-        "session": session,
-        "part": part,
-        "bytes": received,
-        "crc32": actual_crc,
-    }
+        body = {
+            "session": session,
+            "part": part,
+            "bytes": received,
+            "crc32": actual_crc,
+        }
 
-    with closing(connect()) as conn:
-        row = conn.execute(
-            "SELECT bytes, crc32 FROM parts WHERE device_id=? AND session=? AND part=?",
-            (x_device_id, session, part),
-        ).fetchone()
+        # Проверка и публикация идут без await: в одном процессе uvicorn другой
+        # запрос той же части не вклинится между SELECT и replace.
+        with closing(connect()) as conn:
+            row = conn.execute(
+                "SELECT bytes, crc32 FROM parts WHERE device_id=? AND session=? AND part=?",
+                (x_device_id, session, part),
+            ).fetchone()
 
-        if row is not None:
-            tmp_path.unlink(missing_ok=True)
-            if row["bytes"] == received and row["crc32"] == actual_crc:
-                # Тот же файл пришёл ещё раз: подтверждаем, аудио не трогаем.
-                # Метки пишем и здесь: повтор идемпотентен, а первая попытка
-                # могла оборваться после записи файла, но до их сохранения.
-                save_marks(conn, x_device_id, session, part, marks)
-                set_device_state(conn, x_device_id, battery, firmware)
-                conn.commit()
-                return JSONResponse({"status": "duplicate", **body}, status_code=200)
-            # Уже принятое аудио не перезаписываем молча.
-            raise HTTPException(
-                409,
-                f"часть уже принята с другими данными: "
-                f"{row['bytes']} байт, crc {row['crc32']}",
+            if row is not None:
+                if row["bytes"] == received and row["crc32"] == actual_crc:
+                    # Тот же файл пришёл ещё раз: подтверждаем, аудио не трогаем.
+                    # Метки пишем и здесь: повтор идемпотентен, а первая попытка
+                    # могла оборваться после записи файла, но до их сохранения.
+                    save_marks(conn, x_device_id, session, part, marks)
+                    set_device_state(conn, x_device_id, battery, firmware)
+                    conn.commit()
+                    return JSONResponse({"status": "duplicate", **body}, status_code=200)
+                # Уже принятое аудио не перезаписываем молча.
+                raise HTTPException(
+                    409,
+                    f"часть уже принята с другими данными: "
+                    f"{row['bytes']} байт, crc {row['crc32']}",
+                )
+
+            tmp_path.replace(final_path)
+            # Формат — из заголовка самого файла: у моно с XIAO Sense секунда весит
+            # 32 000 байт, у стерео с Recorder RevA 64 000. Шкала времени и волна
+            # считаются из размера, поэтому множитель обязан быть свой у каждой
+            # части. None (заголовок не прочитался) означает «считать как моно».
+            bps = wavfmt.bytes_per_second(final_path)
+            conn.execute(
+                "INSERT INTO parts (device_id, session, part, bytes, crc32, recovered,"
+                " audio_path, expected_parts, bytes_per_second) VALUES (?,?,?,?,?,?,?,?,?)",
+                (x_device_id, session, part, received, actual_crc, recovered,
+                 str(final_path), expected_parts, bps),
             )
+            save_marks(conn, x_device_id, session, part, marks)
+            set_device_state(conn, x_device_id, battery, firmware)
+            # Огибающая считается сразу: файл уже на диске и ещё горячий в кэше.
+            envelope.store(conn, x_device_id, session, part, final_path, bps)
+            conn.commit()
 
-        tmp_path.replace(final_path)
-        # Формат — из заголовка самого файла: у моно с XIAO Sense секунда весит
-        # 32 000 байт, у стерео с Recorder RevA 64 000. Шкала времени и волна
-        # считаются из размера, поэтому множитель обязан быть свой у каждой
-        # части. None (заголовок не прочитался) означает «считать как моно».
-        bps = wavfmt.bytes_per_second(final_path)
-        conn.execute(
-            "INSERT INTO parts (device_id, session, part, bytes, crc32, recovered,"
-            " audio_path, expected_parts, bytes_per_second) VALUES (?,?,?,?,?,?,?,?,?)",
-            (x_device_id, session, part, received, actual_crc, recovered,
-             str(final_path), expected_parts, bps),
-        )
-        save_marks(conn, x_device_id, session, part, marks)
-        set_device_state(conn, x_device_id, battery, firmware)
-        # Огибающая считается сразу: файл уже на диске и ещё горячий в кэше.
-        envelope.store(conn, x_device_id, session, part, final_path, bps)
-        conn.commit()
-
-    return JSONResponse({"status": "stored", **body}, status_code=201)
+        return JSONResponse({"status": "stored", **body}, status_code=201)
+    finally:
+        # После публикации файла здесь уже нечего удалять. На обрыве связи
+        # (ClientDisconnect), отказе и любой ошибке хвост не остаётся.
+        tmp_path.unlink(missing_ok=True)
 
 
 @app.get("/api/v1/sessions")

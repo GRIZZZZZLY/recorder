@@ -184,6 +184,18 @@ def test_crash_between_database_and_delete_leaves_a_wav_that_the_sweep_removes(e
     assert not wav_path.exists() and flac_path.exists()
 
 
+def test_wav_is_not_swept_when_its_flac_is_missing(env):
+    """База говорит «FLAC готов», а на диске только WAV (например, после
+    неполного восстановления копии). Этот WAV — последняя копия звука."""
+    upload(env)
+    mark_transcribed(env)
+    wav_path = Path(part_row(env)["audio_path"])
+    with closing(env.db.connect()) as conn:
+        env.db.finish_archive(conn, ("xiao-01", 7, 1), wav_path.with_suffix(".flac"))
+        assert env.db.stale_wavs(conn) == []
+    assert wav_path.exists()
+
+
 def test_temporary_failure_is_retried_and_audio_stays_in_wav(env, monkeypatch):
     def boom(_path):
         raise env.archive.ArchiveError("не найден ffmpeg", retryable=True)

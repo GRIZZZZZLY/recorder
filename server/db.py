@@ -428,15 +428,18 @@ def fail_archive(conn, key, error, retry_in_minutes):
 def stale_wavs(conn):
     """WAV, оставшиеся после краха между записью пути в базу и удалением файла.
 
-    Их держит только упавший процесс: в базе уже лежит проверенный FLAC."""
+    Их держит только упавший процесс: в базе уже лежит проверенный FLAC.
+    Если FLAC на диске нет (база и файлы разошлись), WAV — последняя копия
+    звука и в список не попадает: плеер его найдёт через audio_file."""
     rows = conn.execute(
         "SELECT audio_path FROM parts WHERE archive_status='done'"
         " AND audio_path LIKE '%.flac'"
     ).fetchall()
     leftovers = []
     for row in rows:
-        wav = Path(row["audio_path"]).with_suffix(".wav")
-        if wav.exists():
+        flac = Path(row["audio_path"])
+        wav = flac.with_suffix(".wav")
+        if wav.exists() and flac.is_file() and flac.stat().st_size > 0:
             leftovers.append(wav)
     return leftovers
 
@@ -639,10 +642,15 @@ def session_transcript(conn, device_id, session):
     marks = session_marks(conn, device_id, session)
     parts = sorted({u["part"] for u in timeline} | set(failed))
     blocks = []
-    if len({u["label"] for u in timeline}) == 1:
-        # Один голос на всю запись — это заметка вслух, а не разговор, и разбор
-        # у неё другой. Считаем по данным: номер говорящего у каждой реплики
-        # модель видит и сама, но вывод из него делает не всегда.
+    # Один голос на всю запись — это заметка вслух, а не разговор, и разбор
+    # у неё другой. Считаем по данным: номер говорящего у каждой реплики
+    # модель видит и сама, но вывод из него делает не всегда. Номер живёт
+    # внутри своей части, поэтому голос — это имя от владельца или пара
+    # (часть, номер): «Говорящий 1» двух частей может быть двумя людьми.
+    names = speaker_names(conn, device_id, session)
+    voices = {(names.get((u["part"], u["speaker"])) or {}).get("name")
+              or (u["part"], u["speaker"]) for u in timeline}
+    if len(voices) == 1 and all(u["speaker"] is not None for u in timeline):
         blocks.append("[во всей записи один голос]")
     if len(parts) > 1:
         # Каждая часть распознавалась отдельно, поэтому номера говорящих в
