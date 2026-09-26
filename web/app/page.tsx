@@ -120,15 +120,23 @@ export default function DigestPage() {
           </div>
         ) : null}
 
-        <div className="studio-processing">
-          <span className={cx(queue && "pending")}>
-            <i aria-hidden />Расшифровка · {queue ? `${count(queue, "часть", "части", "частей")} в очереди` : "готово"}
-          </span>
-          <span className={cx(waiting && "pending")}>
-            <i aria-hidden />Саммари · {waiting ? count(waiting, "ждёт", "ждут", "ждут") : "готово"}
-          </span>
-          <Link href="/status/" aria-label="Состояние обработки"><ArrowRight size={16} aria-hidden /></Link>
-        </div>
+        {/* Лампы обработки горят, только пока есть работа: «Расшифровка ·
+            готово» — отчёт о том, что всё в порядке, а его не показываем. */}
+        {queue || waiting ? (
+          <div className="studio-processing">
+            {queue ? (
+              <span className="pending">
+                <i aria-hidden />Расшифровка · {count(queue, "часть", "части", "частей")} в очереди
+              </span>
+            ) : null}
+            {waiting ? (
+              <span className="pending">
+                <i aria-hidden />Саммари · {count(waiting, "ждёт", "ждут", "ждут")}
+              </span>
+            ) : null}
+            <Link href="/status/" aria-label="Состояние обработки"><ArrowRight size={16} aria-hidden /></Link>
+          </div>
+        ) : null}
       </section>
 
       <div className="studio-section-heading">

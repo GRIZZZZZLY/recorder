@@ -81,7 +81,7 @@ def sessions(_=Depends(owner)):
 def session_detail(device_id: str, session: int, _=Depends(owner)):
     with closing(db.connect()) as conn:
         parts = conn.execute(
-            "SELECT p.part, p.recovered, p.received_at, p.envelope,"
+            "SELECT p.part, p.recovered, p.received_at, p.envelope, p.bytes, p.bytes_per_second,"
             "       t.status AS transcript_status, t.last_error"
             " FROM parts p LEFT JOIN transcripts t"
             "   ON t.device_id=p.device_id AND t.session=p.session AND t.part=p.part"
@@ -95,6 +95,9 @@ def session_detail(device_id: str, session: int, _=Depends(owner)):
             "SELECT result, status, last_error FROM summaries"
             " WHERE device_id=? AND session=?", (device_id, session)).fetchone()
         timeline, failed = db.session_timeline(conn, device_id, session)
+        # Та же шкала, что у реплик: плеер показывает время разговора, а не
+        # части, и сам переходит на следующую часть.
+        offsets = db.part_offsets(conn, device_id, session)
         marks = db.session_marks(conn, device_id, session)
         names = db.speaker_names(conn, device_id, session)
         # Номер говорящего живёт внутри своей части: части уходят в Deepgram
@@ -119,7 +122,9 @@ def session_detail(device_id: str, session: int, _=Depends(owner)):
         "first_at": min(p["received_at"] for p in parts),
         # Огибающая части — волна в плеере. Не посчитана (старая часть или
         # нечитаемый файл) — пустой список, плеер нарисует ровную линию.
-        "parts": [{**dict(p), "envelope": json.loads(p["envelope"]) if p["envelope"] else []}
+        "parts": [{**dict(p), "envelope": json.loads(p["envelope"]) if p["envelope"] else [],
+                   "offset": offsets[p["part"]],
+                   "seconds": db.part_seconds(p["bytes"], p["bytes_per_second"])}
                   for p in parts],
         "failed_parts": failed,
         "summary": summary,

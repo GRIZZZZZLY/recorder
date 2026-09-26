@@ -188,6 +188,18 @@ def test_session_detail_carries_timeline_summary_and_tasks(env, monkeypatch):
                                 {"part": 1, "speaker": 1, "name": "", "is_me": False}]
 
 
+def test_session_detail_places_each_part_on_the_session_scale(env, monkeypatch):
+    """Плеер показывает время разговора и сам переходит на следующую часть:
+    ему нужны смещение и длина каждой части на той же шкале, что у реплик."""
+    upload(env, part=1)
+    upload(env, part=2, marker=1)
+    with TestClient(env.app) as client:
+        parts = client.get("/api/ui/sessions/xiao-01/7", auth=AUTH).json()["parts"]
+    assert parts[0]["offset"] == 0
+    assert parts[0]["seconds"] > 0
+    assert parts[1]["offset"] == pytest.approx(parts[0]["seconds"])
+
+
 def test_marks_land_on_session_scale_with_nearest_reply(env, monkeypatch):
     """Метка кнопкой: абсолютное время сессии и реплика, прозвучавшая до неё."""
     upload(env, part=1, marks=[5.5])

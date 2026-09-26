@@ -273,6 +273,18 @@ textarea {
   caret-color: var(--color-accent);
 }
 
+/* Фокус с клавиатуры и переход по якорю не прячутся под нижней панелью и
+ * плеером (WCAG 2.4.11): браузер докручивает так, чтобы элемент встал выше
+ * них. Высоты по замеру: панель 82 px, панель с плеером 209 px на телефоне,
+ * плеер 126 px на десктопе — с запасом. */
+@media (width < 64rem) {
+  html { scroll-padding-bottom: 6rem; }
+  html:has(.recorder-player) { scroll-padding-bottom: 14rem; }
+}
+@media (width >= 64rem) {
+  html:has(.recorder-player) { scroll-padding-bottom: 9rem; }
+}
+
 /* Safari на iPhone увеличивает страницу, когда фокус получает поле мельче
  * 16 px, и назад сам не возвращает. Под пальцем поля пишутся 16 px; правило
  * вне слоёв, поэтому сильнее утилит вроде `text-row`. Мышь остаётся при

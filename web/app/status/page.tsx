@@ -142,7 +142,11 @@ export default function StatusPage() {
                 <span className="shrink-0 font-mono text-note text-text-secondary">
                   часть {String(row.part).padStart(2, "0")}
                 </span>
-                <span className="min-w-0 flex-1 truncate font-mono text-note text-text-secondary">
+                {/* Причина — то, ради чего строка есть. На телефоне она уходит
+                    отдельной строкой целиком: рядом с номером, попытками и
+                    «Повторить» ей оставалось 6 px и одна буква. */}
+                <span className="min-w-0 flex-1 truncate font-mono text-note text-text-secondary max-md:order-last max-md:basis-full max-md:whitespace-normal max-md:break-words"
+                      title={row.last_error}>
                   {row.last_error}
                 </span>
                 <span className="shrink-0 text-note text-text-tertiary">
@@ -163,7 +167,11 @@ export default function StatusPage() {
               <Row key={row.session} className="flex-wrap gap-y-2">
                 <Dot tone="accent" />
                 <SessionNo session={row.session} />
-                <span className="min-w-0 flex-1 truncate font-mono text-note text-text-secondary">
+                {/* Причина — то, ради чего строка есть. На телефоне она уходит
+                    отдельной строкой целиком: рядом с номером, попытками и
+                    «Повторить» ей оставалось 6 px и одна буква. */}
+                <span className="min-w-0 flex-1 truncate font-mono text-note text-text-secondary max-md:order-last max-md:basis-full max-md:whitespace-normal max-md:break-words"
+                      title={row.last_error}>
                   {row.last_error}
                 </span>
                 <span className="shrink-0 text-note text-text-tertiary">попыток {row.attempts}</span>

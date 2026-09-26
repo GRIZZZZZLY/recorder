@@ -25,6 +25,9 @@ type Part = {
   last_error: string | null;
   /** Громкость части: считается сервером из файла при приёме. */
   envelope: number[];
+  /** Начало части в разговоре и её длина, секунды — для часов плеера. */
+  offset: number;
+  seconds: number;
 };
 
 type Detail = {
@@ -526,9 +529,8 @@ function Body() {
   if (loading || !data) return <Loading />;
 
   return (
-    <PlayerProvider deviceId={data.device_id} session={data.session} parts={data.parts.map((p) => p.part)}
-                    marks={data.marks}
-                    envelopes={Object.fromEntries(data.parts.map((p) => [p.part, p.envelope]))}>
+    <PlayerProvider deviceId={data.device_id} session={data.session} parts={data.parts}
+                    marks={data.marks}>
       <Content data={data} reload={reload} />
     </PlayerProvider>
   );

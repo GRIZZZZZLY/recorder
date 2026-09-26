@@ -15,7 +15,8 @@ export function PageHeader({ back, title, aside }: {
     <header className="recorder-page-header flex flex-col gap-2.5">
       {back ? (
         <div className="flex items-center gap-2 text-note text-text-secondary">
-          <Link href={back.href} className="press inline-flex items-center gap-1 hover:text-text-primary">
+          {/* На телефоне с домашнего экрана это единственный путь назад: цель 44 px (`hit`). */}
+          <Link href={back.href} className="press hit relative inline-flex items-center gap-1 hover:text-text-primary">
             <CaretLeft size={14} aria-hidden className="lg:hidden" />
             {back.title}
           </Link>

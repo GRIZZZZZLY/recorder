@@ -40,20 +40,29 @@ const RATE_KEY = "recorder.rate";
  * звучащую реплику и едет за ней. Контекстов два, а не один: `useSeek` меняется
  * редко, а положение — четыре раза в секунду, и подписчикам нужно разное.
  */
-export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes = {}, children }: {
+/** Часть, которую сервер принял: только у неё есть файл. */
+export type PlayerPart = {
+  part: number;
+  /** Где часть начинается в разговоре, секунды — та же шкала, что у реплик. */
+  offset: number;
+  /** Длина части по размеру файла. */
+  seconds: number;
+  /** Громкость: волна плеера рисует ту часть, что играет. */
+  envelope: number[];
+};
+
+export function PlayerProvider({ deviceId, session, parts, marks = [], children }: {
   deviceId: string;
   session: number;
-  /** Номера частей, которые сервер принял: только у них есть файл. */
-  parts: number[];
+  /** По возрастанию номера, как отдаёт сервер. */
+  parts: PlayerPart[];
   /** Метки кнопкой: засечки на волне той части, которая сейчас открыта. */
   marks?: Mark[];
-  /** Громкость по номеру части: волна плеера рисует ту, что играет. */
-  envelopes?: Record<number, number[]>;
   children: React.ReactNode;
 }) {
   // Play без выбранной реплики играет с начала первой принятой части — не
   // «части 1», которой могло не дойти, а той, что действительно лежит на сервере.
-  const first = parts.length ? Math.min(...parts) : null;
+  const first = parts.length ? parts[0].part : null;
   const audio = useRef<HTMLAudioElement>(null);
   // Слушатель loadedmetadata предыдущей, ещё не догрузившейся части —
   // при быстром переключении отменяем его, иначе сработают все подряд.
@@ -168,6 +177,19 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
   }
 
   const idle = part === null;
+  const current = parts.find((item) => item.part === (part ?? first));
+  // Показание — время разговора, а не части: иначе «00:00:03» в плеере при
+  // «00:00:42» у реплики, которую только что нажали. Волна и перемотка пока
+  // остаются в пределах части.
+  const total = Math.max(0, ...parts.map((item) => item.offset + item.seconds));
+
+  // Конец части — не конец разговора: следующая часть начинается сама, иначе
+  // совещание замолкало бы на каждом стыке файлов.
+  function onEnded() {
+    const next = parts.find((item) => part !== null && item.part > part);
+    if (next) seek(next.part, 0);
+    else setPlaying(false);
+  }
 
   return (
     <SeekContext.Provider value={value}>
@@ -217,9 +239,9 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
                     {/* Показание прибора: одно крупное число — где сейчас звук.
                         Общая длительность и номер части мелко, на той же базовой линии. */}
                     <span className="font-mono text-[20px] leading-none text-text-primary lg:text-[22px]">
-                      {formatClock(position)}
+                      {formatClock((current?.offset ?? 0) + position)}
                     </span>
-                    <span className="font-mono">/ {formatClock(duration)}</span>
+                    <span className="font-mono">/ {formatClock(total || duration)}</span>
                     {parts.length > 1 && (
                       <span className="hidden sm:inline">
                         · {String(part).padStart(2, "0")} / {String(parts.length).padStart(2, "0")}
@@ -243,7 +265,7 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
               {/* Пока ничего не выбрано, в нише лежит волна той части, которую
                   запустит Play: дисплей показывает, что будет звучать. */}
               <Waveform
-                values={envelopes[part ?? first ?? 0] ?? []}
+                values={current?.envelope ?? []}
                 height={idle ? 12 : 28}
                 played={duration ? position / duration : 0}
                 className="w-full"
@@ -285,7 +307,7 @@ export function PlayerProvider({ deviceId, session, parts, marks = [], envelopes
             preload="metadata"
             onPlay={() => { setPlaying(true); setBlocked(false); }}
             onPause={() => setPlaying(false)}
-            onEnded={() => setPlaying(false)}
+            onEnded={onEnded}
             onLoadedMetadata={(event) => setDuration(event.currentTarget.duration || 0)}
             onTimeUpdate={(event) => { if (!scrubbing.current) setPosition(event.currentTarget.currentTime); }}
           />
