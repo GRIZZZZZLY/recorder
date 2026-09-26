@@ -86,7 +86,7 @@ function QuestionRow({ question, onChanged }: { question: Question; onChanged: (
             type="button"
             disabled={busy}
             onClick={() => change(action.state, action.title)}
-            className="press rounded-sm hover:text-text-primary disabled:opacity-40"
+            className="press hit relative rounded-sm hover:text-text-primary disabled:opacity-40"
           >
             {action.title}
           </button>

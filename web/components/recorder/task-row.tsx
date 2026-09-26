@@ -104,7 +104,7 @@ export function TaskRow({ task, onChanged }: { task: Task; onChanged: () => void
             type="button"
             disabled={busy}
             onClick={() => change(action.status, action.title)}
-            className="press rounded-sm hover:text-text-primary disabled:opacity-40"
+            className="press hit relative rounded-sm hover:text-text-primary disabled:opacity-40"
           >
             {action.title}
           </button>
