@@ -187,7 +187,9 @@ export function Segmented<T extends string>({ value, options, onChange, label }:
             )}
           >
             {option.title}
-            {option.count !== undefined && (
+            {/* Ноль не показываем: «Мои 0» ничего не сообщает, а место на
+                телефоне съедает — четвёртый сегмент уезжал на вторую строку. */}
+            {option.count !== undefined && option.count > 0 && (
               <span className={cx(
                 "ml-1.5",
                 option.alarm && option.count > 0 ? "text-accent-text"
@@ -246,8 +248,24 @@ export function SourceDot({ source }: { source: { confirmed: boolean } | null })
   return <Dot tone="warn" title="источник не подтверждён" />;
 }
 
+/**
+ * Та же пометка словами, строкой под текстом пункта. Цвет точки на телефоне
+ * без подсказки не читается, а неподтверждённый вывод обязан быть помечен
+ * так, чтобы это видел и собеседник у экрана. Подтверждённый молчит: «всё
+ * в порядке» не показываем.
+ */
+export function SourceNote({ source }: { source?: { confirmed: boolean } | null }) {
+  if (source?.confirmed) return null;
+  return (
+    <span className={cx("block text-note", source ? "text-warn" : "text-text-tertiary")}>
+      {source ? "источник не подтверждён" : "источник не найден"}
+    </span>
+  );
+}
+
+// `hit`: видимая кнопка 30 px, цель для пальца — 44.
 const EVIDENCE =
-  "press group inline-flex shrink-0 items-center gap-1.5 rounded-inner px-2.5 py-1.5 text-note";
+  "press hit relative group inline-flex shrink-0 items-center gap-1.5 rounded-inner px-2.5 py-1.5 text-note";
 
 /**
  * Глиф play: контур и заливка лежат друг на друге, смена — кроссфейд 120 мс,

@@ -113,10 +113,13 @@ function Body() {
                 <RowLink
                   key={`${hit.device_id}-${hit.session}-${hit.part}-${hit.idx}`}
                   href={sessionHref(hit.device_id, hit.session, hit.part, hit.idx)}
-                  className="items-baseline gap-4"
+                  className="flex-wrap items-baseline gap-4 gap-y-1"
                 >
-                  <span className="w-[170px] shrink-0 font-mono text-note text-text-tertiary">
+                  {/* На телефоне подпись — строкой над найденным текстом, с
+                      говорящим: колонка в 170 px оставляла тексту половину. */}
+                  <span className="shrink-0 font-mono text-note text-text-tertiary max-sm:w-full sm:w-[170px]">
                     сессия {String(hit.session).padStart(4, "0")} · {formatClock(hit.start_abs)}
+                    {hit.label ? <span className="font-sans sm:hidden"> · {hit.label}</span> : null}
                   </span>
                   <span className="hidden w-20 shrink-0 truncate text-text-secondary sm:block">
                     {hit.label}

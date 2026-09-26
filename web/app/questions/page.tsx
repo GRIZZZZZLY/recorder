@@ -7,7 +7,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Card, Row, Section } from "@/components/recorder/list";
 import { PageHeader } from "@/components/recorder/page-header";
 import { Empty, Failed, Loading } from "@/components/recorder/states";
-import { EvidenceLink, Segmented, SourceDot } from "@/components/recorder/ui";
+import { EvidenceLink, Segmented, SourceDot, SourceNote } from "@/components/recorder/ui";
 import { apiPost, type Question } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { formatDayShort } from "@/lib/format";
@@ -56,7 +56,10 @@ function QuestionRow({ question, onChanged }: { question: Question; onChanged: (
     <Row className="flex-wrap gap-y-2">
       <SourceDot source={question.source} />
 
-      <span className={cx("min-w-0 flex-1 transition-colors duration-150", closed && "text-text-secondary")}>
+      {/* На телефоне текст занимает всю строку, день — подписью под ним,
+          «основание» и действия — второй строкой. */}
+      <span className={cx("min-w-0 flex-1 transition-colors duration-150 max-md:basis-[calc(100%-1.25rem)]",
+                          closed && "text-text-secondary")}>
         {question.text}
         {MARKS[question.state] ? (
           <span className={cx("ml-2.5 inline-block rounded-chip border border-hairline-strong px-2 py-0.5 text-micro text-text-secondary",
@@ -64,22 +67,29 @@ function QuestionRow({ question, onChanged }: { question: Question; onChanged: (
             {MARKS[question.state]}
           </span>
         ) : null}
+        <span className="block text-note text-text-secondary md:hidden">{formatDayShort(question.day)}</span>
+        <SourceNote source={question.source} />
         {error ? <span className="rise-in block text-note text-accent-text">{error}</span> : null}
       </span>
 
-      <span className="shrink-0 text-note text-text-secondary">{formatDayShort(question.day)}</span>
+      <span className="shrink-0 text-note text-text-secondary max-md:hidden">{formatDayShort(question.day)}</span>
 
+      {/* На телефоне к реплике ведёт «основание»; стрелка нужна там, только
+          когда источника нет и вести больше нечем. */}
       <Link href={sessionHref(question.device_id, question.session)}
-            className="press hit relative hidden shrink-0 text-text-tertiary hover:text-text-primary md:block"
+            className={cx("press hit relative shrink-0 text-text-tertiary hover:text-text-primary max-md:order-last",
+                          question.source ? "hidden md:block" : "block")}
             title="Открыть запись" aria-label="Открыть запись">
         <CaretRight size={14} aria-hidden />
       </Link>
 
-      <EvidenceLink href={question.source
-        ? sessionHref(question.device_id, question.session, question.source.part, question.source.idx)
-        : null} />
+      <span className="shrink-0 max-md:ml-5">
+        <EvidenceLink href={question.source
+          ? sessionHref(question.device_id, question.session, question.source.part, question.source.idx)
+          : null} />
+      </span>
 
-      <span className="flex shrink-0 gap-3 text-note text-text-secondary">
+      <span className="flex shrink-0 gap-3 text-note text-text-secondary max-md:ml-auto">
         {ACTIONS.filter((action) => action.state !== question.state).map((action) => (
           <button
             key={action.state}

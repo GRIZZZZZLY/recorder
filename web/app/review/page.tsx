@@ -43,16 +43,21 @@ export default function ReviewPage() {
                 <Row key={`${item.session}-${index}`} className="flex-wrap items-start gap-y-2">
                   {/* Точка вспыхивает при входе: страница и просит смотреть сюда. */}
                   <span className="pt-1"><SourceDot source={item.source} /></span>
-                  <span className="flex min-w-0 flex-1 flex-col gap-1">
+                  {/* На телефоне текст на всю строку, день и «основание» —
+                      второй строкой: рядом с ними тексту оставалось 71 px. */}
+                  <span className="flex min-w-0 flex-1 flex-col gap-1 max-md:basis-[calc(100%-1.25rem)]">
                     <span>{item.text}</span>
                     <span className="text-note text-text-secondary">{item.detail}</span>
                   </span>
-                  <span className="shrink-0 font-mono text-note text-text-tertiary">
-                    {String(item.session).padStart(4, "0")} · {formatDayShort(item.day)}
+                  {/* День, без номера сессии: номер владельцу ничего не говорит. */}
+                  <span className="shrink-0 text-note text-text-tertiary max-md:ml-5">
+                    {item.day ? formatDayShort(item.day) : null}
                   </span>
-                  <EvidenceLink href={item.source
-                    ? sessionHref(item.device_id, item.session, item.source.part, item.source.idx)
-                    : null} />
+                  <span className="shrink-0 max-md:ml-auto">
+                    <EvidenceLink href={item.source
+                      ? sessionHref(item.device_id, item.session, item.source.part, item.source.idx)
+                      : null} />
+                  </span>
                 </Row>
               ))}
             </Card>

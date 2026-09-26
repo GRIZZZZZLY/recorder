@@ -10,7 +10,7 @@ import { SpeakersForm } from "@/components/recorder/speakers-form";
 import { SummaryList } from "@/components/recorder/summary-list";
 import { TaskRow } from "@/components/recorder/task-row";
 import { Empty, EmptyNote, Failed, Loading } from "@/components/recorder/states";
-import { Dot, Evidence, Retry, SourceDot, Tag } from "@/components/recorder/ui";
+import { Dot, Evidence, Retry, SourceDot, SourceNote, Tag } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import { revealUtterance } from "@/lib/reveal";
 import { apiPost } from "@/lib/api";
@@ -390,16 +390,18 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
                      aside="кнопка на диктофоне во время записи">
               <Card>
                 {data.marks.map((mark) => (
-                  <Row key={`${mark.part}-${mark.offset}`} className="gap-3.5">
+                  // Раскладка на телефоне — как у пунктов саммари (summary-list.tsx).
+                  <Row key={`${mark.part}-${mark.offset}`} className="gap-3.5 max-md:flex-wrap max-md:gap-y-1.5">
                     <BookmarkSimple size={14} weight="fill" aria-hidden className="shrink-0 text-mark" />
                     <Time className="shrink-0">{mark.time}</Time>
-                    <span className="min-w-0 flex-1">
+                    <span className="min-w-0 flex-1 max-md:order-last max-md:basis-full">
                       {mark.text || <span className="text-text-secondary">часть ещё не расшифрована</span>}
                       {mark.label ? (
                         <span className="block text-note text-text-secondary">{mark.label}</span>
                       ) : null}
                     </span>
                     <Evidence
+                      className="max-md:ml-auto"
                       disabled={!mark.source}
                       title={mark.source ? undefined : "реплики в этом месте нет"}
                       onClick={() => {
@@ -429,11 +431,15 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
             <Section note={`Вопросы без ответа · ${openQuestions.length}`}>
               <Card>
                 {openQuestions.map((question) => (
-                  <Row key={question.question_id} className="gap-3.5">
+                  <Row key={question.question_id} className="gap-3.5 max-md:flex-wrap max-md:gap-y-1.5">
                     <Time className="shrink-0">{question.time}</Time>
-                    <span className="min-w-0 flex-1">{question.text}</span>
+                    <span className="min-w-0 flex-1 max-md:order-last max-md:basis-full">
+                      {question.text}
+                      <SourceNote source={question.source} />
+                    </span>
                     <SourceDot source={question.source} />
                     <Evidence
+                      className="max-md:ml-auto"
                       disabled={!question.source}
                       onClick={() => {
                         if (!question.source) return;
