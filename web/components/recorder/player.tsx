@@ -401,7 +401,9 @@ export function PlayerProvider({ deviceId, session, title, parts, marks = [], ch
       return;
     }
     if (event.key === "]" || event.key === "[") {
-      const times = marks.map((mark) => (offsets.get(mark.part) ?? 0) + mark.offset).sort((a, b) => a - b);
+      // К началу реплики с меткой: нажатие кнопки приходится на середину фразы.
+      const times = marks.map((mark) => mark.source ? mark.source.start_abs : (offsets.get(mark.part) ?? 0) + mark.offset)
+        .sort((a, b) => a - b);
       const target = event.key === "]"
         ? times.find((time) => time > shown + 0.5)
         : [...times].reverse().find((time) => time < shown - 1);

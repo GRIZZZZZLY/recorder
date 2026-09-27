@@ -6,10 +6,13 @@ import { useSearchParams } from "next/navigation";
 import { PageHeader } from "@/components/recorder/page-header";
 
 import { Empty, Failed, Loading } from "@/components/recorder/states";
-import { EvidenceLink } from "@/components/recorder/ui";
+import { EvidenceLink, TapeLine } from "@/components/recorder/ui";
+import type { Tape } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { count, formatDay } from "@/lib/format";
 import { sessionHref } from "@/lib/session-link";
+
+type Item = { text: string; time?: string; source?: { part: number; idx: number; start_abs?: number } | null };
 
 type Feed = {
   name: string;
@@ -18,14 +21,15 @@ type Feed = {
     session: number;
     day: string | null;
     summary: string | null;
-    decisions: { text: string }[];
-    tasks: { text: string }[];
-    open_questions: { text: string }[];
+    decisions: Item[];
+    tasks: Item[];
+    open_questions: Item[];
+    /** Плёнка записи: засечки пунктов проекта ставятся на ней. */
+    tape?: Tape | null;
   }[];
 };
 
 /** Колонка выжимки под абзацем: заголовок и до трёх пунктов. */
-type Item = { text: string; time?: string; source?: { part: number; idx: number } | null };
 
 function Column({ title, items, deviceId, session }: {
   title: string;
@@ -86,12 +90,17 @@ function Body() {
               <div className="flex flex-col gap-1 text-note sm:pt-1">
                 <span>{formatDay(item.day)}</span>
                 <Link href={sessionHref(item.device_id, item.session)}
-                      className="press text-text-secondary hover:text-text-primary">
+                      className="press hit relative self-start text-text-secondary hover:text-text-primary">
                   открыть запись
                 </Link>
               </div>
               <div className="flex flex-col gap-3.5 rounded-card bg-surface shadow-plate px-5 py-4.5 text-row">
                 <p className="leading-normal">{item.summary || "саммари ещё не собрано"}</p>
+                {/* Указатель мест: где на записи прозвучали решения, задачи и вопросы. */}
+                <TapeLine tape={item.tape}
+                          at={[...item.decisions, ...item.tasks, ...item.open_questions]
+                            .map((entry) => entry.source?.start_abs)
+                            .filter((value): value is number => value !== undefined)} />
                 {(item.decisions.length || item.tasks.length || item.open_questions.length) ? (
                   <div className="grid gap-4 border-t border-hairline pt-3 text-note sm:grid-cols-3">
                     <Column title="Решения" items={item.decisions} deviceId={item.device_id} session={item.session} />

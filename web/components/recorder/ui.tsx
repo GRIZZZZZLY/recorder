@@ -5,7 +5,8 @@ import Link from "next/link";
 import { Play } from "@phosphor-icons/react/dist/ssr";
 import type { Icon } from "@phosphor-icons/react";
 import { usePlayhead, useSeek } from "@/components/recorder/player";
-import { apiPost } from "@/lib/api";
+import { apiPost, type Tape } from "@/lib/api";
+import { Waveform } from "@/components/recorder/waveform";
 import { formatDayShort, normalizeClock } from "@/lib/format";
 import { revealUtterance } from "@/lib/reveal";
 import { cx } from "@/utils/cx";
@@ -263,6 +264,36 @@ export const ROW_ACTION =
 /** Второе действие строки («Убрать»): без подложки — видно, но не зовёт. */
 export const ROW_ACTION_QUIET =
   "press hit relative rounded-chip px-2 py-1.5 text-note text-text-tertiary hover:text-text-primary disabled:opacity-40";
+
+/**
+ * Место пункта на плёнке его записи: утопленная ниша с настоящей волной и
+ * засечкой-головкой там, где пункт прозвучал — та же головка, что на ленте
+ * дня. Рядом — время-кнопка основания. Волна и время измерены, не декор:
+ * задача, вопрос, спорное место — это место на записи, а не строка списка дел.
+ */
+export function TapeLine({ tape, at, children }: {
+  tape?: Tape | null;
+  /** Секунды разговора: одна засечка или несколько (все пункты записи). */
+  at?: number | number[];
+  children?: React.ReactNode;
+}) {
+  const ticks = (Array.isArray(at) ? at : at === undefined ? [] : [at]).filter(Number.isFinite);
+  if (!tape || !tape.seconds) return children ? <div className="flex">{children}</div> : null;
+  return (
+    <div className="flex items-center gap-2.5">
+      {children}
+      <div aria-hidden className="relative flex h-7 min-w-0 flex-1 items-center rounded-inner bg-well px-1.5 shadow-well">
+        <Waveform values={tape.envelope} height={16} bar={2} gap={1} className="w-full" />
+        {ticks.map((tick, index) => (
+          <span key={index} className="absolute inset-y-1 w-px bg-fill"
+                style={{ left: `calc(0.375rem + (100% - 0.75rem) * ${Math.min(1, Math.max(0, tick / tape.seconds))})` }}>
+            <span className="absolute -top-1 left-1/2 size-1.5 -translate-x-1/2 rounded-chip bg-fill shadow-lens" />
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /** Откуда пункт: тема разговора и день — строкой под текстом. */
 export function SourceOf({ topic, day }: { topic: string | null; day: string | null }) {

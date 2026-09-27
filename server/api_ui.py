@@ -256,6 +256,7 @@ def project(name: str, _=Depends(owner)):
     with closing(db.connect()) as conn:
         found = db.project_sessions(conn)
         canonical = db.canonical_topic(db.alias_map(conn), name)
+        tapes = db.session_tapes(conn)
     items = found.get(canonical) or found.get(name) or []
     return {
         "name": canonical,
@@ -266,6 +267,8 @@ def project(name: str, _=Depends(owner)):
             "decisions": item["result"].get("decisions") or [],
             "tasks": item["result"].get("tasks") or [],
             "open_questions": item["result"].get("open_questions") or [],
+            # Плёнка записи: засечки решений, задач и вопросов — на ней.
+            "tape": tapes.get((item["device_id"], item["session"])),
         } for item in items],
     }
 

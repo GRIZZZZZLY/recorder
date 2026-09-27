@@ -1,13 +1,11 @@
 "use client";
 
 import { Suspense, useState } from "react";
-import Link from "next/link";
-import { CaretRight } from "@phosphor-icons/react/dist/ssr";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Card, Row, Section } from "@/components/recorder/list";
 import { PageHeader } from "@/components/recorder/page-header";
 import { Empty, Failed, Loading } from "@/components/recorder/states";
-import { EvidenceLink, ROW_ACTION, ROW_ACTION_QUIET, Segmented, SourceDot, SourceNote, SourceOf } from "@/components/recorder/ui";
+import { EvidenceLink, ROW_ACTION, ROW_ACTION_QUIET, Segmented, SourceDot, SourceNote, SourceOf, TapeLine } from "@/components/recorder/ui";
 import { apiPost, type Question } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
 import { sessionHref } from "@/lib/session-link";
@@ -52,54 +50,44 @@ function QuestionRow({ question, onChanged }: { question: Question; onChanged: (
   }
 
   return (
-    <Row className="flex-wrap gap-y-2">
-      <SourceDot source={question.source} />
+    <Row className="items-start gap-3">
+      <span className="pt-1.5"><SourceDot source={question.source} /></span>
 
-      {/* На телефоне текст занимает всю строку, день — подписью под ним,
-          «основание» и действия — второй строкой. */}
-      <span className={cx("min-w-0 flex-1 transition-colors duration-150 max-md:basis-[calc(100%-7rem)]",
-                          closed && "text-text-secondary")}>
-        {question.text}
-        {MARKS[question.state] ? (
-          <span className={cx("ml-2.5 inline-block rounded-chip border border-hairline-strong px-2 py-0.5 text-micro text-text-secondary",
-                              acted && "chip-in")}>
-            {MARKS[question.state]}
-          </span>
-        ) : null}
-        <SourceOf topic={question.topic} day={question.day} />
-        <SourceNote source={question.source} />
-        {error ? <span className="rise-in block text-note text-accent-text">{error}</span> : null}
-      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-2.5">
+        <span className={cx("transition-colors duration-150", closed && "text-text-secondary")}>
+          {question.text}
+          {MARKS[question.state] ? (
+            <span className={cx("ml-2.5 inline-block rounded-chip border border-hairline-strong px-2 py-0.5 text-micro text-text-secondary",
+                                acted && "chip-in")}>
+              {MARKS[question.state]}
+            </span>
+          ) : null}
+          <SourceOf topic={question.topic} day={question.day} />
+          <SourceNote source={question.source} />
+          {error ? <span className="rise-in block text-note text-accent-text">{error}</span> : null}
+        </span>
 
-      {/* На телефоне к реплике ведёт «основание»; стрелка нужна там, только
-          когда источника нет и вести больше нечем. */}
-      <Link href={sessionHref(question.device_id, question.session)}
-            className={cx("press hit relative shrink-0 text-text-tertiary hover:text-text-primary max-md:order-2",
-                          question.source ? "hidden md:block" : "block")}
-            title="Открыть запись" aria-label="Открыть запись">
-        <CaretRight size={14} aria-hidden />
-      </Link>
+        {/* Где вопрос прозвучал — на плёнке записи; время ведёт туда. */}
+        <TapeLine tape={question.tape} at={question.source?.start_abs}>
+          <EvidenceLink time={question.time} context={question.text} href={question.source
+            ? sessionHref(question.device_id, question.session, question.source.part, question.source.idx)
+            : sessionHref(question.device_id, question.session)} />
+        </TapeLine>
 
-      {/* Время-основание — как у задач: в первой строке справа от текста. */}
-      <span className="shrink-0 max-md:order-1">
-        <EvidenceLink time={question.time} context={question.text} href={question.source
-          ? sessionHref(question.device_id, question.session, question.source.part, question.source.idx)
-          : null} />
-      </span>
-
-      <span className="flex shrink-0 gap-2 max-md:order-2 max-md:ml-auto">
-        {ACTIONS.filter((action) => question.state === "open" ? action.state !== "open" : action.state === "open").map((action) => (
-          <button
-            key={action.state}
-            type="button"
-            disabled={busy}
-            onClick={() => change(action.state, action.title)}
-            className={action.state === "dropped" ? ROW_ACTION_QUIET : ROW_ACTION}
-          >
-            {action.title}
-          </button>
-        ))}
-      </span>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {ACTIONS.filter((action) => question.state === "open" ? action.state !== "open" : action.state === "open").map((action) => (
+            <button
+              key={action.state}
+              type="button"
+              disabled={busy}
+              onClick={() => change(action.state, action.title)}
+              className={action.state === "dropped" ? ROW_ACTION_QUIET : ROW_ACTION}
+            >
+              {action.title}
+            </button>
+          ))}
+        </div>
+      </div>
     </Row>
   );
 }

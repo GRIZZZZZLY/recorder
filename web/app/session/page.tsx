@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { BookmarkSimple, CaretDown } from "@phosphor-icons/react/dist/ssr";
 import { Card, Row, Section, Time } from "@/components/recorder/list";
@@ -427,6 +428,7 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
   // Больше часа без новых частей — уже «ждёт с …», а не «обрабатывается».
   const lastPartAt = data.parts.reduce<string | null>((latest, part) =>
     !latest || part.received_at > latest ? part.received_at : latest, null);
+  const stalled = tone === "warn" && minutesSince(lastPartAt, now) > 60;
   const toneText = tone === "ok" ? "саммари готово"
     : tone === "warn" ? (minutesSince(lastPartAt, now) > 60 ? `ждёт с ${formatDay(data.day).replace(/ \d{4}$/, "")}` : "обрабатывается")
     : failedParts.length ? "часть не расшифровалась" : "саммари не собралось";
@@ -550,8 +552,15 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
           ) : data.summary_status === "failed" || failedParts.length ? null : (
             // Обещание — только пока работа идёт; при упавшей части о ней уже
             // сказано в карточке ошибок, и повторять её здесь незачем.
-            <Empty title="Саммари ещё не готово"
-                   text="Решения, факты и задачи появятся здесь, как только расшифровка закончится." />
+            stalled ? (
+              // Больше часа без движения — не обещание, а факт и куда смотреть.
+              <Empty title="Саммари пока не собрано"
+                     text={`Ждёт с ${formatDay(data.day)}. Транскрипт готов ниже; что с обработкой — на странице «Состояние».`}
+                     action={<Link href="/status/" className="press hit relative rounded-inner bg-hairline px-4 py-2 text-note hover:bg-hairline-strong">Состояние</Link>} />
+            ) : (
+              <Empty title="Саммари ещё не готово"
+                     text="Решения, факты и задачи появятся здесь, как только расшифровка закончится." />
+            )
           )}
 
           {/* Оглавление: страница длинная, а транскрипт — в самом низу. Только
@@ -559,11 +568,13 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
           {sections.length > 1 && (
             // Строка ссылок, а не пилюли: пилюли выше — темы, они ведут на
             // проекты; эти ссылки двигают страницу. Одинаковый вид путал.
-            <nav aria-label="Разделы записи" className="flex flex-wrap items-baseline gap-x-4 gap-y-1 px-1 text-note">
-              <span className="text-text-tertiary">Перейти:</span>
+            // Одна строка с прокруткой: в две строки невидимые слои нажатия
+            // накрывали соседей, и «Задачи» открывали транскрипт.
+            <nav aria-label="Разделы записи" className="no-scrollbar -mx-1 flex items-center gap-x-4 overflow-x-auto px-1 text-note">
+              <span className="shrink-0 text-text-tertiary">Перейти:</span>
               {sections.map((item) => (
                 <a key={item.href} href={item.href}
-                   className="hit relative text-text-secondary underline decoration-hairline-strong underline-offset-4 hover:text-text-primary">
+                   className="inline-flex min-h-11 shrink-0 items-center text-text-secondary underline decoration-hairline-strong underline-offset-4 hover:text-text-primary">
                   {item.title}
                 </a>
               ))}
@@ -616,7 +627,7 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
                   <Row key={`${mark.part}-${mark.offset}`} className="items-start gap-3.5">
                     <BookmarkSimple size={14} weight="fill" aria-hidden className="mt-2 shrink-0 text-mark" />
                     <EvidenceTime time={mark.source ? formatClock(mark.source.start_abs) : mark.time}
-                                  label={`метка · ${mark.time}`}
+                                  label={`метка · ${mark.source ? formatClock(mark.source.start_abs) : normalizeClock(mark.time)}`}
                                   context={mark.text || `метка ${mark.time}`} source={mark.source} />
                     <span className="min-w-0 flex-1 pt-1">
                       {mark.text || <span className="text-text-secondary">часть ещё не расшифрована</span>}
@@ -695,7 +706,9 @@ function Body() {
       <>
         <PageHeader back={{ href: "/records/", title: "Записи" }}
                     title={error instanceof ApiError && error.status === 404 ? "Такой записи нет" : "Запись"} />
-        <Failed error={error} onRetry={reload} />
+        {error instanceof ApiError && error.status === 404
+          ? <p className="px-1 text-[15px] text-text-secondary">Ссылка устарела или запись удалена. Остальные записи на месте.</p>
+          : <Failed error={error} onRetry={reload} />}
       </>
     );
   }

@@ -6,6 +6,7 @@
 """
 import hashlib
 import json
+import re
 import os
 import sqlite3
 from contextlib import closing
@@ -702,6 +703,18 @@ def session_envelopes(conn, buckets):
     return {key: envelope.resample(values, buckets) for key, values in found.items()}
 
 
+def session_tapes(conn, buckets=48):
+    """{(устройство, сессия): {"envelope": [...], "seconds": длина}} — «плёнка»
+    записи для строк задач, вопросов и спорных мест: волна и место пункта на
+    ней. Длина — по размеру файлов, как у плеера и шкалы реплик."""
+    envelopes = session_envelopes(conn, buckets)
+    seconds = {}
+    for row in conn.execute("SELECT device_id, session, bytes, bytes_per_second FROM parts"):
+        key = (row["device_id"], row["session"])
+        seconds[key] = seconds.get(key, 0.0) + part_seconds(row["bytes"], row["bytes_per_second"])
+    return {key: {"envelope": envelopes.get(key, []), "seconds": seconds[key]} for key in seconds}
+
+
 def mark_offsets(conn):
     """{(устройство, сессия): [секунды от начала сессии]} — для списков.
 
@@ -818,8 +831,11 @@ def search_notes(conn, query, limit=30):
         return []
     days, topics = session_days(conn), session_topics(conn)
     hits = []
+    query_lemmas = set(words)
     for device_id, session, result in done_summaries(conn):
-        items = [("саммари", {"text": result.get("summary") or ""})]
+        # Абзац саммари — по предложениям: в выдаче одно нужное, а не десять строк.
+        sentences = re.split(r"(?<=[.!?…])\s+", result.get("summary") or "")
+        items = [("саммари", {"text": sentence}) for sentence in sentences if sentence]
         items += [(kind, item) for field, kind in NOTE_KINDS for item in result.get(field) or []]
         for kind, item in items:
             have = textnorm.lemmas(item.get("text") or "").split()
@@ -831,6 +847,8 @@ def search_notes(conn, query, limit=30):
                 "source": item.get("source"),
                 "day": days.get((device_id, session)),
                 "topic": topics.get((device_id, session)),
+                # Подсветка — данными, как у реплик: HTML в интерфейс не попадает.
+                "segments": textnorm.segments(item.get("text") or "", query_lemmas),
             })
             if len(hits) >= limit:
                 return hits
@@ -1103,12 +1121,13 @@ def task_rows(conn, only_open=True, mine=False, overdue=False, session=None):
 
     mine_set = my_names(conn)
     today = date.today().isoformat()
-    days, topics = session_days(conn), session_topics(conn)
+    days, topics, tapes = session_days(conn), session_topics(conn), session_tapes(conn)
     rows = []
     for row in conn.execute(sql, args).fetchall():
         item = dict(row)
         key = (item["device_id"], item["session"])
         item["day"], item["topic"] = days.get(key), topics.get(key)
+        item["tape"] = tapes.get(key)
         item["mine"] = bool(mine_set) and textnorm.normalize(item["owner"]) in mine_set
         item["overdue"] = bool(item["due_date"]) and item["due_date"] < today \
             and item["status"] == "open"
@@ -1137,7 +1156,7 @@ def question_rows(conn, only_open=True):
         (row["device_id"], row["session"], row["question_id"]): row["state"]
         for row in conn.execute("SELECT * FROM question_states").fetchall()
     }
-    days, topics = session_days(conn), session_topics(conn)
+    days, topics, tapes = session_days(conn), session_topics(conn), session_tapes(conn)
     rows = []
     for device_id, session, result in done_summaries(conn):
         for item in result.get("open_questions") or []:
@@ -1151,6 +1170,7 @@ def question_rows(conn, only_open=True):
                 "time": item.get("time") or "", "source": item.get("source"),
                 "day": days.get((device_id, session)),
                 "topic": topics.get((device_id, session)),
+                "tape": tapes.get((device_id, session)),
             })
     return rows
 
@@ -1296,6 +1316,9 @@ def review_items(conn):
             "source": json.loads(task["source"]) if task["source"] else None,
         })
 
+    tapes = session_tapes(conn)
+    for item in items:
+        item["tape"] = tapes.get((item["device_id"], item["session"]))
     items.sort(key=lambda i: (-(i["session"] or 0), i["kind"]))
     return items
 

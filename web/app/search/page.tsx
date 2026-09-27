@@ -23,6 +23,7 @@ type NoteHit = {
   source: { part: number; idx: number } | null;
   day: string | null;
   topic: string | null;
+  segments: { text: string; hit: boolean }[];
 };
 
 function Body() {
@@ -139,7 +140,10 @@ function Body() {
                         </Link>
                       )}
                       <span className="min-w-0 flex-1 pt-1">
-                        {keepNumbers(note.text)}
+                        {note.segments.map((segment, part) =>
+                          segment.hit
+                            ? <mark key={part} className="mark-sweep">{keepNumbers(segment.text)}</mark>
+                            : <span key={part}>{keepNumbers(segment.text)}</span>)}
                         <span className="block text-note text-text-tertiary">
                           {[note.kind, note.topic, formatDayShort(note.day)].filter(Boolean).join(" · ")}
                         </span>

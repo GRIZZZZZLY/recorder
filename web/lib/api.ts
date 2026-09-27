@@ -59,7 +59,11 @@ export type Task = {
   /** Из какого разговора: тема саммари и день. */
   day: string | null;
   topic: string | null;
+  tape?: Tape | null;
 };
+
+/** Плёнка записи: волна целиком и длина — на ней засечка места пункта. */
+export type Tape = { envelope: number[]; seconds: number };
 
 export type Source = {
   part: number;
@@ -166,6 +170,7 @@ export type Question = {
   source: Source;
   day: string | null;
   topic: string | null;
+  tape?: Tape | null;
 };
 
 export type ReviewItem = {
@@ -176,6 +181,7 @@ export type ReviewItem = {
   text: string;
   detail: string;
   source: Source;
+  tape?: Tape | null;
 };
 
 export type SearchHit = {

@@ -3,7 +3,7 @@
 import { Card, Row, Section } from "@/components/recorder/list";
 import { PageHeader } from "@/components/recorder/page-header";
 import { Empty, Failed, Loading } from "@/components/recorder/states";
-import { EvidenceLink, SourceDot } from "@/components/recorder/ui";
+import { EvidenceLink, SourceDot, TapeLine } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import type { ReviewItem } from "@/lib/api";
 import { formatClock, formatDayShort } from "@/lib/format";
@@ -40,30 +40,29 @@ export default function ReviewPage() {
         <Section note={`Проверить · ${items.size}`}>
           <Card>
             {[...items.values()].map(({ item, reasons }, index) => (
-              <Row key={`${item.session}-${index}`} className="flex-wrap items-start gap-y-2">
+              <Row key={`${item.session}-${index}`} className="items-start gap-3">
                 {/* Точка вспыхивает при входе: страница и просит смотреть сюда. */}
-                <span className="pt-1"><SourceDot source={item.source} /></span>
-                {/* На телефоне текст на всю строку, день и «основание» —
-                    второй строкой: рядом с ними тексту оставалось 71 px. */}
-                <span className="flex min-w-0 flex-1 flex-col gap-1 max-md:basis-[calc(100%-7rem)]">
-                  <span>{item.text}</span>
-                  {reasons.map((reason) => (
-                    <span key={reason.kind} className="text-note">
-                      <span className="text-warn">{reason.kind}</span>
-                      <span className="text-text-secondary"> · {reason.detail}</span>
-                    </span>
-                  ))}
-                </span>
-                {/* День, без номера сессии: номер владельцу ничего не говорит. */}
-                <span className="shrink-0 text-note text-text-tertiary max-md:order-2 max-md:ml-5">
-                  {item.day ? formatDayShort(item.day) : null}
-                </span>
-                <span className="shrink-0 max-md:order-1">
-                  <EvidenceLink time={item.source ? formatClock(item.source.start_abs) : ""}
-                                context={item.text} href={item.source
-                    ? sessionHref(item.device_id, item.session, item.source.part, item.source.idx)
-                    : null} />
-                </span>
+                <span className="pt-1.5"><SourceDot source={item.source} /></span>
+                <div className="flex min-w-0 flex-1 flex-col gap-2.5">
+                  <span className="flex flex-col gap-1">
+                    <span>{item.text}</span>
+                    {reasons.map((reason) => (
+                      <span key={reason.kind} className="text-note">
+                        <span className="text-warn">{reason.kind}</span>
+                        {reason.detail ? <span className="text-text-secondary"> · {reason.detail}</span> : null}
+                      </span>
+                    ))}
+                    {/* День, без номера сессии: номер владельцу ничего не говорит. */}
+                    {item.day ? <span className="text-note text-text-tertiary">{formatDayShort(item.day)}</span> : null}
+                  </span>
+                  {/* Проверяется на слух: место на плёнке и время, которое туда ведёт. */}
+                  <TapeLine tape={item.tape} at={item.source?.start_abs}>
+                    <EvidenceLink time={item.source ? formatClock(item.source.start_abs) : ""}
+                                  context={item.text} href={item.source
+                      ? sessionHref(item.device_id, item.session, item.source.part, item.source.idx)
+                      : null} />
+                  </TapeLine>
+                </div>
               </Row>
             ))}
           </Card>

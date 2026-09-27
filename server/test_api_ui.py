@@ -315,6 +315,16 @@ def test_status_counts_sessions_whose_summary_row_does_not_exist_yet(env):
     assert status["summaries_pending"] == 1
 
 
+def test_tasks_carry_the_tape_of_their_record(env, monkeypatch):
+    """У строки задачи — волна её записи и длина: интерфейс ставит засечку
+    места, где задача прозвучала, прямо на плёнке."""
+    prepared(env, monkeypatch)
+    with TestClient(env.app) as client:
+        task = client.get("/api/ui/tasks", auth=AUTH).json()["tasks"][0]
+    assert task["tape"]["seconds"] > 0
+    assert isinstance(task["tape"]["envelope"], list)
+
+
 def test_tasks_name_their_conversation(env, monkeypatch):
     """Строка задачи говорит, из какого она разговора: тема и день."""
     prepared(env, monkeypatch)
@@ -431,6 +441,7 @@ def test_search_finds_summary_notes_too(env, monkeypatch):
         assert client.get("/api/ui/search/notes?q=", auth=AUTH).json() == []
     assert notes and notes[0]["kind"] == "задача"
     assert notes[0]["text"] == "Выслать смету"
+    assert any(part["hit"] for part in notes[0]["segments"])
     assert notes[0]["topic"] == "смета для заказчика"
 
 
