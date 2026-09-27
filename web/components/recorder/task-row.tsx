@@ -1,23 +1,23 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
-import { CaretRight } from "@phosphor-icons/react/dist/ssr";
 import { Row } from "@/components/recorder/list";
-import { SourceDot, SourceNote } from "@/components/recorder/ui";
+import { EvidenceLink, EvidenceTime, ROW_ACTION, ROW_ACTION_QUIET, SourceDot, SourceNote, SourceOf } from "@/components/recorder/ui";
+import { formatClock } from "@/lib/format";
 import { apiPost, type Task } from "@/lib/api";
 import { formatDayShort } from "@/lib/format";
 import { sessionHref } from "@/lib/session-link";
 import { cx } from "@/utils/cx";
 
 const ACTIONS: { status: Task["status"]; title: string }[] = [
-  { status: "done", title: "Закрыть" },
-  { status: "dismissed", title: "Снять" },
+  // «Снять» читалось двояко (снять с себя? отменить?): «Убрать» — не задача.
+  { status: "done", title: "Готово" },
+  { status: "dismissed", title: "Убрать" },
   { status: "open", title: "Вернуть" },
 ];
 
 const MARKS: Record<Task["status"], string> = {
-  open: "", done: "закрыта", dismissed: "снята",
+  open: "", done: "готово", dismissed: "убрана",
 };
 
 function due(task: Task) {
@@ -32,7 +32,13 @@ function due(task: Task) {
  * не схлопывается и не уезжает — владелец должен видеть, что произошло, а не
  * догадываться по исчезновению.
  */
-export function TaskRow({ task, onChanged }: { task: Task; onChanged: () => void }) {
+export function TaskRow({ task, onChanged, showSource = true }: {
+  task: Task;
+  /** Новое состояние: список держит строку на месте с отметкой и «Вернуть». */
+  onChanged: (status: Task["status"]) => void;
+  /** Откуда задача. На странице самой записи это и так видно. */
+  showSource?: boolean;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const closed = task.status !== "open";
@@ -48,7 +54,7 @@ export function TaskRow({ task, onChanged }: { task: Task; onChanged: () => void
       await apiPost(`/tasks/${encodeURIComponent(task.device_id)}/${task.session}/${task.task_id}`,
                     { status });
       setError(null);
-      onChanged();
+      onChanged(status);
     } catch (err) {
       setError(`не удалось ${title.toLowerCase()}: ${(err as Error).message}`);
     } finally {
@@ -65,7 +71,9 @@ export function TaskRow({ task, onChanged }: { task: Task; onChanged: () => void
           На телефоне текст занимает всю строку (ширина минус точка и зазор),
           срок и действия уходят второй строкой: иначе на текст оставалось
           79 px и слово на строку. */}
-      <span className={cx("min-w-0 flex-1 transition-colors duration-150 max-md:basis-[calc(100%-1.25rem)]",
+      {/* На телефоне время-основание — в первой строке справа от текста
+          (ширина минус точка, кнопка и зазоры), остальное — ниже. */}
+      <span className={cx("min-w-0 flex-1 transition-colors duration-150 max-md:basis-[calc(100%-7rem)]",
                           closed && "text-text-secondary")}>
         {task.text}
         {MARKS[task.status] ? (
@@ -79,40 +87,45 @@ export function TaskRow({ task, onChanged }: { task: Task; onChanged: () => void
             исчезла из саммари
           </span>
         ) : null}
+        {showSource ? <SourceOf topic={task.topic} day={task.day} /> : null}
         <SourceNote source={task.source} />
         {error ? <span className="rise-in block text-note text-accent-text">{error}</span> : null}
       </span>
 
+      {/* Вторая строка на телефоне начинается под текстом, а не под точкой;
+          исполнитель на телефоне тоже виден — чья задача, главный вопрос к ней. */}
       {task.owner ? (
-        <span className="hidden shrink-0 text-text-secondary md:block">{task.owner}</span>
+        <span className="shrink-0 text-text-secondary max-md:order-2 max-md:ml-5 max-md:text-note">{task.owner}</span>
       ) : null}
 
-      {/* Вторая строка на телефоне начинается под текстом, а не под точкой. */}
-      <span className={cx("shrink-0 text-note max-md:ml-5",
-                          task.overdue ? "text-accent-text" : "text-text-secondary")}>
+      <span className={cx("shrink-0 text-note max-md:order-2", !task.owner && "max-md:ml-5",
+                          task.overdue && !closed ? "text-accent-text" : "text-text-secondary")}>
         {due(task)}
       </span>
 
-      {/* Переход к записи — стрелкой, не номером сессии: номер владельцу ничего
-          не говорит, а «куда ведёт» стрелка говорит сама. На телефоне стрелка
-          встаёт в конец второй строки: другого пути от задачи к реплике там нет. */}
-      <Link
-        href={sessionHref(task.device_id, task.session, task.source?.part, task.source?.idx)}
-        className="press hit relative block shrink-0 text-text-tertiary hover:text-text-primary max-md:order-last"
-        title="Открыть запись на этой реплике"
-        aria-label="Открыть запись на этой реплике"
-      >
-        <CaretRight size={14} aria-hidden />
-      </Link>
+      {/* Основание задачи — время реплики, как у всех пунктов саммари. На
+          странице записи оно играет, на других — ведёт на реплику. На телефоне
+          — в первой строке справа от текста: другого пути к записи там нет. */}
+      <span className="shrink-0 max-md:order-1">
+        {showSource ? (
+          <EvidenceLink time={task.source ? formatClock(task.source.start_abs) : ""} context={task.text}
+                        href={task.source ? sessionHref(task.device_id, task.session, task.source.part, task.source.idx) : null} />
+        ) : (
+          <EvidenceTime time={task.source ? formatClock(task.source.start_abs) : ""} label={task.text}
+                        context={task.text} source={task.source} />
+        )}
+      </span>
 
-      <span className="flex shrink-0 gap-3 text-note text-text-secondary max-md:ml-auto">
-        {ACTIONS.filter((action) => action.status !== task.status).map((action) => (
+      <span className="flex shrink-0 gap-2 max-md:order-2 max-md:ml-auto">
+        {/* Открытая — «Готово» и «Убрать»; закрытая — только «Вернуть», на месте
+            «Готово»: второе нажатие туда же отменяет, а не убирает. */}
+        {ACTIONS.filter((action) => task.status === "open" ? action.status !== "open" : action.status === "open").map((action) => (
           <button
             key={action.status}
             type="button"
             disabled={busy}
             onClick={() => change(action.status, action.title)}
-            className="press hit relative rounded-sm hover:text-text-primary disabled:opacity-40"
+            className={action.status === "dismissed" ? ROW_ACTION_QUIET : ROW_ACTION}
           >
             {action.title}
           </button>

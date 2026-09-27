@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { PageHeader } from "@/components/recorder/page-header";
 
 import { Empty, Failed, Loading } from "@/components/recorder/states";
+import { EvidenceLink } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import { count, formatDay } from "@/lib/format";
 import { sessionHref } from "@/lib/session-link";
@@ -24,13 +25,24 @@ type Feed = {
 };
 
 /** Колонка выжимки под абзацем: заголовок и до трёх пунктов. */
-function Column({ title, items }: { title: string; items: { text: string }[] }) {
+type Item = { text: string; time?: string; source?: { part: number; idx: number } | null };
+
+function Column({ title, items, deviceId, session }: {
+  title: string;
+  items: Item[];
+  deviceId: string;
+  session: number;
+}) {
   if (items.length === 0) return null;
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-2">
       <span className="text-text-tertiary">{title} · {items.length}</span>
       {items.slice(0, 3).map((item, index) => (
-        <span key={index} className="leading-snug text-text-secondary">{item.text}</span>
+        <span key={index} className="flex items-start gap-2.5">
+          <EvidenceLink time={item.time ?? ""} context={item.text}
+                        href={item.source ? sessionHref(deviceId, session, item.source.part, item.source.idx) : null} />
+          <span className="pt-1 leading-snug text-text-secondary">{item.text}</span>
+        </span>
       ))}
     </div>
   );
@@ -82,9 +94,9 @@ function Body() {
                 <p className="leading-normal">{item.summary || "саммари ещё не собрано"}</p>
                 {(item.decisions.length || item.tasks.length || item.open_questions.length) ? (
                   <div className="grid gap-4 border-t border-hairline pt-3 text-note sm:grid-cols-3">
-                    <Column title="Решения" items={item.decisions} />
-                    <Column title="Задачи" items={item.tasks} />
-                    <Column title="Вопросы" items={item.open_questions} />
+                    <Column title="Решения" items={item.decisions} deviceId={item.device_id} session={item.session} />
+                    <Column title="Задачи" items={item.tasks} deviceId={item.device_id} session={item.session} />
+                    <Column title="Вопросы" items={item.open_questions} deviceId={item.device_id} session={item.session} />
                   </div>
                 ) : null}
               </div>

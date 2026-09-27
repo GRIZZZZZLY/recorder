@@ -1,8 +1,10 @@
 """Проверки JSON-API и отдачи собранного фронтенда."""
 import importlib
 import json
+import os
 import time
 from contextlib import closing
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -33,6 +35,23 @@ def test_site_serves_index_and_nested_page(site):
         assert client.get("/", auth=AUTH).text.startswith("<!doctype html>")
         assert "Сессия" in client.get("/session/?d=xiao-01&n=7", auth=AUTH).text
         assert client.get("/_next/app.js", auth=AUTH).status_code == 200
+
+
+def test_site_serves_next_segment_prefetch(site):
+    """Next просит /records/__next.records.__PAGE__.txt, а сборка кладёт файл в
+    records/__next.records/__PAGE__.txt; раньше каждая предзагрузка давала 404."""
+    nested = Path(os.environ["RECORDER_WEB_DIR"]) / "records" / "__next.records"
+    nested.mkdir(parents=True)
+    (nested / "__PAGE__.txt").write_text("rsc", encoding="utf-8")
+    with TestClient(site.app) as client:
+        answer = client.get("/records/__next.records.__PAGE__.txt?_rsc=x", auth=AUTH)
+    assert answer.status_code == 200 and answer.text == "rsc"
+
+
+def test_site_answers_head_requests(site):
+    """Next.js проверяет ссылки HEAD-запросом; раньше каждый давал 405."""
+    with TestClient(site.app) as client:
+        assert client.head("/session/", auth=AUTH).status_code == 200
 
 
 def test_site_is_closed_by_the_same_password(site):
@@ -145,8 +164,21 @@ def test_sessions_list_has_progress_and_state(env, monkeypatch):
         rows = client.get("/api/ui/sessions", auth=AUTH).json()
     assert rows[0]["session"] == 7
     assert rows[0]["parts"] == 1 and rows[0]["done_parts"] == 1
+    assert rows[0]["first_part"] == 1
     assert rows[0]["summary_status"] == "done"
     assert rows[0]["day"].startswith("20")
+
+
+def test_sessions_list_counts_failed_parts(env, monkeypatch):
+    """Запись с упавшей частью не должна выглядеть «готово»: карточке нужно
+    знать, что кусок звука так и не расшифровался."""
+    prepared(env, monkeypatch)
+    with closing(env.db.connect()) as conn:
+        conn.execute("UPDATE transcripts SET status='failed'")
+        conn.commit()
+    with TestClient(env.app) as client:
+        rows = client.get("/api/ui/sessions", auth=AUTH).json()
+    assert rows[0]["failed_parts"] == 1
 
 
 def test_session_rows_seconds_match_per_part_clamp_like_timeline(env):
@@ -274,6 +306,24 @@ def test_recording_day_is_fixed_by_the_owner_and_validated(env, monkeypatch):
                            json={"day": None}).status_code == 200
 
 
+def test_status_counts_sessions_whose_summary_row_does_not_exist_yet(env):
+    """Запись без строки саммари карточка уже зовёт «обрабатывается»;
+    «Состояние» не должно при этом писать «все собраны»."""
+    upload(env, part=1)
+    with TestClient(env.app) as client:
+        status = client.get("/api/ui/status", auth=AUTH).json()
+    assert status["summaries_pending"] == 1
+
+
+def test_tasks_name_their_conversation(env, monkeypatch):
+    """Строка задачи говорит, из какого она разговора: тема и день."""
+    prepared(env, monkeypatch)
+    with TestClient(env.app) as client:
+        task = client.get("/api/ui/tasks", auth=AUTH).json()["tasks"][0]
+    assert task["topic"] == "смета для заказчика"
+    assert task["day"].startswith("20")
+
+
 def test_api_requires_password(env):
     with TestClient(env.app) as client:
         assert client.get("/api/ui/digest").status_code == 401
@@ -365,9 +415,23 @@ def test_search_returns_segments_not_html(env, monkeypatch):
     with TestClient(env.app) as client:
         hits = client.get("/api/ui/search?q=сметы", auth=AUTH).json()
     assert hits[0]["session"] == 7
+    # Разговор назван темой и днём, а не номером сессии.
+    assert hits[0]["topic"] == "смета для заказчика"
+    assert hits[0]["day"].startswith("20")
     assert any(part["hit"] for part in hits[0]["segments"])
     assert "".join(part["text"] for part in hits[0]["segments"]) == hits[0]["text"]
     assert "<mark>" not in json.dumps(hits, ensure_ascii=False)
+
+
+def test_search_finds_summary_notes_too(env, monkeypatch):
+    """Слово из задачи саммари находится, даже если его нет в репликах."""
+    prepared(env, monkeypatch)
+    with TestClient(env.app) as client:
+        notes = client.get("/api/ui/search/notes?q=выслать", auth=AUTH).json()
+        assert client.get("/api/ui/search/notes?q=", auth=AUTH).json() == []
+    assert notes and notes[0]["kind"] == "задача"
+    assert notes[0]["text"] == "Выслать смету"
+    assert notes[0]["topic"] == "смета для заказчика"
 
 
 def test_search_without_query_is_empty(env):

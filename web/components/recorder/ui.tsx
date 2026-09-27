@@ -4,7 +4,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Play } from "@phosphor-icons/react/dist/ssr";
 import type { Icon } from "@phosphor-icons/react";
+import { usePlayhead, useSeek } from "@/components/recorder/player";
 import { apiPost } from "@/lib/api";
+import { formatDayShort, normalizeClock } from "@/lib/format";
+import { revealUtterance } from "@/lib/reveal";
 import { cx } from "@/utils/cx";
 
 /** На сервере раскладку не измерить, а предупреждение React читать незачем. */
@@ -40,7 +43,8 @@ export function Button({
     <button
       {...props}
       className={cx(
-        "press inline-flex items-center gap-2 rounded-inner px-4 py-2 text-note",
+        // `hit`: кнопка 34 px на вид, 44 под пальцем.
+        "press hit relative inline-flex items-center gap-2 rounded-inner px-4 py-2 text-note",
         "disabled:cursor-not-allowed disabled:opacity-40",
         BUTTON_VARIANTS[variant],
         className,
@@ -74,7 +78,7 @@ export function Input({
         {...props}
         onChange={(event) => onChange?.(event.target.value)}
         className={cx(
-          "rounded-inner border border-control bg-surface px-3 py-2.5 text-row text-text-primary",
+          "min-h-11 rounded-inner border border-control bg-surface px-3 py-2.5 text-row text-text-primary",
           "transition-colors placeholder:text-text-tertiary",
           "disabled:border-hairline disabled:text-text-disabled",
         )}
@@ -109,8 +113,9 @@ export function Chip({
 
 /** Метка темы. Со ссылкой ведёт в ленту проекта, без неё — просто подпись. */
 export function Tag({ href, children }: { href?: string; children: React.ReactNode }) {
+  // `hit`: тег 32 px на вид, 44 под пальцем.
   const className =
-    "rounded-chip border border-hairline-strong px-3 py-1.5 text-note text-text-secondary";
+    "hit relative rounded-chip border border-hairline-strong px-3 py-1.5 text-note text-text-secondary";
   if (!href) return <span className={className}>{children}</span>;
   return (
     <Link href={href} className={cx(className, "press hover:border-white/30 hover:text-text-primary")}>
@@ -182,7 +187,7 @@ export function Segmented<T extends string>({ value, options, onChange, label }:
             aria-pressed={selected}
             onClick={() => onChange(option.key)}
             className={cx(
-              "press relative rounded-md px-3.5 py-1.5",
+              "press hit relative rounded-md px-3.5 py-1.5",
               selected ? "text-text-primary" : "text-text-secondary hover:text-text-primary",
             )}
           >
@@ -241,11 +246,28 @@ export function Dot({ tone, live, size = 8, title }: {
   );
 }
 
-/** Точка источника по данным саммари: зелёная, жёлтая или пустой контур. */
+/** Точка источника: жёлтая — цитата не подтвердилась, пустой контур — её нет.
+ * Подтверждённый пункт точки не получает («всё в порядке» не показываем;
+ * зелёная точка у открытой задачи ещё и читалась как «сделано»), но место
+ * держит — строки не должны прыгать. */
 export function SourceDot({ source }: { source: { confirmed: boolean } | null }) {
   if (!source) return <Dot tone="missing" title="источник не найден" />;
-  if (source.confirmed) return <Dot tone="ok" title="цитата найдена в записи" />;
+  if (source.confirmed) return <span aria-hidden className="inline-block size-2 shrink-0" />;
   return <Dot tone="warn" title="источник не подтверждён" />;
+}
+
+// Действия — клавиши, а не голый текст: «Готово» и «Убрать» стояли текстом в
+// 12 px друг от друга, и промахнуться было проще, чем попасть.
+export const ROW_ACTION =
+  "press hit relative rounded-chip bg-hairline px-3 py-1.5 text-note text-text-secondary shadow-plate hover:bg-hairline-strong hover:text-text-primary active:translate-y-px active:shadow-none disabled:opacity-40";
+/** Второе действие строки («Убрать»): без подложки — видно, но не зовёт. */
+export const ROW_ACTION_QUIET =
+  "press hit relative rounded-chip px-2 py-1.5 text-note text-text-tertiary hover:text-text-primary disabled:opacity-40";
+
+/** Откуда пункт: тема разговора и день — строкой под текстом. */
+export function SourceOf({ topic, day }: { topic: string | null; day: string | null }) {
+  const parts = [topic, day ? formatDayShort(day) : null].filter(Boolean);
+  return parts.length ? <span className="block text-note text-text-tertiary">{parts.join(" · ")}</span> : null;
 }
 
 /**
@@ -257,15 +279,24 @@ export function SourceDot({ source }: { source: { confirmed: boolean } | null })
 export function SourceNote({ source }: { source?: { confirmed: boolean } | null }) {
   if (source?.confirmed) return null;
   return (
-    <span className={cx("block text-note", source ? "text-warn" : "text-text-tertiary")}>
-      {source ? "источник не подтверждён" : "источник не найден"}
-    </span>
+    <details className="text-note">
+      <summary className={cx("hit relative inline-flex cursor-pointer list-none items-baseline gap-1.5 [&::-webkit-details-marker]:hidden",
+                             source ? "text-warn" : "text-text-tertiary")}>
+        {source ? "источник не подтверждён" : "источник не найден"}
+        <span className="text-text-secondary underline decoration-dotted underline-offset-4">что это?</span>
+      </summary>
+      <span className="block text-text-secondary">
+        {source
+          ? "Модель сослалась на слова, которых нет в записи рядом с этим временем. Послушайте основание и решите сами."
+          : "Модель не указала, откуда это взяла: проверить по звуку нельзя."}
+      </span>
+    </details>
   );
 }
 
 // `hit`: видимая кнопка 30 px, цель для пальца — 44.
 const EVIDENCE =
-  "press hit relative group inline-flex shrink-0 items-center gap-1.5 rounded-inner px-2.5 py-1.5 text-note";
+  "press hit relative group inline-flex shrink-0 items-center gap-1.5 rounded-inner px-2.5 py-1.5 text-note shadow-plate active:translate-y-px active:shadow-none";
 
 /**
  * Глиф play: контур и заливка лежат друг на друге, смена — кроссфейд 120 мс,
@@ -283,25 +314,47 @@ function PlayGlyph({ filled }: { filled?: boolean }) {
 }
 
 /**
- * Кнопка «основание»: перематывает плеер на реплику, из которой саммари взяло
- * пункт. Пока играет — инвертируется. Без источника выключена.
+ * Время пункта — оно же кнопка «основание»: «▷ 0:27». Отдельная пилюля
+ * «основание» у каждого пункта давала восемь одинаковых кнопок на минуту
+ * разговора; время и так было рядом и значило то же место записи. Нажатие
+ * перематывает плеер и показывает реплику в транскрипте. Пока звучит именно
+ * этот пункт — клавиша светлая и светится. Без источника — просто время.
  */
-export function Evidence({ playing, className, ...props }:
-  React.ButtonHTMLAttributes<HTMLButtonElement> & { playing?: boolean }) {
+export function EvidenceTime({ time, label, context, source }: {
+  time: string;
+  /** Подпись в плеере; по ней клавиша узнаёт, что играет её пункт. */
+  label: string;
+  /** Что это за пункт — для читалки: таких кнопок на странице много. */
+  context: string;
+  source: { part: number; idx: number; start: number } | null | undefined;
+}) {
+  const seek = useSeek();
+  const playhead = usePlayhead();
+  const clock = normalizeClock(time);
+  if (!source) {
+    return (
+      <span className="shrink-0 px-2.5 py-1.5 font-mono text-note text-text-tertiary" title="источник не найден">
+        {clock}
+      </span>
+    );
+  }
+  const playing = playhead.playing && playhead.label === label;
   return (
     <button
       type="button"
-      {...props}
+      onClick={(event) => {
+        seek(source.part, source.start, label);
+        revealUtterance(source.part, source.idx, event.currentTarget);
+      }}
+      aria-label={`${playing ? "Играет" : "Слушать основание"}, ${clock}: ${context}`}
       className={cx(
-        EVIDENCE,
-        // Пока играет — светлая заливка и свечение: звук идёт.
-        playing ? "bg-fill text-canvas shadow-glow-fill" : "bg-hairline hover:bg-hairline-strong",
-        "disabled:bg-transparent disabled:text-text-disabled",
-        className,
+        EVIDENCE, "font-mono",
+        playing ? "bg-fill text-canvas shadow-glow-fill"
+          : "bg-hairline text-text-secondary hover:bg-hairline-strong hover:text-text-primary",
       )}
     >
       <PlayGlyph filled={playing} />
-      {playing ? "играет" : "основание"}
+      {clock}
     </button>
   );
 }
@@ -310,19 +363,26 @@ export function Evidence({ playing, className, ...props }:
  * То же «основание», но на странице без плеера: ведёт на реплику внутри
  * сессии. Без источника — не ссылка, а погашенная подпись: вести некуда.
  */
-export function EvidenceLink({ href }: { href: string | null }) {
+export function EvidenceLink({ href, time, context }: {
+  href: string | null;
+  /** Время реплики-основания — тот же вид, что у кнопки на странице записи. */
+  time: string;
+  context?: string;
+}) {
+  const clock = normalizeClock(time);
   if (!href) {
     return (
-      <span className={cx(EVIDENCE, "text-text-tertiary")} title="источник не найден">
-        <Play size={12} aria-hidden />
-        основание
+      <span className="shrink-0 px-2.5 py-1.5 font-mono text-note text-text-tertiary" title="источник не найден">
+        {clock}
       </span>
     );
   }
   return (
-    <Link href={href} className={cx(EVIDENCE, "bg-hairline hover:bg-hairline-strong")}>
+    <Link href={href}
+          className={cx(EVIDENCE, "font-mono bg-hairline text-text-secondary hover:bg-hairline-strong hover:text-text-primary")}
+          aria-label={`Открыть основание, ${clock}${context ? `: ${context}` : ""}`}>
       <PlayGlyph />
-      основание
+      {clock}
     </Link>
   );
 }
@@ -365,7 +425,7 @@ export function Retry({ path, onDone }: { path: string; onDone?: () => void }) {
           : "border-control text-text-secondary hover:border-white/30 hover:text-text-primary",
       )}
     >
-      {state === "busy" ? "…" : state === "failed" ? "ещё раз" : "Повторить"}
+      {state === "busy" ? "…" : state === "failed" ? "Не вышло — ещё раз" : "Повторить"}
     </button>
   );
 }

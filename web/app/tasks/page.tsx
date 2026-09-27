@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Card, Section } from "@/components/recorder/list";
 import { PageHeader } from "@/components/recorder/page-header";
@@ -9,7 +9,7 @@ import { TaskRow } from "@/components/recorder/task-row";
 import { Segmented } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import type { DigestBody, Task } from "@/lib/api";
-import { todayIso } from "@/lib/format";
+import { formatDay, todayIso } from "@/lib/format";
 import { cx } from "@/utils/cx";
 
 type Show = "open" | "mine" | "overdue" | "all";
@@ -53,7 +53,13 @@ function Body() {
 
   const query = `/tasks?show=${show}${session ? `&session=${session}` : ""}`;
   const { data, error, loading, reload } = useApi<{ tasks: Task[]; has_me: boolean }>(query);
-  const { data: digest } = useApi<DigestBody>("/digest");
+  const { data: digest, reload: recount } = useApi<DigestBody>("/digest");
+  // Что владелец поменял на этом экране: строка остаётся на месте с отметкой
+  // «готово» и «Вернуть», а не исчезает (вернуть её можно было только через
+  // «Все»). Список ради этого не перезапрашивается — только счётчики.
+  const [touched, setTouched] = useState<{ view: string; rows: Record<string, Task> }>({ view: query, rows: {} });
+  const override = touched.view === query ? touched.rows : {};
+  const keyOf = (task: Task) => `${task.device_id}-${task.session}-${task.task_id}`;
 
   function setShow(key: Show) {
     router.push(`/tasks/?show=${key}${session ? `&session=${session}` : ""}`);
@@ -75,7 +81,10 @@ function Body() {
 
       {session !== null && (
         <p className="px-1 text-note text-text-secondary">
-          Только сессия <span className="font-mono">{String(Number(session)).padStart(4, "0")}</span>.
+          {/* Запись — по имени, а не номером сессии. */}
+          Только из записи «{data?.tasks[0]
+            ? data.tasks[0].topic || (data.tasks[0].day ? formatDay(data.tasks[0].day) : "эта запись")
+            : "эта запись"}».
         </p>
       )}
 
@@ -96,7 +105,14 @@ function Body() {
             <Section key={bucket.title} note={`${bucket.title} · ${bucket.rows.length}`} className={cx(loading && "stale")}>
               <Card>
                 {bucket.rows.map((task) => (
-                  <TaskRow key={`${task.session}-${task.task_id}`} task={task} onChanged={reload} />
+                  <TaskRow key={`${task.session}-${task.task_id}`} task={override[keyOf(task)] ?? task}
+                           onChanged={(status) => {
+                             setTouched((prev) => ({
+                               view: query,
+                               rows: { ...(prev.view === query ? prev.rows : {}), [keyOf(task)]: { ...task, status } },
+                             }));
+                             recount();
+                           }} />
                 ))}
               </Card>
             </Section>

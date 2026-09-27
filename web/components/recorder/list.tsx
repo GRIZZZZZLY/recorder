@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { normalizeClock } from "@/lib/format";
 import { cx } from "@/utils/cx";
 
 /**
@@ -10,7 +11,9 @@ import { cx } from "@/utils/cx";
 /**
  * Секция с заголовком. `head` крупный (17/600), `note` мелкий (13).
  */
-export function Section({ head, note, aside, className, children }: {
+export function Section({ id, head, note, aside, className, children }: {
+  /** Якорь для оглавления страницы. */
+  id?: string;
   head?: string;
   note?: string;
   aside?: React.ReactNode;
@@ -18,11 +21,13 @@ export function Section({ head, note, aside, className, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <section className={cx("recorder-section flex flex-col", head ? "gap-2.5" : "gap-2", className)}>
+    <section id={id} className={cx("recorder-section flex scroll-mt-6 flex-col", head ? "gap-2.5" : "gap-2", className)}>
       {(head || note || aside) && (
         <div className="flex items-baseline justify-between gap-4 px-1">
           {head ? <h2 className="text-section text-text-primary">{head}</h2> : null}
-          {note && !head ? <span className="text-note text-text-secondary">{note}</span> : null}
+          {/* Подпись секции — её заголовок: h2 для читалки и структуры, и на
+              глаз не слабее пунктов под ней, иначе страница — ровная серая лента. */}
+          {note && !head ? <h2 className="text-[15px] font-medium text-text-primary">{note}</h2> : null}
           {aside ? <span className="text-note text-text-secondary">{aside}</span> : null}
         </div>
       )}
@@ -85,5 +90,7 @@ export function SessionNo({ session, className }: { session: number; className?:
 
 /** Время внутри записи моноширинным: 00:12:34. */
 export function Time({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <span className={cx("font-mono text-note text-text-tertiary", className)}>{children}</span>;
+  // Сервер пишет «0:00:27», интерфейс — «0:27»: один формат на экране.
+  const text = typeof children === "string" ? normalizeClock(children) : children;
+  return <span className={cx("font-mono text-note text-text-tertiary", className)}>{text}</span>;
 }

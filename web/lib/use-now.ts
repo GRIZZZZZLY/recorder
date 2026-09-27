@@ -19,6 +19,13 @@ export function useNow(intervalMs = 60_000): Date {
   return now;
 }
 
+/** Сколько минут прошло с метки базы. Нет метки — бесконечность. */
+export function minutesSince(stamp: string | null | undefined, now: Date): number {
+  if (!stamp) return Infinity;
+  const at = new Date(`${stamp.replace(" ", "T")}Z`).getTime();
+  return Number.isFinite(at) ? (now.getTime() - at) / 60_000 : Infinity;
+}
+
 /** Диктофон выгружал часть меньше пяти минут назад — значит пишет прямо сейчас. */
 export function isLive(stamp: string | null | undefined, now: Date): boolean {
   if (!stamp) return false;

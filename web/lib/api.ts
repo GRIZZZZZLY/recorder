@@ -6,12 +6,27 @@ export class AuthError extends Error {
   }
 }
 
+/** Ошибка сервера с кодом: экран решает, что сказать — «такого нет» или
+ * «не удалось загрузить», — а текст сервера берётся из поля detail. */
+export class ApiError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/ui${path}`, { credentials: "same-origin", ...init });
   if (response.status === 401) throw new AuthError();
   if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`${response.status}: ${detail.slice(0, 200)}`);
+    const body = await response.text();
+    let detail = body.slice(0, 200);
+    try {
+      const parsed = JSON.parse(body) as { detail?: unknown };
+      if (typeof parsed.detail === "string") detail = parsed.detail;
+    } catch {
+      // не JSON — показываем как есть
+    }
+    throw new ApiError(response.status, detail);
   }
   return (await response.json()) as T;
 }
@@ -41,6 +56,9 @@ export type Task = {
   vanished: number;
   mine: boolean;
   overdue: boolean;
+  /** Из какого разговора: тема саммари и день. */
+  day: string | null;
+  topic: string | null;
 };
 
 export type Source = {
@@ -93,6 +111,10 @@ export type SessionRow = {
   /** Первая тема саммари — имя разговора в списке. Пусто, пока саммари нет. */
   topic: string | null;
   summary_status: string | null;
+  /** Номер первой принятой части: с неё играет ▶ на карточке. */
+  first_part: number;
+  /** Части, которые так и не расшифровались: запись с ними не «готово». */
+  failed_parts: number;
   /** Метки владельца: секунды от начала сессии. Кнопка на диктофоне. */
   marks: number[];
   /** Названные участники разговора. Безымянных сервер не отдаёт. */
@@ -143,6 +165,7 @@ export type Question = {
   time: string;
   source: Source;
   day: string | null;
+  topic: string | null;
 };
 
 export type ReviewItem = {
@@ -163,5 +186,8 @@ export type SearchHit = {
   start_abs: number;
   label: string;
   text: string;
+  /** Имя разговора в выдаче: тема саммари, без неё — день. */
+  day: string;
+  topic: string | null;
   segments: { text: string; hit: boolean }[];
 };

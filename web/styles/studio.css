@@ -144,19 +144,32 @@ html:not([data-entered]) .studio-record-grid > *:nth-child(n + 4) { animation-de
   box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.67), 0 1px rgb(255 255 255 / 0.07);
 }
 
+/* Линза в диске — графитовая, красной она становится только во время записи:
+ * красный у прибора значит «пишет», а не «это логотип». */
 .studio-brand-disc::after {
   content: "";
   position: absolute;
   inset: 5px;
   border-radius: 50%;
+  background: linear-gradient(#6a6b6d, #333436);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.53), inset 0 1px rgb(255 255 255 / 0.18);
+}
+
+.studio-brand-disc.is-live::after {
   background: linear-gradient(#f3977d, #b74536);
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.53), inset 0 1px #ffc2a4;
+}
+
+/* На десктопе имя прибора уже стоит в боковой панели: второй раз не нужно. */
+@media (min-width: 1024px) {
+  .studio-brandline .studio-wordmark {
+    visibility: hidden;
+  }
 }
 
 /* Гравировка: моноширинная, разрядка 1,5 px. */
 .studio-model,
 .studio-engraved,
-.studio-eyebrow,
 .studio-rec-no {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -211,22 +224,12 @@ html:not([data-entered]) .studio-record-grid > *:nth-child(n + 4) { animation-de
   margin: 6px 0 4px;
 }
 
-.studio-eyebrow {
-  color: #9a9890;
-  font-size: 10px;
-  letter-spacing: 1.9px;
-}
-
 .studio-home-heading h1 {
   margin-top: 9px;
   font-size: 64px;
   line-height: 1.06;
   letter-spacing: -3px;
   font-weight: 550;
-}
-
-.studio-title-dot {
-  color: #ee785d;
 }
 
 .studio-date {
@@ -348,7 +351,11 @@ html:not([data-entered]) .studio-record-grid > *:nth-child(n + 4) { animation-de
   font-size: 12px;
 }
 
+/* Показания — одним шрифтом: минуты, счёт и дата рядом не должны быть
+ * разными гарнитурами. Цифры табличные, чтобы не прыгали. */
 .studio-meter-stats strong {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: 38px;
   line-height: 1.1;
   font-weight: 450;
@@ -356,12 +363,10 @@ html:not([data-entered]) .studio-record-grid > *:nth-child(n + 4) { animation-de
   color: #e8e2d6;
 }
 
-.studio-meter-stats > div:not(:first-child) strong {
-  font-family: var(--font-mono);
-  font-weight: 400;
-}
-
+/* Дата — не показание шкалы: обычный шрифт, моно у прибора только для времени
+ * и чисел. */
 .studio-meter-stats strong.studio-meter-date {
+  font-family: var(--font-sans);
   font-size: 26px;
   letter-spacing: -0.5px;
   white-space: nowrap;
@@ -410,6 +415,61 @@ html:not([data-entered]) .studio-record-grid > *:nth-child(n + 4) { animation-de
   padding: 3px;
 }
 
+/* Что требует внимания: лампа, слово, число. Горит только ненулевое, пустая
+ * панель не рисуется. Это переходы, а не клавиши прибора: плоские, без
+ * выпуклости, чтобы не спорить с Play. */
+.studio-attention {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 13px;
+  padding-bottom: 18px;
+  border-top: 1px solid rgb(0 0 0 / 0.33);
+  box-shadow: 0 -1px rgb(255 255 255 / 0.027);
+}
+
+@media (max-width: 1023px) {
+  .studio-attention {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.studio-attention a {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-radius: var(--radius-chip);
+  background: rgb(255 255 255 / 0.04);
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  transition: background-color var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+
+.studio-attention a:hover {
+  background: rgb(255 255 255 / 0.07);
+  color: var(--color-text-primary);
+}
+
+.studio-attention i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-warn);
+  box-shadow: var(--shadow-lens);
+}
+
+.studio-attention .failed i {
+  background: var(--color-accent);
+}
+
+.studio-attention strong {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
 .studio-section-heading {
   display: flex;
   align-items: center;
@@ -451,6 +511,7 @@ html:not([data-entered]) .studio-record-grid > *:nth-child(n + 4) { animation-de
 /* Карточка — пластина на корпусе: освещённая кромка сверху, тёмный волос снизу
  * и рассеянная тень под ней. */
 .studio-record {
+  position: relative;
   display: block;
   min-width: 0;
   padding: 21px 23px 15px;
@@ -531,9 +592,27 @@ html:not([data-entered]) .studio-record-grid > *:nth-child(n + 4) { animation-de
 
 /* Тема бывает длиннее карточки: переносить по любому месту, но не
  * выталкивать стрелку и не растягивать сетку. */
-.studio-record h3 > span {
+.studio-record h3 > a {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* Заголовок-ссылка растянут на всю карточку: нажатие в любом месте ведёт на
+ * запись. Кольцо фокуса — у карточки целиком, не у строчки текста. */
+.studio-record-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.studio-record-link:focus-visible {
+  outline: none;
+}
+
+.studio-record:has(.studio-record-link:focus-visible) {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
 }
 
 .studio-record h3 svg {
@@ -565,7 +644,11 @@ html:not([data-entered]) .studio-record-grid > *:nth-child(n + 4) { animation-de
 /* Клавиша воспроизведения на карточке — та же светлая клавиша, что у плеера:
  * единственное светлое пятно на пластине, к нему и тянется рука. Тень клавиши
  * общая с плеером (--shadow-key): выпуклость, паз вокруг и тень под ней. */
+/* Клавиша лежит над растянутой ссылкой: у неё своё действие — играть. */
 .studio-small-play {
+  position: relative;
+  z-index: 1;
+  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -573,17 +656,24 @@ html:not([data-entered]) .studio-record-grid > *:nth-child(n + 4) { animation-de
   width: 42px;
   height: 42px;
   border-radius: 50%;
-  background: linear-gradient(150deg, #ede5d4, #d5cbb8 65%, #bfb8a8);
-  box-shadow: var(--shadow-key);
-  color: var(--color-canvas);
+  /* Контур, а не выпуклая светлая клавиша: четыре одинаковые светлые ▶ были
+   * громче заголовков карточек. Светится в интерфейсе одна клавиша — плеера. */
+  border: 1px solid rgb(221 204 181 / 0.35);
+  background: rgb(255 255 255 / 0.03);
+  color: #e8e2d6;
 }
 
 .studio-record:hover .studio-small-play {
-  box-shadow: var(--shadow-key-lit);
+  border-color: rgb(221 204 181 / 0.6);
+  background: rgb(255 255 255 / 0.07);
 }
 
 .studio-small-play svg {
   margin-left: 2px;
+}
+
+.studio-small-play:active {
+  transform: translateY(1px);
 }
 
 .studio-wave-preview {
@@ -668,20 +758,22 @@ html:not([data-entered]) .studio-record-grid > *:nth-child(n + 4) { animation-de
   box-shadow: inset 0 2px 3px rgb(0 0 0 / 0.33);
 }
 
-.studio-review-note {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 15px 17px;
-  border: 1px solid rgb(219 182 110 / 0.13);
-  border-radius: 12px;
-  background: rgb(219 182 110 / 0.027);
-  font-size: 13px;
-  color: #c4b48f;
+/* Подсказка клавиш над плеером — только пока фокус с клавиатуры на волне. */
+.recorder-keys-hint {
+  display: none;
 }
 
-.studio-review-note span {
-  margin-left: auto;
+.recorder-player:has([role="slider"]:focus-visible) .recorder-keys-hint {
+  display: block;
+}
+
+/* Плеер при чтении вниз: без волны, одной строкой. Возврат — прокруткой вверх. */
+@media (max-width: 1023px) {
+  .recorder-player.is-compact:not(:has(:focus-visible)) .recorder-player-wave {
+    height: 0;
+    overflow: hidden;
+    opacity: 0;
+  }
 }
 
 /* ----- Остальные страницы: шапка, карточки, строки, поля -------------------- */
@@ -713,7 +805,9 @@ html:not([data-entered]) .studio-record-grid > *:nth-child(n + 4) { animation-de
 }
 
 /* Поля ввода утоплены в панель; переключатели и радиокнопки — свои. */
-input:not([type="checkbox"]):not([type="radio"]) {
+/* Кроме «голых» полей внутри своей капсулы (поиск): там утопленный чёрный
+ * прямоугольник внутри скруглённой рамки давал «коробку в коробке». */
+input:not([type="checkbox"]):not([type="radio"]):not(.recorder-bare) {
   background: #181a1c;
   box-shadow: inset 0 2px 5px rgb(0 0 0 / 0.47);
   border-color: #787b74;
@@ -732,12 +826,12 @@ input:not([type="checkbox"]):not([type="radio"]) {
   color: #e2dbce;
 }
 
-.studio-summary::before {
-  content: "Главное из разговора";
+/* Подпись таблички — обычным шрифтом: моно у прибора только время и номера. */
+.studio-summary-label {
   display: block;
   margin-bottom: 13px;
-  font: 10px var(--font-mono);
-  letter-spacing: 1.5px;
+  font: 500 11px var(--font-sans);
+  letter-spacing: 1px;
   text-transform: uppercase;
   color: #b9ad94;
 }
@@ -845,11 +939,6 @@ input:not([type="checkbox"]):not([type="radio"]) {
     letter-spacing: -2.5px;
   }
 
-  .studio-eyebrow {
-    font-size: 9px;
-    letter-spacing: 1.55px;
-  }
-
   .studio-date {
     display: block;
     margin-top: 9px;
@@ -892,7 +981,7 @@ input:not([type="checkbox"]):not([type="radio"]) {
 
   .studio-meter-label {
     gap: 4px;
-    font-size: 10px;
+    font-size: 11px;
     white-space: nowrap;
   }
 
@@ -908,7 +997,7 @@ input:not([type="checkbox"]):not([type="radio"]) {
   .studio-processing {
     gap: 13px;
     padding: 12px 0;
-    font-size: 10px;
+    font-size: 11px;
   }
 
   .studio-processing > span {
@@ -963,11 +1052,11 @@ input:not([type="checkbox"]):not([type="radio"]) {
 
   .studio-record-bottom,
   .studio-record-status {
-    font-size: 10px;
+    font-size: 11px;
   }
 
   .recorder-page-header h1 {
-    font-size: 35px;
+    font-size: 30px;
     letter-spacing: -1.1px;
   }
 
@@ -1008,7 +1097,8 @@ input:not([type="checkbox"]):not([type="radio"]) {
   .recorder-player {
     left: 13px;
     right: 13px;
-    bottom: calc(100px + env(safe-area-inset-bottom, 0px));
+    /* Вплотную к панели разделов: щель в 18 px показывала едущий текст. */
+    bottom: calc(80px + max(0px, env(safe-area-inset-bottom, 0px) - 1rem));
     gap: 12px;
     padding: 13px 12px;
     border-radius: 19px;
@@ -1040,7 +1130,7 @@ input:not([type="checkbox"]):not([type="radio"]) {
   }
 
   .recorder-player-body > div:first-child > span:last-child {
-    font-size: 10px;
+    font-size: 12px;
   }
 
   .recorder-player-body .text-\[20px\] {
@@ -1095,11 +1185,11 @@ input:not([type="checkbox"]):not([type="radio"]) {
 
   .studio-processing {
     gap: 8px;
-    font-size: 9px;
+    font-size: 11px;
   }
 
   .studio-meter-label {
-    font-size: 9px;
+    font-size: 11px;
   }
 }
 

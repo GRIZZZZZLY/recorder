@@ -287,6 +287,15 @@ def search(q: str = "", _=Depends(owner)):
         return db.search_segments(conn, q)
 
 
+@router.get("/search/notes")
+def search_notes(q: str = "", _=Depends(owner)):
+    """То же слово — в решениях, фактах, задачах и вопросах саммари."""
+    if not q.strip():
+        return []
+    with closing(db.connect()) as conn:
+        return db.search_notes(conn, q)
+
+
 @router.post("/parts/{device_id}/{session}/{part}/retry")
 def retry_part(device_id: str, session: int, part: int, _=Depends(owner)):
     """Вернуть упавшую часть в очередь расшифровки.

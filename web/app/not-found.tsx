@@ -20,7 +20,7 @@ export default function NotFound() {
         <span className="font-mono text-note text-text-tertiary">404</span>
         <h1 className="text-page-sm text-text-primary sm:text-page">Такой страницы нет</h1>
         <p className="text-[15px] leading-normal text-text-secondary">
-          Сессии с таким номером не было, или ссылка устарела. Записи никуда не делись.
+          Такого адреса нет, или ссылка устарела. Записи никуда не делись.
         </p>
         <div className="flex flex-wrap gap-2 pt-1">
           {WAYS.map(({ href, title, icon: Glyph }) => (

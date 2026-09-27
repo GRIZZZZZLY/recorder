@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { visited } from "@/lib/nav-history";
 import {
   CaretRight, CheckSquare, DotsThreeCircle, Folders, House, MagnifyingGlass,
   Pulse, Question, Waveform as WaveformIcon, WarningCircle, X,
@@ -53,6 +54,8 @@ function NavGlyph({ icon: Glyph, size, active, pop }: {
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
+  // Для «назад» в шапке страницы: знать, из какого раздела пришли.
+  useEffect(() => visited(pathname), [pathname]);
   const { data } = useApi<DigestBody>("/digest");
   const now = useNow();
   const sheet = useRef<HTMLDialogElement>(null);
@@ -137,6 +140,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                   title="диктофон пишет" />
           )}
           <span className="text-row font-semibold">Диктофон</span>
+          <span className="studio-model" aria-hidden>STUDIO / 01</span>
         </div>
         <nav className="flex flex-col gap-0.5">
           {NAV.map(({ key, label, short, href, icon: Glyph }) => {
@@ -174,13 +178,15 @@ export function Shell({ children }: { children: React.ReactNode }) {
               с любой страницы и на телефоне тоже — десктопный aside не считается. */}
           <div className="studio-brandline">
             <span className="studio-wordmark">
-              <span className="studio-brand-disc" aria-hidden />
+              <span className={cx("studio-brand-disc", live && "is-live")} aria-hidden />
               Диктофон
               <span className="studio-model" aria-hidden>STUDIO / 01</span>
             </span>
-            <Link href="/status/" className="studio-device-state">
+            <Link href="/status/" className="studio-device-state hit relative">
               <span className={cx("studio-led", live && "is-live")} aria-hidden />
-              {live ? "Идёт запись" : lastAt ? `В ожидании · ${formatAgo(lastAt, now)}` : "В ожидании"}
+              {/* Про тишину диктофона известно одно — когда он выгружался последний
+                  раз. «В ожидании» было догадкой, выдававшей себя за состояние. */}
+              {!data ? "" : live ? "Идёт запись" : lastAt ? `выгрузка ${formatAgo(lastAt, now)}` : "выгрузок не было"}
             </Link>
           </div>
           {children}
@@ -244,7 +250,6 @@ export function Shell({ children }: { children: React.ReactNode }) {
         className="mt-auto mb-0 w-full max-w-none rounded-t-card border-0 bg-surface-elevated p-0 text-text-primary shadow-sheet lg:hidden"
       >
         <div className="flex flex-col gap-3 px-4 pt-2 pb-[max(2rem,env(safe-area-inset-bottom))]">
-          <span aria-hidden className="mx-auto h-1 w-9 rounded-sm bg-hairline-strong" />
           <div className="flex items-center justify-between px-0.5 py-1">
             <span className="text-section">Ещё</span>
             <button type="button" aria-label="Закрыть" onClick={() => sheet.current?.close()}

@@ -7,11 +7,11 @@ import { CaretLeft, CaretRight } from "@phosphor-icons/react/dist/ssr";
 import { Waveform } from "@/components/recorder/waveform";
 import type { SessionRow } from "@/lib/api";
 import {
-  formatClock, formatDayShort, formatDuration, formatTime, hoursOfDay, todayIso,
+  formatDayShort, formatDuration, hoursOfDay, recordTitle, todayIso,
 } from "@/lib/format";
 import { magnetTarget } from "@/lib/magnet";
 import { sessionHref } from "@/lib/session-link";
-import { STATUS_TEXT, statusTone } from "@/lib/session-status";
+import { statusTone, statusWord } from "@/lib/session-status";
 import { cx } from "@/utils/cx";
 
 /**
@@ -73,9 +73,8 @@ function clamp(value: number, low: number, high: number) {
 }
 
 function label(row: SessionRow) {
-  // Без темы разговор зовётся своим часом. Номер сессии — внутренность
-  // системы, на ленте ему делать нечего.
-  return row.topic || `Разговор в ${formatTime(row.first_at)}`;
+  // Имя записи — то же, что на карточке и на её странице.
+  return recordTitle(row);
 }
 
 export function DayTimeline({ rows, now }: {
@@ -357,8 +356,8 @@ export function DayTimeline({ rows, now }: {
                       незачем. Столбик на два пикселя: 45 секунд звука. */}
                   <Link
                     href={sessionHref(row.device_id, row.session)}
-                    aria-label={`${label(row)}, ${formatTime(row.first_at)}, ${formatDuration(row.seconds)}, ${STATUS_TEXT[tone]}`}
-                    title={`${label(row)} · ${formatDuration(row.seconds)} · ${STATUS_TEXT[tone]}`}
+                    aria-label={`${label(row)}, ${formatDuration(row.seconds)}, ${statusWord(row, now)}`}
+                    title={`${label(row)} · ${formatDuration(row.seconds)} · ${statusWord(row, now)}`}
                     className={cx(
                       "press-row hit absolute top-4 flex h-10 items-center rounded-inner px-px hover:bg-hairline",
                       NEAR_BG[near],
@@ -413,22 +412,26 @@ export function DayTimeline({ rows, now }: {
           onClick={openUnderHead}
           className="absolute top-0 bottom-0 left-1/2 flex w-11 -translate-x-1/2 cursor-grab touch-none items-start justify-center active:cursor-grabbing pointer-coarse:pointer-events-none"
         >
-          <span aria-hidden className="absolute top-0 bottom-0 w-px bg-accent shadow-glow-accent-soft" />
-          <span aria-hidden className="absolute -top-1 size-2 rounded-chip bg-accent shadow-lens" />
+          {/* Без свечения: светится то, что включено или живо, а лента
+              показывает прошлое. */}
+          {/* Головка — указатель, а не сигнал: светлая. Красный у прибора
+              значит «пишет» или «внимание». */}
+          <span aria-hidden className="absolute top-0 bottom-0 w-px bg-fill" />
+          <span aria-hidden className="absolute -top-1 size-2 rounded-chip bg-fill shadow-lens" />
         </button>
       </div>
 
       {/* Подпись под головкой: время, а если под ней запись — её имя. */}
       <div className="flex items-baseline justify-center gap-2 text-note">
         {/* Показание прибора: одно крупное число на экране. */}
-        <span className="font-mono text-[22px] leading-none text-accent-text">{headLabel}</span>
+        <span className="font-mono text-[22px] leading-none text-text-primary">{headLabel}</span>
         {under ? (
           <button type="button" onClick={openUnderHead}
                   // Цель 44 px за счёт полей, а не `hit`: truncate режет всё, что
                   // выходит за рамку, невидимый слой тоже. Отрицательные поля
                   // возвращают строке прежнюю высоту.
-                  className="press -my-3.5 min-w-0 truncate py-3.5 text-text-primary hover:underline">
-            {label(under)} · {formatClock(Math.max(0, head - startSeconds(under)!))}
+                  className="press -mx-3 -my-3.5 min-w-0 truncate px-3 py-3.5 text-text-primary hover:underline">
+            {under.topic || formatDuration(under.seconds)}
           </button>
         ) : (
           <span className="text-text-tertiary">записи нет</span>

@@ -233,7 +233,7 @@ body::before {
 
 /* Кольцо фокуса: 2 px белым с отступом 2 px. Селектор в :where() — нулевая
  * специфичность, элемент со своим кольцом перекрывает правило любым классом. */
-:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--color-focus);
   outline-offset: 2px;
   /* Мягкое свечение поверх кольца: кольцо даёт 3:1, свечение — только
@@ -482,8 +482,10 @@ textarea {
  * по тому же пункту саммари должен снова показать, куда он ведёт.
  * При reduced-motion остаётся: это цвет, а не движение — и это единственный
  * признак, по которому видно нужную реплику. */
-@utility flash-source {
-  animation: flash-source 1200ms var(--ease-out) both;
+/* Без удержания кадра: по окончании у строки остаётся её собственный фон —
+ * подсветка звучащей реплики, а не прозрачность последнего кадра. */
+[data-flash] {
+  animation: flash-source 1200ms var(--ease-out);
 }
 
 /* Решётка микрофона: точечная сетка 6 px белым 5 %. Только на «приборе» —

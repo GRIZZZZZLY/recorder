@@ -85,13 +85,56 @@ export function hoursOfDay(stamp: string | null | undefined): number | null {
   return at ? at.getHours() + at.getMinutes() / 60 : null;
 }
 
-/** Секунды внутри записи → "00:12:34". Часы всегда двумя цифрами. */
+/** Секунды внутри записи → "0:19", "12:34", "1:02:03" — как в любом плеере.
+ * «00:00:19» у разговора на минуту читалось как отчёт машины, а не время. */
 export function formatClock(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds));
-  const hh = String(Math.floor(total / 3600)).padStart(2, "0");
-  const mm = String(Math.floor((total % 3600) / 60)).padStart(2, "0");
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
   const ss = String(total % 60).padStart(2, "0");
-  return `${hh}:${mm}:${ss}`;
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+/** Время из саммари («0:00:27», его пишет сервер) — в тот же вид. Неразборное
+ * возвращается как есть. */
+export function normalizeClock(text: string): string {
+  const match = /^(\d+):(\d\d):(\d\d)$/.exec(text);
+  return match ? formatClock(Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3])) : text;
+}
+
+/** «2 200 000» не должно рваться переносом строки посреди числа: пробелы
+ * между разрядами — неразрывные. Модель пишет числа с обычными пробелами. */
+export function keepNumbers(text: string): string {
+  return text.replace(/(\d) (?=\d{3}(?!\d))/g, "$1\u00a0");
+}
+
+/** Метка базы → «15 сен, 12:31» по местному времени. */
+export function formatStamp(stamp: string | null | undefined): string {
+  const at = parseStamp(stamp);
+  if (!at) return "";
+  const iso = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`;
+  return `${formatDayShort(iso)}, ${formatTime(stamp)}`;
+}
+
+/** Сырая ошибка расшифровщика или модели → что случилось, по-человечески.
+ * Неизвестная — общая фраза; сырой текст всё равно показывается под ней. */
+export function humanError(raw: string | null | undefined): string {
+  const text = raw ?? "";
+  if (/corrupt|unsupported|invalid audio|decode/i.test(text)) return "звук повреждён или в незнакомом формате";
+  if (/timeout|timed out/i.test(text)) return "расшифровщик не ответил вовремя";
+  if (/\b(401|403)\b|api key|unauthori/i.test(text)) return "ключ расшифровщика не принят";
+  if (/\b429\b|rate limit/i.test(text)) return "расшифровщик перегружен — повторите позже";
+  if (/\b5\d\d\b/.test(text)) return "сбой на стороне расшифровщика";
+  if (/claude|model/i.test(text)) return "модель не ответила";
+  return text ? "причина — ниже" : "причина не записана";
+}
+
+/** Имя записи — одно на всех экранах: тема саммари, без неё — день и час.
+ * Раньше у одной записи было три имени: «тема появится после саммари»,
+ * «разговор без темы» и «15 сентября, 15:30». */
+export function recordTitle(row: { topic: string | null; day: string | null; first_at: string | null }): string {
+  if (row.topic) return row.topic;
+  return row.day ? `${formatDay(row.day)}, ${formatTime(row.first_at)}` : "Разговор";
 }
 
 /** Длительность словами: "45 с", "30 мин", "1 ч 20 мин". */

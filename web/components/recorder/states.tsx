@@ -1,7 +1,7 @@
 import { ArrowClockwise } from "@phosphor-icons/react/dist/ssr";
 import { Card } from "@/components/recorder/list";
 import { Button, Dot } from "@/components/recorder/ui";
-import { AuthError } from "@/lib/api";
+import { ApiError, AuthError } from "@/lib/api";
 import { cx } from "@/utils/cx";
 
 /**
@@ -71,6 +71,21 @@ function here() {
 
 export function Failed({ error, onRetry }: { error: Error; onRetry: () => void }) {
   const auth = error instanceof AuthError;
+  // «Нет такой записи» — не сбой: повторять бесполезно, нужен путь к записям.
+  if (error instanceof ApiError && error.status === 404) {
+    return (
+      <div className="rise-in flex items-center gap-3.5 rounded-card bg-surface shadow-plate p-5 text-row">
+        <Dot tone="missing" />
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span>Такого здесь нет</span>
+          <span className="text-note text-text-secondary">Ссылка устарела или запись удалена. Остальные записи на месте.</span>
+        </div>
+        <a href="/records/" className="press hit relative shrink-0 rounded-inner bg-hairline px-4 py-2 text-note hover:bg-hairline-strong">
+          К записям
+        </a>
+      </div>
+    );
+  }
   return (
     <div className="rise-in flex items-center gap-3.5 rounded-card bg-surface shadow-plate p-5 text-row">
       <Dot tone="accent" />

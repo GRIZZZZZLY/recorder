@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import {
-  ArrowRight, CheckCircle, Clock, Waveform as WaveIcon, WarningCircle,
+  ArrowRight, CheckCircle, Clock, Waveform as WaveIcon,
 } from "@phosphor-icons/react/dist/ssr";
 import { Empty, Failed, Loading } from "@/components/recorder/states";
 import { StudioRecord } from "@/components/recorder/studio-record";
@@ -43,6 +43,16 @@ export default function DigestPage() {
   const lastAt = data.recent[0]?.last_at ?? null;
   const queue = status?.transcripts_pending ?? 0;
   const waiting = status?.summaries_pending ?? 0;
+  // Что ждёт владельца: просроченное у всех (не только у него), спорные места,
+  // вопросы без ответа, сломанное. Горит только ненулевое — «командный центр»
+  // говорит о долгах, а не отчитывается, что всё в порядке.
+  const counts = data?.week;
+  const attention = counts ? [
+    { href: "/tasks/?show=overdue", label: "Просрочено", count: counts.overdue_tasks, tone: "failed" },
+    { href: "/review/", label: "Спорные", count: counts.review, tone: "pending" },
+    { href: "/questions/", label: "Вопросы", count: counts.open_questions, tone: "pending" },
+    { href: "/status/", label: "Ошибки", count: counts.failed_parts + counts.failed_summaries, tone: "failed" },
+  ].filter((item) => item.count > 0) : [];
 
   // Показания прибора. В день, когда что-то записано, это счётчики дня. В день
   // без записей нулей не будет: шкала переключается на архив — сколько звука
@@ -50,22 +60,17 @@ export default function DigestPage() {
   // сессий, который уже загружен ради ленты; новых запросов нет.
   const today = data.day.sessions > 0;
   const archiveSeconds = sessions?.reduce((sum, row) => sum + row.seconds, 0) ?? 0;
-  const archiveDay = sessions?.find((row) => row.day)?.day ?? null;
 
   return (
     <div className="studio-home">
       <header className="studio-home-heading">
-        <div>
-          <span className="studio-eyebrow">ВАШ ЗВУКОВОЙ ДНЕВНИК</span>
-          <h1>Сводка<span className="studio-title-dot">.</span></h1>
-        </div>
+        <h1>Сводка</h1>
         <span className="studio-date">{formatDayLong(todayIso())}</span>
       </header>
 
       <section className="studio-instrument" aria-label="Лента дня">
         <div className="studio-instrument-label">
           <span><WaveIcon size={17} aria-hidden /> Лента дня</span>
-          <span className="studio-engraved" aria-hidden>24 H / AUDIO LOG</span>
         </div>
 
         {/* Лента живёт своей жизнью: по ней ходят в прошлые дни, даже когда
@@ -94,11 +99,11 @@ export default function DigestPage() {
             </div>
             <div>
               <span className="studio-meter-label"><WaveIcon size={13} aria-hidden /> Разговоров</span>
-              <strong>{String(data.day.sessions).padStart(2, "0")}</strong>
+              <strong>{data.day.sessions}</strong>
             </div>
             <div>
               <span className="studio-meter-label"><CheckCircle size={13} aria-hidden /> Новых задач</span>
-              <strong>{String(data.day.new_tasks).padStart(2, "0")}</strong>
+              <strong>{data.day.new_tasks}</strong>
             </div>
           </div>
         ) : archiveSeconds > 0 ? (
@@ -109,13 +114,7 @@ export default function DigestPage() {
             </div>
             <div>
               <span className="studio-meter-label"><WaveIcon size={13} aria-hidden /> Разговоров</span>
-              <strong>{String(sessions?.length ?? 0).padStart(2, "0")}</strong>
-            </div>
-            <div>
-              <span className="studio-meter-label"><CheckCircle size={13} aria-hidden /> Последний</span>
-              {/* Дата — не показание шкалы, поэтому мельче: иначе «13 сен»
-                  ломается на две строки и ряд перестаёт быть рядом. */}
-              <strong className="studio-meter-date">{formatDayShort(archiveDay)}</strong>
+              <strong>{sessions?.length ?? 0}</strong>
             </div>
           </div>
         ) : null}
@@ -134,14 +133,24 @@ export default function DigestPage() {
                 <i aria-hidden />Саммари · {count(waiting, "ждёт", "ждут", "ждут")}
               </span>
             ) : null}
-            <Link href="/status/" aria-label="Состояние обработки"><ArrowRight size={16} aria-hidden /></Link>
+            <Link href="/status/" aria-label="Состояние обработки" className="hit relative"><ArrowRight size={16} aria-hidden /></Link>
           </div>
+        ) : null}
+
+        {attention.length > 0 ? (
+          <nav className="studio-attention" aria-label="Требует внимания">
+            {attention.map((item) => (
+              <Link key={item.href} href={item.href} className={cx("hit relative", item.tone)}>
+                <i aria-hidden />{item.label}<strong>{item.count}</strong>
+              </Link>
+            ))}
+          </nav>
         ) : null}
       </section>
 
       <div className="studio-section-heading">
         <h2>Последние записи</h2>
-        <Link href="/records/">Все записи <ArrowRight size={16} aria-hidden /></Link>
+        <Link href="/records/" className="hit relative">Все записи <ArrowRight size={16} aria-hidden /></Link>
       </div>
       {data.recent.length > 0 ? (
         <div className="studio-record-grid">
@@ -153,35 +162,30 @@ export default function DigestPage() {
         <p className="studio-empty">Здесь появится ваш первый разговор.</p>
       )}
 
-      <section className="studio-tasks-panel" aria-label="Мои задачи">
-        <div className="studio-section-heading">
-          <h2>Мои задачи{data.week.my_open_tasks > 0 && <span>{data.week.my_open_tasks}</span>}</h2>
-          <Link href="/tasks/?show=mine" aria-label="Все мои задачи"><ArrowRight size={18} aria-hidden /></Link>
-        </div>
-        {!data.has_me ? (
-          <p>Ни один говорящий не отмечен как «это я» — отметьте себя на странице записи, и здесь появятся ваши задачи.</p>
-        ) : data.my_tasks.length === 0 ? (
-          <p>Открытых задач нет.</p>
-        ) : (
-          data.my_tasks.slice(0, 5).map((task) => (
-            <Link key={`${task.session}-${task.task_id}`} className="studio-task-link"
-                  href={sessionHref(task.device_id, task.session, task.source?.part, task.source?.idx)}>
-              <span className="studio-check-square" aria-hidden />
-              <span className="studio-task-text">{task.text}</span>
-              <span className={cx("studio-task-due", task.overdue && "overdue")}>{due(task)}</span>
-              <ArrowRight size={15} aria-hidden />
-            </Link>
-          ))
-        )}
-      </section>
-
-      {data.day.review > 0 && (
-        <Link href="/review/" className="studio-review-note">
-          <WarningCircle size={17} aria-hidden /> Проверить спорные места
-          <span>{data.day.review}</span>
-          <ArrowRight size={15} aria-hidden />
-        </Link>
+      {/* Задач на владельце нет — секции нет: «на вас задач нет» — отчёт, что
+          всё в порядке, а его не показываем. Долги всех — в полосе внимания. */}
+      {(!data.has_me || data.my_tasks.length > 0) && (
+        <section className="studio-tasks-panel" aria-label="Мои задачи">
+          <div className="studio-section-heading">
+            <h2>Мои задачи{data.week.my_open_tasks > 0 && <span>{data.week.my_open_tasks}</span>}</h2>
+            <Link href="/tasks/?show=mine" aria-label="Все мои задачи" className="hit relative"><ArrowRight size={18} aria-hidden /></Link>
+          </div>
+          {!data.has_me ? (
+            <p>Ни один говорящий не отмечен как «это я» — отметьте себя на странице записи, и здесь появятся ваши задачи.</p>
+          ) : (
+            data.my_tasks.slice(0, 5).map((task) => (
+              <Link key={`${task.session}-${task.task_id}`} className="studio-task-link"
+                    href={sessionHref(task.device_id, task.session, task.source?.part, task.source?.idx)}>
+                <span className="studio-check-square" aria-hidden />
+                <span className="studio-task-text">{task.text}</span>
+                <span className={cx("studio-task-due", task.overdue && "overdue")}>{due(task)}</span>
+                <ArrowRight size={15} aria-hidden />
+              </Link>
+            ))
+          )}
+        </section>
       )}
+
     </div>
   );
 }

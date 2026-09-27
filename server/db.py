@@ -785,16 +785,56 @@ def search(conn, query, limit=50):
         (match, limit),
     ).fetchall()
 
-    results, cache = [], {}
+    results, cache, names = [], {}, {}
     for row in rows:
         key = (row["device_id"], row["session"])
         if key not in cache:
             timeline, _ = session_timeline(conn, *key)
             cache[key] = {(u["part"], u["idx"]): u for u in timeline}
+            # Разговор в выдаче зовётся темой и днём, а не номером сессии:
+            # номер владельцу ничего не говорит.
+            topic = conn.execute(
+                "SELECT json_extract(result, '$.topics[0]') FROM summaries"
+                " WHERE device_id=? AND session=?", key).fetchone()
+            names[key] = {"day": session_day(conn, *key).isoformat(),
+                          "topic": topic[0] if topic else None}
         hit = cache[key].get((row["part"], row["idx"]))
         if hit:
-            results.append({"device_id": row["device_id"], "session": row["session"], **hit})
+            results.append({"device_id": row["device_id"], "session": row["session"],
+                            **names[key], **hit})
     return results
+
+
+NOTE_KINDS = (("decisions", "решение"), ("facts", "факт"), ("tasks", "задача"),
+              ("open_questions", "вопрос"))
+
+
+def search_notes(conn, query, limit=30):
+    """Абзац саммари и его пункты (решения, факты, задачи, вопросы), где есть
+    все слова запроса по леммам, последнее — по началу, как в поиске по
+    репликам. «млн» из саммари раньше не находилось: искали только транскрипт."""
+    words = [textnorm.lemma(t) for t in textnorm.tokens(query)]
+    if not words:
+        return []
+    days, topics = session_days(conn), session_topics(conn)
+    hits = []
+    for device_id, session, result in done_summaries(conn):
+        items = [("саммари", {"text": result.get("summary") or ""})]
+        items += [(kind, item) for field, kind in NOTE_KINDS for item in result.get(field) or []]
+        for kind, item in items:
+            have = textnorm.lemmas(item.get("text") or "").split()
+            if not (all(w in have for w in words[:-1]) and any(h.startswith(words[-1]) for h in have)):
+                continue
+            hits.append({
+                "device_id": device_id, "session": session, "kind": kind,
+                "text": item.get("text") or "", "time": item.get("time") or "",
+                "source": item.get("source"),
+                "day": days.get((device_id, session)),
+                "topic": topics.get((device_id, session)),
+            })
+            if len(hits) >= limit:
+                return hits
+    return hits
 
 
 def search_segments(conn, query, limit=50):
@@ -1039,6 +1079,17 @@ def my_names(conn):
     }
 
 
+def session_topics(conn):
+    """{(устройство, сессия): первая тема саммари} — имя разговора в строках
+    задач и вопросов: «откуда это» без перехода на страницу записи."""
+    return {
+        (row["device_id"], row["session"]): row["topic"]
+        for row in conn.execute(
+            "SELECT device_id, session, json_extract(result, '$.topics[0]') AS topic"
+            " FROM summaries WHERE result IS NOT NULL").fetchall()
+    }
+
+
 def task_rows(conn, only_open=True, mine=False, overdue=False, session=None):
     """Задачи с признаками «моя» и «просрочена». Свежие сессии первыми."""
     sql = "SELECT * FROM tasks WHERE 1=1"
@@ -1052,9 +1103,12 @@ def task_rows(conn, only_open=True, mine=False, overdue=False, session=None):
 
     mine_set = my_names(conn)
     today = date.today().isoformat()
+    days, topics = session_days(conn), session_topics(conn)
     rows = []
     for row in conn.execute(sql, args).fetchall():
         item = dict(row)
+        key = (item["device_id"], item["session"])
+        item["day"], item["topic"] = days.get(key), topics.get(key)
         item["mine"] = bool(mine_set) and textnorm.normalize(item["owner"]) in mine_set
         item["overdue"] = bool(item["due_date"]) and item["due_date"] < today \
             and item["status"] == "open"
@@ -1083,7 +1137,7 @@ def question_rows(conn, only_open=True):
         (row["device_id"], row["session"], row["question_id"]): row["state"]
         for row in conn.execute("SELECT * FROM question_states").fetchall()
     }
-    days = session_days(conn)
+    days, topics = session_days(conn), session_topics(conn)
     rows = []
     for device_id, session, result in done_summaries(conn):
         for item in result.get("open_questions") or []:
@@ -1096,6 +1150,7 @@ def question_rows(conn, only_open=True):
                 "state": state, "text": item.get("text") or "",
                 "time": item.get("time") or "", "source": item.get("source"),
                 "day": days.get((device_id, session)),
+                "topic": topics.get((device_id, session)),
             })
     return rows
 
@@ -1225,8 +1280,9 @@ def review_items(conn):
                   "day": days.get((task["device_id"], task["session"])),
                   "text": task["text"], "source": source}
         if not task["owner"]:
-            items.append({"kind": "задача без исполнителя",
-                          "detail": "исполнитель не прозвучал", **common})
+            # Подпись пустая: «задача без исполнителя · исполнитель не
+            # прозвучал» — одно и то же дважды.
+            items.append({"kind": "задача без исполнителя", "detail": "", **common})
         if task["due_said"] and not task["due_date"]:
             items.append({"kind": "срок не разобран",
                           "detail": f"сказано: {task['due_said']}", **common})
@@ -1252,6 +1308,9 @@ def session_rows(conn, limit=None):
     """
     sql = (
         "SELECT p.device_id, p.session, COUNT(*) AS parts, SUM(p.bytes) AS bytes,"
+        # Первая принятая часть: клавиша ▶ на карточке запускает звук прямо в
+        # нажатии, ждать ответа сервера там нельзя — iPhone запретит автозапуск.
+        "       MIN(p.part) AS first_part,"
         # Секунды суммируются по частям, а не байты: у моно и стерео разная
         # цена секунды, и сложить их размеры было бы сложением разных единиц.
         # Клэмп тоже по части: часть короче заголовка (битая, обрезанная) иначе
@@ -1269,7 +1328,12 @@ def session_rows(conn, limit=None):
         "         WHERE s.device_id=p.device_id AND s.session=p.session) AS topic,"
         "       (SELECT COUNT(*) FROM transcripts t"
         "         WHERE t.device_id=p.device_id AND t.session=p.session"
-        "           AND t.status='done') AS done_parts"
+        "           AND t.status='done') AS done_parts,"
+        # Упавшие части: карточка записи не должна показывать «готово», когда
+        # кусок звука так и не расшифровался.
+        "       (SELECT COUNT(*) FROM transcripts t"
+        "         WHERE t.device_id=p.device_id AND t.session=p.session"
+        "           AND t.status='failed') AS failed_parts"
         " FROM parts p GROUP BY p.device_id, p.session"
         " ORDER BY p.received_at DESC"
     )
@@ -1323,7 +1387,9 @@ def digest(conn, days):
         "open_tasks": len(tasks),
         "overdue_tasks": sum(1 for t in tasks if t["overdue"]),
         "open_questions": len(question_rows(conn)),
-        "review": len(review_items(conn)),
+        # Пункты, а не причины: одна задача без исполнителя и с неразобранным
+        # сроком — одно место, которое надо посмотреть, а не два.
+        "review": len({(i["device_id"], i["session"], i["text"]) for i in review_items(conn)}),
         "failed_parts": one("SELECT COUNT(*) FROM transcripts WHERE status='failed'"),
         "failed_summaries": one(
             "SELECT COUNT(*) FROM summaries WHERE status!='done' AND last_error IS NOT NULL"),
@@ -1341,8 +1407,13 @@ def processing_status(conn):
             "SELECT COUNT(*) FROM parts p LEFT JOIN transcripts t"
             " ON t.device_id=p.device_id AND t.session=p.session AND t.part=p.part"
             " WHERE t.status IS NULL OR t.status='pending'"),
+        # Записи без готового саммари — и те, для которых строки ещё нет:
+        # воркер заводит её сам, но до этого запись уже «обрабатывается» на
+        # карточке, и «все собраны» здесь было бы неправдой.
         "summaries_pending": one(
-            "SELECT COUNT(*) FROM summaries WHERE status!='done'"),
+            "SELECT COUNT(*) FROM (SELECT DISTINCT device_id, session FROM parts) p"
+            " LEFT JOIN summaries s ON s.device_id=p.device_id AND s.session=p.session"
+            " WHERE s.status IS NULL OR s.status!='done'"),
         "deepgram_minutes": (one(
             "SELECT COALESCE(SUM(duration_sec),0) FROM transcripts WHERE status='done'")
             or 0) / 60.0,

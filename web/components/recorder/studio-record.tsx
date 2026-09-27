@@ -1,11 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { ArrowUpRight, BookmarkSimple, Play } from "@phosphor-icons/react/dist/ssr";
 import type { SessionRow } from "@/lib/api";
-import { count, formatDay, formatDuration, formatTime } from "@/lib/format";
+import { startPlayback } from "@/lib/audio";
+import { count, formatDuration, formatTime, recordTitle } from "@/lib/format";
 import { sessionHref } from "@/lib/session-link";
-import { statusTone, STATUS_TEXT } from "@/lib/session-status";
+import { statusTone, statusWord } from "@/lib/session-status";
+import { minutesSince, useNow } from "@/lib/use-now";
 import { Waveform } from "./waveform";
 
 /**
@@ -14,6 +17,10 @@ import { Waveform } from "./waveform";
  *
  * Номер записи здесь — гравировка на корпусе (REC / 0009), а не отчёт системы;
  * число частей по-прежнему всплывает только пока расшифровка отстаёт от записи.
+ *
+ * Карточка — не одна большая ссылка: клавиша ▶ на ней настоящая и играет
+ * запись сразу, а ссылка — заголовок, растянутый на всю карточку (::after).
+ * Кнопка внутри ссылки была бы недопустимой разметкой.
  */
 export function StudioRecord({ row, compact = false }: {
   row: SessionRow;
@@ -21,34 +28,53 @@ export function StudioRecord({ row, compact = false }: {
   compact?: boolean;
 }) {
   const tone = statusTone(row);
-  const lagging = row.done_parts < row.parts;
-  // Без темы разговор зовётся своим днём и часом. «Тема появится после
-  // саммари» — обещание, и оно верно, только пока саммари действительно
-  // считается: у готового саммари тем может не быть вовсе (бытовая запись),
-  // и обещать там нечего.
-  const pending = tone === "warn";
-  const title = row.topic
-    || (pending ? null : row.day ? `${formatDay(row.day)}, ${formatTime(row.first_at)}` : null);
+  // Отстаёт — только пока части ждут: упавшая не ждёт, о ней говорит статус.
+  const lagging = row.done_parts + row.failed_parts < row.parts;
+  // Имя — одно на всех экранах (recordTitle). «Тема появится после саммари» —
+  // не имя, а обещание под ним, и только пока саммари действительно
+  // считается: у готового саммари тем может не быть вовсе (бытовая запись).
+  // Больше часа без движения — уже не «обрабатывается», а «ждёт с такого-то
+  // дня»: обещание уместно, только пока работа идёт.
+  const now = useNow();
+  const stale = tone === "warn" && minutesSince(row.last_at, now) > 60;
+  const pending = tone === "warn" && !row.topic && !stale;
+  const title = recordTitle(row);
+  const href = sessionHref(row.device_id, row.session);
+  const router = useRouter();
+
+  // Звук стартует в самом нажатии — iPhone разрешает только так, — и плеер
+  // на странице записи подхватывает его уже играющим.
+  function listen() {
+    startPlayback(row.device_id, row.session, row.first_part, title);
+    router.push(href);
+  }
+
   return (
-    <Link className="studio-record" href={sessionHref(row.device_id, row.session)}>
+    <div className="studio-record">
       <div className="studio-record-meta">
         <span className="studio-rec-no">REC / {String(row.session).padStart(4, "0")}</span>
-        <span>{formatTime(row.first_at)}</span>
-        <span className={`studio-record-status ${tone}`}><i aria-hidden />{STATUS_TEXT[tone]}</span>
+        {/* Без темы имя записи уже содержит час — второй раз не нужен. */}
+        {row.topic ? <span>{formatTime(row.first_at)}</span> : null}
+        {/* «Готово» — отчёт, что всё в порядке: его не показываем. */}
+        {tone !== "ok" && (
+          <span className={`studio-record-status ${tone}`}>
+            <i aria-hidden />{statusWord(row, now)}
+          </span>
+        )}
       </div>
       <h3>
-        {title
-          ? <span>{title}</span>
-          : <span className="muted">
-              {pending ? "тема появится после саммари" : "разговор без темы"}
-            </span>}
+        <Link href={href} className="studio-record-link">{title}</Link>
         <ArrowUpRight size={17} aria-hidden />
       </h3>
+      {pending && <div className="studio-record-person">тема появится после саммари</div>}
       {row.speakers.length > 0 && (
         <div className="studio-record-person">{row.speakers.join(" · ")}</div>
       )}
       <div className="studio-record-audio">
-        <span className="studio-small-play" aria-hidden><Play size={17} weight="fill" /></span>
+        <button type="button" className="studio-small-play hit" onClick={listen}
+                aria-label={`Слушать: ${title}`}>
+          <Play size={17} weight="fill" aria-hidden />
+        </button>
         <div className="studio-wave-preview">
           <Waveform values={row.envelope} height={compact ? 30 : 40} className="w-full" />
         </div>
@@ -65,6 +91,6 @@ export function StudioRecord({ row, compact = false }: {
           )}
         </div>
       )}
-    </Link>
+    </div>
   );
 }

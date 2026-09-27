@@ -22,7 +22,7 @@ function MeSwitch({ value, current, onChange }: {
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="flex shrink-0 cursor-pointer items-center gap-2.5">
+    <label className="hit relative flex shrink-0 cursor-pointer items-center gap-2.5">
       <span className="text-micro text-text-secondary">это я</span>
       <input
         type="radio"
@@ -95,7 +95,7 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
                 aria-label={manyParts ? `Имя: ${who}, часть ${speaker.part}` : `Имя: ${who}`}
                 onChange={(event) =>
                   setNames((old) => ({ ...old, [key]: event.target.value }))}
-                className="min-w-0 flex-1 rounded-inner bg-transparent px-2 py-1 text-row text-text-primary transition-colors placeholder:text-text-tertiary hover:bg-hairline"
+                className="min-w-0 flex-1 rounded-inner bg-transparent px-2 py-1 text-row text-text-primary transition-colors placeholder:text-text-tertiary hover:bg-hairline max-md:min-h-11"
               />
               <MeSwitch value={key} current={me} onChange={setMe} />
             </Row>

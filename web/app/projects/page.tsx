@@ -50,14 +50,12 @@ export default function ProjectsPage() {
   if (error) return <Failed error={error} onRetry={reload} />;
   if (loading || !data) return <Loading />;
 
-  const total = data.projects.reduce((sum, project) => sum + project.sessions, 0);
-
   return (
     <>
       <PageHeader
         title="Проекты"
         aside={data.projects.length
-          ? `${count(data.projects.length, "тема", "темы", "тем")} · ${count(total, "разговор", "разговора", "разговоров")}`
+          ? count(data.projects.length, "проект", "проекта", "проектов")
           : undefined}
       />
 
@@ -90,14 +88,14 @@ export default function ProjectsPage() {
         </div>
       )}
 
-      <Section head="Псевдонимы" aside="как тема звучит в разговоре → как называется в системе">
+      <Section head="Псевдонимы" aside="как тема звучит в разговоре → как назвать проект">
         <Card>
           <Row className="flex-wrap items-end gap-3">
-            <Input className="min-w-40 flex-1" label="Как прозвучало" placeholder="Пози флора"
+            <Input className="min-w-40 flex-1" label="Как прозвучало" placeholder="например, Пози флора"
                    value={alias}
                    onChange={(value) => { setAlias(value); setSaveError(null); }} />
             <ArrowRight size={16} aria-hidden className="mb-3 hidden shrink-0 text-text-tertiary sm:block" />
-            <Input className="min-w-40 flex-1" label="Название проекта" placeholder="Posiflora"
+            <Input className="min-w-40 flex-1" label="Название проекта" placeholder="например, Posiflora"
                    value={canonical} error={saveError}
                    onChange={(value) => { setCanonical(value); setSaveError(null); }} />
             <Button className="mb-0.5 shrink-0" disabled={busy} onClick={save}>Добавить</Button>

@@ -2,7 +2,7 @@
 
 import { Suspense, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { BookmarkSimple } from "@phosphor-icons/react/dist/ssr";
+import { BookmarkSimple, CaretDown } from "@phosphor-icons/react/dist/ssr";
 import { Card, Row, Section, Time } from "@/components/recorder/list";
 import { PageHeader } from "@/components/recorder/page-header";
 import { PlayerProvider, usePlayhead, useSeek } from "@/components/recorder/player";
@@ -10,17 +10,21 @@ import { SpeakersForm } from "@/components/recorder/speakers-form";
 import { SummaryList } from "@/components/recorder/summary-list";
 import { TaskRow } from "@/components/recorder/task-row";
 import { Empty, EmptyNote, Failed, Loading } from "@/components/recorder/states";
-import { Dot, Evidence, Retry, SourceDot, SourceNote, Tag } from "@/components/recorder/ui";
+import { Dot, EvidenceTime, Retry, SourceNote, Tag } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import { revealUtterance } from "@/lib/reveal";
-import { apiPost } from "@/lib/api";
+import { statusTone } from "@/lib/session-status";
+import { minutesSince, useNow } from "@/lib/use-now";
+import { ApiError, apiPost } from "@/lib/api";
 import type { Mark, Question, Summary, Task, Utterance } from "@/lib/api";
-import { count, formatClock, formatDay, formatTime, todayIso } from "@/lib/format";
+import { count, formatClock, formatDay, formatTime, humanError, keepNumbers, normalizeClock, recordTitle, todayIso } from "@/lib/format";
 import { cx } from "@/utils/cx";
 
 type Part = {
   part: number;
   recovered: number;
+  /** Когда часть пришла на сервер: по последней видно, стоит ли обработка. */
+  received_at: string;
   transcript_status: string | null;
   last_error: string | null;
   /** Громкость части: считается сервером из файла при приёме. */
@@ -46,23 +50,31 @@ type Detail = {
   questions: Question[];
 };
 
-/** Полоска на каждую часть: расшифрована, в очереди или упала. Вырастают
- * слева направо по порядку номеров — части и приходили по очереди. */
-function Parts({ parts }: { parts: Part[] }) {
+/** Части записи по порядку номеров: каждая подписана словами, а не только
+ * цветом, пропавшая — пустым сегментом. */
+const PART_STATE: Record<string, { text: string; bar: string }> = {
+  done: { text: "готова", bar: "bg-fill" },
+  failed: { text: "ошибка", bar: "bg-accent" },
+  missing: { text: "не пришла", bar: "border border-dashed border-text-tertiary" },
+  pending: { text: "в очереди", bar: "bg-waveform" },
+};
+
+function Parts({ parts, missing }: { parts: Part[]; missing: number[] }) {
+  const rows = [
+    ...parts.map((part) => ({ part: part.part, state: part.transcript_status === "done" ? "done"
+      : part.transcript_status === "failed" ? "failed" : "pending" })),
+    ...missing.map((number) => ({ part: number, state: "missing" })),
+  ].sort((a, b) => a.part - b.part);
   return (
-    <Section note={`Части · ${parts.length}`}>
-      <div className="flex gap-1.5 rounded-card bg-surface shadow-plate px-4 py-3.5">
-        {parts.map((part) => (
-          <span
-            key={part.part}
-            title={`часть ${String(part.part).padStart(2, "0")}: ${part.transcript_status ?? "в очереди"}`}
-            className={cx(
-              "h-1 flex-1 rounded-sm",
-              part.transcript_status === "done" ? "bg-fill"
-                : part.transcript_status === "failed" ? "bg-accent"
-                : "bg-waveform",
-            )}
-          />
+    <Section note={`Части · ${rows.length}`}>
+      <div className="flex gap-2 rounded-card bg-surface shadow-plate px-4 py-3.5">
+        {rows.map((row) => (
+          <span key={row.part} className="flex min-w-0 flex-1 flex-col gap-1.5">
+            <span aria-hidden className={cx("h-1.5 rounded-sm", PART_STATE[row.state].bar)} />
+            <span className="truncate text-micro text-text-secondary">
+              <span className="font-mono">{String(row.part).padStart(2, "0")}</span> {PART_STATE[row.state].text}
+            </span>
+          </span>
         ))}
       </div>
     </Section>
@@ -83,9 +95,12 @@ function RecordedOn({ deviceId, session, day, onSaved }: {
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Сохранение — когда владелец закончил: при наборе с клавиатуры каждое
+  // изменение поля отправлялось бы на сервер и пересчитывало сроки задач.
+  const [value, setValue] = useState(day);
 
   async function save(value: string) {
-    if (!value) return;
+    if (!value || value === day) return;
     setBusy(true);
     try {
       await apiPost(`/sessions/${encodeURIComponent(deviceId)}/${session}/day`, { day: value });
@@ -106,12 +121,14 @@ function RecordedOn({ deviceId, session, day, onSaved }: {
               бесплатно, и он уже знает про тёмную тему страницы. */}
           <input
             type="date"
-            value={day}
             max={todayIso()}
             disabled={busy}
             aria-label="День разговора"
-            onChange={(event) => save(event.target.value)}
-            className="min-w-0 flex-1 rounded-inner bg-transparent px-2 py-1 text-row text-text-primary transition-colors hover:bg-hairline"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            onBlur={() => save(value)}
+            onKeyDown={(event) => { if (event.key === "Enter") save(value); }}
+            className="min-w-0 flex-1 rounded-inner bg-transparent px-2 py-1 text-row text-text-primary transition-colors hover:bg-hairline max-md:min-h-11"
           />
         </Row>
       </Card>
@@ -178,15 +195,37 @@ function SpeechShare({ timeline }: { timeline: Utterance[] }) {
   );
 }
 
+/** Индикатор уровня у звучащей реплики: три столбика по настоящей громкости
+ * из огибающей файла — как стрелка VU на приборе, только честная. */
+function LevelMeter({ level }: { level: number }) {
+  const heights = [0.55, 1, 0.75].map((k) => Math.max(3, Math.round((level / 100) * 12 * k)));
+  return (
+    <span aria-hidden className="ml-1.5 inline-flex h-3 items-end gap-px">
+      {heights.map((height, index) => (
+        <span key={index} className="w-[3px] rounded-[1px] bg-fill transition-[height] duration-150"
+              style={{ height }} />
+      ))}
+    </span>
+  );
+}
+
 /**
  * Строка транскрипта. Вынесена и запомнена (`memo`) не ради красоты: положение
  * звука приходит четыре раза в секунду, и без этого на каждом такте
  * перерисовывались бы все реплики часового разговора, а не две изменившиеся.
  */
-const Line = memo(function Line({ utterance, marked, active, onPlay }: {
+/** Оттенки подписей говорящих: голоса различимы на глаз, как в «Кто сколько
+ * говорил». Все ступени — не ниже 4,5:1 на поверхности. */
+const VOICE_SHADES = ["text-text-primary", "text-[#d6ccb8]", "text-text-secondary", "text-text-tertiary"];
+
+const Line = memo(function Line({ utterance, marked, active, level, shade, onPlay }: {
   utterance: Utterance;
   marked: boolean;
   active: boolean;
+  /** Оттенок подписи говорящего. */
+  shade: string;
+  /** Громкость в эту секунду — только у звучащей реплики, пока идёт звук. */
+  level?: number;
   onPlay: (utterance: Utterance) => void;
 }) {
   const id = `u-${utterance.part}-${utterance.idx}`;
@@ -194,6 +233,8 @@ const Line = memo(function Line({ utterance, marked, active, onPlay }: {
     <button
       id={id}
       type="button"
+      data-line
+      aria-label={`${formatClock(utterance.start_abs)}, ${utterance.label}: ${utterance.text}`}
       onClick={() => onPlay(utterance)}
       className={cx(
         // scroll-my-24: якорь иначе прижимает реплику к самому
@@ -202,16 +243,20 @@ const Line = memo(function Line({ utterance, marked, active, onPlay }: {
         "hover:bg-surface-elevated sm:grid-cols-[76px_90px_1fr]",
         // Звучит прямо сейчас: подложка и светлый текст. Полоска слева — там же,
         // где у реплики-основания вспышка, поэтому цвет другой, светлый.
-        active && "bg-surface-elevated shadow-[inset_2px_0_0_var(--color-fill)]",
+        // Звучит — горит: светится то, что живо. Раньше полоска в 2 px и
+      // бледная подложка терялись, и самый живой момент был почти не виден.
+      active && "bg-surface-elevated shadow-[inset_3px_0_0_var(--color-fill),inset_0_0_28px_rgb(217_211_199/0.09)]",
       )}
+      aria-current={active ? "true" : undefined}
     >
       <Time className={cx(marked && "flex items-center gap-1.5", (marked || active) && "text-text-primary")}>
         {marked && (
           <BookmarkSimple size={12} weight="fill" aria-label="отмечено кнопкой" className="text-mark" />
         )}
         {formatClock(utterance.start_abs)}
+        {level !== undefined && level >= 8 ? <LevelMeter level={level} /> : null}
       </Time>
-      <span className="truncate text-note text-text-secondary">
+      <span className={cx("truncate text-note", shade)}>
         {utterance.label}
       </span>
       <span className={cx("col-span-2 text-row leading-relaxed sm:col-span-1",
@@ -222,11 +267,24 @@ const Line = memo(function Line({ utterance, marked, active, onPlay }: {
   );
 });
 
-function Transcript({ timeline, marked }: { timeline: Utterance[]; marked: Set<string> }) {
+function Transcript({ timeline, marked, received }: {
+  timeline: Utterance[];
+  marked: Set<string>;
+  /** Номера пришедших частей: пропуск в транскрипте — либо не пришла, либо
+   * пришла, но не расшифровалась. */
+  received: Set<number>;
+}) {
   const seek = useSeek();
-  const { part, position, playing } = usePlayhead();
+  const { part, position, playing, level } = usePlayhead();
   // Группировка заранее: заголовок части ставится по данным, а не по счётчику,
   // который менялся бы прямо во время отрисовки.
+  // Оттенок — по порядку первого появления голоса в разговоре.
+  const shades = useMemo(() => {
+    const order: string[] = [];
+    for (const item of timeline) if (!order.includes(item.label)) order.push(item.label);
+    return new Map(order.map((label, index) => [label, VOICE_SHADES[index % VOICE_SHADES.length]]));
+  }, [timeline]);
+
   const byPart = useMemo(() => {
     const groups: { part: number; items: Utterance[] }[] = [];
     for (const item of timeline) {
@@ -249,16 +307,21 @@ function Transcript({ timeline, marked }: { timeline: Utterance[]; marked: Set<s
     return found ? `u-${found.part}-${found.idx}` : null;
   }, [timeline, part, position]);
 
-  // Транскрипт едет за звуком, но только пока звук идёт и только если реплика
-  // ушла с экрана: дёргать страницу под рукой читающего нельзя.
+  // Транскрипт едет за звуком, но только пока звук идёт, только если реплика
+  // ушла с экрана и только если владелец смотрит на транскрипт: предыдущая
+  // звучавшая реплика была на экране (или, в самом начале, сам транскрипт).
+  // Читаешь саммари под звук — страница стоит; раньше её уносило на 1900 px.
   const followed = useRef<string | null>(null);
   useEffect(() => {
     if (!playing || !activeId || followed.current === activeId) return;
+    const previous = followed.current ? document.getElementById(followed.current) : document.getElementById("transcript");
     followed.current = activeId;
     const element = document.getElementById(activeId);
     if (!element) return;
     const box = element.getBoundingClientRect();
     if (box.top >= 80 && box.bottom <= window.innerHeight - 160) return;
+    const seen = previous?.getBoundingClientRect();
+    if (!seen || seen.bottom < 0 || seen.top > window.innerHeight) return;
     element.scrollIntoView({
       behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
       block: "center",
@@ -270,21 +333,34 @@ function Transcript({ timeline, marked }: { timeline: Utterance[]; marked: Set<s
   }, [seek]);
 
   return (
-    <Section note="Транскрипт" aside="нажмите реплику, чтобы послушать">
+    <Section id="transcript" note="Транскрипт" aside="нажмите реплику, чтобы послушать">
       <div className="flex flex-col gap-4">
-        {byPart.map((group) => (
+        {byPart.map((group, index) => (
           <div key={group.part} className="flex flex-col gap-1.5">
             {byPart.length > 1 && (
               <span className="px-1 font-mono text-micro text-text-tertiary">
                 часть {String(group.part).padStart(2, "0")}
+                {/* Пропуск между частями — потерянный звук: называем его здесь,
+                    а не только в ошибках наверху. */}
+                {index > 0 && group.part - byPart[index - 1].part > 1 ? (
+                  <span className="font-sans text-warn">
+                    {" · "}
+                    {Array.from({ length: group.part - byPart[index - 1].part - 1 },
+                                (_, i) => byPart[index - 1].part + 1 + i)
+                      .map((n) => `часть ${String(n).padStart(2, "0")} ${received.has(n) ? "не расшифровалась" : "не пришла"}`)
+                      .join(", ")}
+                  </span>
+                ) : null}
               </span>
             )}
-            <Card className="py-1.5">
+            <Card className="bg-well py-1.5 shadow-well">
               {group.items.map((utterance) => {
                 const id = `u-${utterance.part}-${utterance.idx}`;
                 return (
                   <Line key={id} utterance={utterance} marked={marked.has(id)}
-                        active={id === activeId} onPlay={play} />
+                        active={id === activeId} level={id === activeId && playing ? level : undefined}
+                        shade={shades.get(utterance.label) ?? "text-text-secondary"}
+                        onPlay={play} />
                 );
               })}
             </Card>
@@ -298,6 +374,7 @@ function Transcript({ timeline, marked }: { timeline: Utterance[]; marked: Set<s
 /** Содержимое страницы. Живёт внутри плеера: перемотка нужна всем секциям. */
 function Content({ data, reload }: { data: Detail; reload: () => void }) {
   const seek = useSeek();
+  const now = useNow();
 
   // Ссылки на реплику-основание ведут на #u-{часть}-{индекс}: элемент с этим
   // id появляется в DOM только после загрузки данных, а браузер уже
@@ -314,7 +391,13 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
     scrolled.current = true;
     const parsed = /^u-(\d+)-(\d+)$/.exec(window.location.hash.slice(1));
     if (parsed) {
-      revealUtterance(Number(parsed[1]), Number(parsed[2]));
+      const part = Number(parsed[1]);
+      const idx = Number(parsed[2]);
+      // Пришли на реплику (из поиска, задачи, спорного места): звук встаёт на
+      // неё же, Play начнёт отсюда, а не с начала записи.
+      const cue = data.timeline.find((u) => u.part === part && u.idx === idx);
+      if (cue) seek(cue.part, cue.start, `${cue.label} · ${formatClock(cue.start_abs)}`, false);
+      revealUtterance(part, idx);
       return;
     }
     const seconds = Number(jump);
@@ -322,7 +405,7 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
     const before = data.timeline.filter((u) => u.start_abs <= seconds + 0.5);
     const target = before[before.length - 1] ?? data.timeline[0];
     if (!target) return;
-    seek(target.part, target.start, `${target.label} · ${formatClock(target.start_abs)}`);
+    seek(target.part, target.start, `${target.label} · ${formatClock(target.start_abs)}`, false);
     revealUtterance(target.part, target.idx);
   }, [data.timeline, jump, seek]);
 
@@ -332,20 +415,44 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
       .map((mark) => `u-${mark.source!.part}-${mark.source!.idx}`),
   );
 
-  // Длительность — из шкалы времени (последняя реплика: начало плюс её
-  // длина), а не число загруженных частей. Пустая шкала — запасной вариант.
-  const duration = data.timeline.length > 0
-    ? Math.max(...data.timeline.map((u) => u.start_abs + (u.end - u.start)))
+  // Длительность — по размеру файлов, как у плеера: последняя реплика
+  // кончается раньше записи, и шапка с плеером показывали бы разное.
+  const duration = data.parts.length > 0
+    ? Math.max(...data.parts.map((part) => part.offset + part.seconds))
     : null;
-  const tone = data.summary_status === "done" ? "ok"
-    : data.summary_status === "failed" ? "accent" : "warn";
+  const failedParts = data.parts.filter((part) => part.transcript_status === "failed");
+  // Та же функция, что у карточки в списке: иначе список писал «ошибка», а
+  // шапка той же записи — «обрабатывается».
+  const tone = statusTone({ summary_status: data.summary_status, failed_parts: failedParts.length });
+  // Больше часа без новых частей — уже «ждёт с …», а не «обрабатывается».
+  const lastPartAt = data.parts.reduce<string | null>((latest, part) =>
+    !latest || part.received_at > latest ? part.received_at : latest, null);
   const toneText = tone === "ok" ? "саммари готово"
-    : tone === "accent" ? "саммари не собралось" : "обрабатывается";
+    : tone === "warn" ? (minutesSince(lastPartAt, now) > 60 ? `ждёт с ${formatDay(data.day).replace(/ \d{4}$/, "")}` : "обрабатывается")
+    : failedParts.length ? "часть не расшифровалась" : "саммари не собралось";
+  // Номера частей, которые так и не пришли с диктофона: между первой и
+  // последней принятой. Потерянное время иначе прячется в шкале.
+  const numbers = data.parts.map((part) => part.part);
+  const missing = numbers.length
+    ? Array.from({ length: Math.max(...numbers) - Math.min(...numbers) + 1 }, (_, i) => Math.min(...numbers) + i)
+        .filter((n) => !numbers.includes(n))
+    : [];
   const topic = data.summary?.topics?.[0];
   const when = data.first_at ? `${formatDay(data.day)}, ${formatTime(data.first_at)}` : null;
-  const failedParts = data.parts.filter((part) => part.transcript_status === "failed");
+  const openQuestionsForNav = data.questions.filter((question) => question.state === "open");
+  const sections = [
+    data.tasks.length ? { href: "#tasks", title: `Задачи · ${data.tasks.length}` } : null,
+    openQuestionsForNav.length ? { href: "#questions", title: `Вопросы · ${openQuestionsForNav.length}` } : null,
+    data.summary && data.summary.decisions.length
+      ? { href: "#decisions", title: `Решения · ${data.summary.decisions.length}` } : null,
+    data.marks.length ? { href: "#marks", title: `Метки · ${data.marks.length}` } : null,
+    data.timeline.length ? { href: "#transcript", title: "Транскрипт" } : null,
+  ].filter((item) => item !== null);
   const openQuestions = data.questions.filter((question) => question.state === "open");
   const doneParts = data.parts.filter((part) => part.transcript_status === "done").length;
+  // Части, которые ещё ждут расшифровки. Упавшая — не ждёт: о ней карточка ошибок.
+  const queued = data.parts.filter((part) => !part.transcript_status || part.transcript_status === "pending").length;
+  const unnamed = data.speakers.filter((speaker) => !speaker.name).length;
 
   return (
     <>
@@ -355,12 +462,13 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
           по тексту под заголовком. */}
       <PageHeader
         back={{ href: "/records/", title: "Записи" }}
-        title={topic || when || `Разговор ${formatDay(data.day)}`}
+        title={recordTitle({ topic: topic ?? null, day: data.day, first_at: data.first_at })}
         aside={
           <span className="flex flex-wrap items-center gap-x-3.5 gap-y-1">
             {topic && when ? <span>{when}</span> : null}
             {duration !== null ? <span className="font-mono">{formatClock(duration)}</span> : null}
             {tone !== "ok" && <span className="flex items-center gap-2"><Dot tone={tone} />{toneText}</span>}
+            <span className="studio-rec-no">REC / {String(data.session).padStart(4, "0")}</span>
           </span>
         }
       />
@@ -369,118 +477,22 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
           и страница уезжает вбок. */}
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
         <div className="flex min-w-0 flex-col gap-6">
-          {data.summary ? (
-            <>
-              {/* Табличка «Главное из разговора»: оформление в styles/studio.css. */}
-              <p className="studio-summary">{data.summary.summary}</p>
-              {data.summary.topics.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {data.summary.topics.map((item) => (
-                    <Tag key={item} href={`/project/?name=${encodeURIComponent(item)}`}>{item}</Tag>
-                  ))}
-                </div>
-              )}
-              <SummaryList title="Решения" items={data.summary.decisions} />
-              <SummaryList title="Факты" items={data.summary.facts} />
-            </>
-          ) : (
-            <Empty title="Саммари ещё не готово"
-                   text="Как только части расшифруются, здесь появятся решения, факты и задачи." />
-          )}
-
-          {data.marks.length > 0 && (
-            <Section note={`Метки · ${data.marks.length}`}
-                     aside="кнопка на диктофоне во время записи">
-              <Card>
-                {data.marks.map((mark) => (
-                  // Раскладка на телефоне — как у пунктов саммари (summary-list.tsx).
-                  <Row key={`${mark.part}-${mark.offset}`} className="gap-3.5 max-md:flex-wrap max-md:gap-y-1.5">
-                    <BookmarkSimple size={14} weight="fill" aria-hidden className="shrink-0 text-mark" />
-                    <Time className="shrink-0">{mark.time}</Time>
-                    <span className="min-w-0 flex-1 max-md:order-last max-md:basis-full">
-                      {mark.text || <span className="text-text-secondary">часть ещё не расшифрована</span>}
-                      {mark.label ? (
-                        <span className="block text-note text-text-secondary">{mark.label}</span>
-                      ) : null}
-                    </span>
-                    <Evidence
-                      className="max-md:ml-auto"
-                      disabled={!mark.source}
-                      title={mark.source ? undefined : "реплики в этом месте нет"}
-                      onClick={() => {
-                        if (!mark.source) return;
-                        seek(mark.source.part, mark.source.start, `метка · ${mark.time}`);
-                        revealUtterance(mark.source.part, mark.source.idx);
-                      }}
-                    />
-                  </Row>
-                ))}
-              </Card>
-            </Section>
-          )}
-
-          {/* Пустая секция — две строки шума ради «нет». Нет задач — нет секции. */}
-          {data.tasks.length > 0 && (
-            <Section note={`Задачи · ${data.tasks.length}`}>
-              <Card>
-                {data.tasks.map((task) => (
-                  <TaskRow key={task.task_id} task={task} onChanged={reload} />
-                ))}
-              </Card>
-            </Section>
-          )}
-
-          {openQuestions.length > 0 && (
-            <Section note={`Вопросы без ответа · ${openQuestions.length}`}>
-              <Card>
-                {openQuestions.map((question) => (
-                  <Row key={question.question_id} className="gap-3.5 max-md:flex-wrap max-md:gap-y-1.5">
-                    <Time className="shrink-0">{question.time}</Time>
-                    <span className="min-w-0 flex-1 max-md:order-last max-md:basis-full">
-                      {question.text}
-                      <SourceNote source={question.source} />
-                    </span>
-                    <SourceDot source={question.source} />
-                    <Evidence
-                      className="max-md:ml-auto"
-                      disabled={!question.source}
-                      onClick={() => {
-                        if (!question.source) return;
-                        seek(question.source.part, question.source.start, question.text);
-                        revealUtterance(question.source.part, question.source.idx);
-                      }}
-                    />
-                  </Row>
-                ))}
-              </Card>
-            </Section>
-          )}
-
-          {data.timeline.length === 0
-            ? <EmptyNote>Расшифровки пока нет.</EmptyNote>
-            : <Transcript timeline={data.timeline} marked={marked} />}
-        </div>
-
-        <div className="flex min-w-0 flex-col gap-6">
-          <SpeakersForm key={JSON.stringify(data.speakers)} deviceId={data.device_id}
-                        session={data.session} speakers={data.speakers} onSaved={reload} />
-          <RecordedOn deviceId={data.device_id} session={data.session} day={data.day.slice(0, 10)}
-                      onSaved={reload} />
-          <SpeechShare timeline={data.timeline} />
-          {/* Одна часть — одна полоска, и сказать ей нечего. */}
-          {data.parts.length > 1 && <Parts parts={data.parts} />}
-
-          {(data.summary_error || failedParts.length > 0) && (
+          {/* Ошибки — первыми: если кусок звука не расшифровался, это главное,
+              что надо знать о записи, а не приписка под формой говорящих. */}
+          {(data.summary_error || failedParts.length > 0 || missing.length > 0) && (
             <Section note="Ошибки обработки">
               <Card>
                 {data.summary_error ? (
                   <Row className="items-start">
                     <Dot tone="accent" />
                     <span className="min-w-0 flex-1">
-                      Саммари
-                      <span className="block font-mono text-micro text-text-secondary">
-                        {data.summary_error}
-                      </span>
+                      Саммари не собралось: {humanError(data.summary_error)}
+                      <details className="text-micro">
+                        <summary className="hit relative inline cursor-pointer list-none text-text-tertiary underline decoration-dotted underline-offset-4 [&::-webkit-details-marker]:hidden">
+                          подробности
+                        </summary>
+                        <span className="block font-mono text-text-tertiary">{data.summary_error}</span>
+                      </details>
                     </span>
                     <Retry path={`/sessions/${encodeURIComponent(data.device_id)}/${data.session}/retry-summary`}
                            onDone={reload} />
@@ -490,26 +502,179 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
                   <Row key={part.part} className="items-start">
                     <Dot tone="accent" />
                     <span className="min-w-0 flex-1">
-                      Часть {String(part.part).padStart(2, "0")}
-                      <span className="block font-mono text-micro text-text-secondary">
-                        {part.last_error || "причина не записана"}
-                      </span>
+                      Часть {String(part.part).padStart(2, "0")} не расшифровалась: {humanError(part.last_error)}
+                      {part.last_error ? (
+                        <details className="text-micro">
+                          <summary className="hit relative inline cursor-pointer list-none text-text-tertiary underline decoration-dotted underline-offset-4 [&::-webkit-details-marker]:hidden">
+                            подробности
+                          </summary>
+                          <span className="block font-mono text-text-tertiary">{part.last_error}</span>
+                        </details>
+                      ) : null}
                     </span>
                     <Retry path={`/parts/${encodeURIComponent(data.device_id)}/${data.session}/${part.part}/retry`}
                            onDone={reload} />
+                  </Row>
+                ))}
+                {missing.map((number) => (
+                  <Row key={`missing-${number}`} className="items-start">
+                    <Dot tone="warn" />
+                    <span className="min-w-0 flex-1">
+                      Часть {String(number).padStart(2, "0")} не пришла
+                      <span className="block text-note text-text-secondary">
+                        диктофон её не выгрузил: звук этого куска на сервере отсутствует
+                      </span>
+                    </span>
                   </Row>
                 ))}
               </Card>
             </Section>
           )}
 
+          {data.summary ? (
+            <>
+              {/* Табличка «Главное из разговора»: оформление в styles/studio.css. */}
+              <section className="studio-summary" aria-labelledby="summary-label">
+                <h2 id="summary-label" className="studio-summary-label">Главное из разговора</h2>
+                <p>{keepNumbers(data.summary.summary)}</p>
+              </section>
+              {data.summary.topics.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="px-1 text-note text-text-tertiary">Проекты:</span>
+                  {data.summary.topics.map((item) => (
+                    <Tag key={item} href={`/project/?name=${encodeURIComponent(item)}`}>{item}</Tag>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : data.summary_status === "failed" || failedParts.length ? null : (
+            // Обещание — только пока работа идёт; при упавшей части о ней уже
+            // сказано в карточке ошибок, и повторять её здесь незачем.
+            <Empty title="Саммари ещё не готово"
+                   text="Решения, факты и задачи появятся здесь, как только расшифровка закончится." />
+          )}
+
+          {/* Оглавление: страница длинная, а транскрипт — в самом низу. Только
+              те разделы, что есть. */}
+          {sections.length > 1 && (
+            // Строка ссылок, а не пилюли: пилюли выше — темы, они ведут на
+            // проекты; эти ссылки двигают страницу. Одинаковый вид путал.
+            <nav aria-label="Разделы записи" className="flex flex-wrap items-baseline gap-x-4 gap-y-1 px-1 text-note">
+              <span className="text-text-tertiary">Перейти:</span>
+              {sections.map((item) => (
+                <a key={item.href} href={item.href}
+                   className="hit relative text-text-secondary underline decoration-hairline-strong underline-offset-4 hover:text-text-primary">
+                  {item.title}
+                </a>
+              ))}
+            </nav>
+          )}
+
+          {/* Порядок — от того, что требует действия, к тому, что можно
+              перечитать: задачи и вопросы, потом решения и факты, метки,
+              и только потом весь разговор. */}
+          {/* Пустая секция — две строки шума ради «нет». Нет задач — нет секции. */}
+          {data.tasks.length > 0 && (
+            <Section id="tasks" note={`Задачи · ${data.tasks.length}`}>
+              <Card>
+                {data.tasks.map((task) => (
+                  <TaskRow key={task.task_id} task={task} onChanged={reload} showSource={false} />
+                ))}
+              </Card>
+            </Section>
+          )}
+
+          {openQuestions.length > 0 && (
+            <Section id="questions" note={`Вопросы без ответа · ${openQuestions.length}`}>
+              <Card>
+                {openQuestions.map((question) => (
+                  <Row key={question.question_id} className="items-start gap-3.5">
+                    <EvidenceTime time={question.time} label={question.text} context={question.text}
+                                  source={question.source} />
+                    <span className="min-w-0 flex-1 pt-1">
+                      {question.text}
+                      <SourceNote source={question.source} />
+                    </span>
+                  </Row>
+                ))}
+              </Card>
+            </Section>
+          )}
+
+          {data.summary ? (
+            <>
+              <SummaryList id="decisions" title="Решения" items={data.summary.decisions} />
+              <SummaryList title="Факты" items={data.summary.facts} />
+            </>
+          ) : null}
+
+          {data.marks.length > 0 && (
+            <Section id="marks" note={`Метки · ${data.marks.length}`}
+                     aside="кнопка на диктофоне во время записи">
+              <Card>
+                {data.marks.map((mark) => (
+                  <Row key={`${mark.part}-${mark.offset}`} className="items-start gap-3.5">
+                    <BookmarkSimple size={14} weight="fill" aria-hidden className="mt-2 shrink-0 text-mark" />
+                    <EvidenceTime time={mark.source ? formatClock(mark.source.start_abs) : mark.time}
+                                  label={`метка · ${mark.time}`}
+                                  context={mark.text || `метка ${mark.time}`} source={mark.source} />
+                    <span className="min-w-0 flex-1 pt-1">
+                      {mark.text || <span className="text-text-secondary">часть ещё не расшифрована</span>}
+                      <span className="block text-note text-text-secondary">
+                        {[mark.label, `кнопка нажата в ${normalizeClock(mark.time)}`].filter(Boolean).join(" · ")}
+                      </span>
+                    </span>
+                  </Row>
+                ))}
+              </Card>
+            </Section>
+          )}
+
+
+        </div>
+
+        {/* Боковая колонка на десктопе; на телефоне она идёт до транскрипта:
+            «это я» и имена говорящих не должны прятаться за сотней реплик. */}
+        <div className="flex min-w-0 flex-col gap-6 lg:sticky lg:top-6 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-start">
+          {/* Говорящие — не чтение: свёрнуты, но сами говорят, есть ли в них
+              дело («1 голос без имени»). Доли речи — там же, к именам. */}
+          <details className="group flex flex-col gap-6">
+            <summary className="press-row flex cursor-pointer list-none items-center justify-between gap-3 rounded-card bg-surface px-4 py-3.5 shadow-plate hover:bg-surface-elevated [&::-webkit-details-marker]:hidden">
+              <span>
+                Имена и дата
+                {unnamed > 0 ? (
+                  <span className="block text-note text-text-secondary">
+                    {count(unnamed, "голос без имени", "голоса без имени", "голосов без имени")}
+                  </span>
+                ) : null}
+              </span>
+              <CaretDown size={16} aria-hidden className="shrink-0 text-text-tertiary transition-transform group-open:rotate-180" />
+            </summary>
+            <div className="mt-6 flex flex-col gap-6">
+              <SpeechShare timeline={data.timeline} />
+              <SpeakersForm key={JSON.stringify(data.speakers)} deviceId={data.device_id}
+                            session={data.session} speakers={data.speakers} onSaved={reload} />
+              <RecordedOn key={data.day} deviceId={data.device_id} session={data.session} day={data.day.slice(0, 10)}
+                          onSaved={reload} />
+            </div>
+          </details>
+          {/* Полоски частей — пока есть что сказать: часть ещё в очереди или
+              упала. Когда всё расшифровано, это внутренность диктофона. */}
+          {data.parts.length > 1 && queued > 0 && <Parts parts={data.parts} missing={missing} />}
+
           {/* Счёт частей нужен, пока расшифровка не догнала запись; потом это
               техническая подробность, которой владелец не пользуется. */}
-          {doneParts < data.parts.length && (
+          {queued > 0 && (
             <p className="px-1 text-note text-text-tertiary">
               расшифровано {doneParts} из {count(data.parts.length, "части", "частей", "частей")}
             </p>
           )}
+        </div>
+
+        <div className="min-w-0 lg:col-start-1">
+          {data.timeline.length === 0
+            ? <EmptyNote>Расшифровки пока нет.</EmptyNote>
+            : <Transcript timeline={data.timeline} marked={marked} received={new Set(numbers)} />}
         </div>
       </div>
     </>
@@ -525,11 +690,20 @@ function Body() {
     useApi<Detail>(ready ? `/sessions/${encodeURIComponent(deviceId)}/${session}` : null);
 
   if (!ready) return <Empty title="Сессия не указана" text="Откройте запись из списка." />;
-  if (error) return <Failed error={error} onRetry={reload} />;
+  if (error) {
+    return (
+      <>
+        <PageHeader back={{ href: "/records/", title: "Записи" }}
+                    title={error instanceof ApiError && error.status === 404 ? "Такой записи нет" : "Запись"} />
+        <Failed error={error} onRetry={reload} />
+      </>
+    );
+  }
   if (loading || !data) return <Loading />;
 
   return (
     <PlayerProvider deviceId={data.device_id} session={data.session} parts={data.parts}
+                    title={recordTitle({ topic: data.summary?.topics?.[0] ?? null, day: data.day, first_at: data.first_at })}
                     marks={data.marks}>
       <Content data={data} reload={reload} />
     </PlayerProvider>
