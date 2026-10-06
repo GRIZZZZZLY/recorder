@@ -449,7 +449,15 @@ void closeTransfer() {
 // Шлёт до chunks кусков тела. Возвращает SEND_RETRY при обрыве, SEND_OK иначе.
 SendResult sendBodyChunks(int chunks) {
   static uint8_t buffer[upl::CHUNK_BYTES];
+  static uint32_t bodyStartedMs = 0;
   for (int i = 0; i < chunks && g_upSent < g_upSize; ++i) {
+    if (g_upSent == 0) bodyStartedMs = millis();
+    // Скорость каждый мегабайт: по ней видно, во что упирается отправка.
+    if (g_upSent > 0 && g_upSent % (1UL << 20) == 0) {
+      const uint32_t ms = millis() - bodyStartedMs;
+      Serial.printf("[up] %lu МБ, %lu КБ/с\n", static_cast<unsigned long>(g_upSent >> 20),
+                    static_cast<unsigned long>(ms ? (g_upSent / 1024UL) * 1000UL / ms : 0));
+    }
     const int read = g_upFile.read(buffer, sizeof(buffer));
     if (read <= 0) {
       Serial.println("[up] Файл оборвался при чтении.");
@@ -631,6 +639,9 @@ void serviceUpload() {
       pickWifiFrom(g_wifiIdx);
       g_wifiReason = 0;
       WiFi.mode(WIFI_STA);
+      // Без сна радио на время отправки: подтверждения сервера не ждут
+      // пробуждения. Wi-Fi включён только пока идёт передача.
+      WiFi.setSleep(false);
       WiFi.begin(g_wifiSsids[g_wifiIdx].c_str(), g_wifiPasses[g_wifiIdx].c_str());
       g_wifiStartedMs = now;
       g_ntpRequested = false;
