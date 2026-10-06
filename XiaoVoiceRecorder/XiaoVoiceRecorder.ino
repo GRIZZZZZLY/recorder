@@ -504,9 +504,15 @@ void dispatchButton(ButtonDecoder::Event event, uint32_t ringHead) {
 // Прерывание только запоминает фронт: ни карты, ни сети, ни вибрации здесь
 // быть не может. Дребезг гасится по времени прямо тут, поэтому очередь из
 // восьми фронтов не переполняется от одного нажатия.
+// Нажата любая из двух кнопок: BOOT или внешняя. Без второй — только первая.
+bool IRAM_ATTR recPressed() {
+  return digitalRead(board::REC_BUTTON_PIN) == LOW ||
+         (board::REC_BUTTON2_PIN >= 0 && digitalRead(board::REC_BUTTON2_PIN) == LOW);
+}
+
 void IRAM_ATTR buttonIsr() {
   const uint32_t now = millis();
-  const bool pressed = digitalRead(board::REC_BUTTON_PIN) == LOW;
+  const bool pressed = recPressed();
   if (pressed == g_btnLastLevel || now - g_btnLastEdgeMs < cfg::BUTTON_DEBOUNCE_MS) {
     return;
   }
@@ -552,7 +558,7 @@ void handleButton() {
   // раньше уже скормленного.
   const uint32_t now = millis();
   if (now - g_btnLastEdgeMs >= cfg::BUTTON_DEBOUNCE_MS) {
-    dispatchButton(g_button.feed(digitalRead(board::REC_BUTTON_PIN) == LOW, now), g_btnPressHead);
+    dispatchButton(g_button.feed(recPressed(), now), g_btnPressHead);
   }
 }
 
@@ -787,8 +793,12 @@ void setup() {
   Serial.println("====================================");
 
   pinMode(board::REC_BUTTON_PIN, INPUT_PULLUP);
-  g_btnLastLevel = digitalRead(board::REC_BUTTON_PIN) == LOW;
   attachInterrupt(digitalPinToInterrupt(board::REC_BUTTON_PIN), buttonIsr, CHANGE);
+  if (board::REC_BUTTON2_PIN >= 0) {
+    pinMode(board::REC_BUTTON2_PIN, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(board::REC_BUTTON2_PIN), buttonIsr, CHANGE);
+  }
+  g_btnLastLevel = recPressed();
   feedbackSetup();
 
   Serial.printf("[sys] Chip: %s\n", ESP.getChipModel());

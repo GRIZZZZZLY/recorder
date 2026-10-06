@@ -1,7 +1,7 @@
 /*
  * Индикация: отдельный LED и вибромотор. Пины по умолчанию — из профиля платы
- * (BoardConfig.h): на XIAO Sense не распаяны (-1), на Recorder RevA LED на
- * GPIO4 и затвор вибро на GPIO3. Значение из NVS (led_pin=N, vibro_pin=N через
+ * (BoardConfig.h): LED на GPIO4 и затвор вибро на GPIO3 — и на RevA, и на
+ * прототипе XIAO Sense, куда их припаивают проводами. Значение из NVS (led_pin=N, vibro_pin=N через
  * Serial) перекрывает профиль, -1 выключает канал. Встроенный LED Sense на
  * GPIO21 занят CS карты и здесь не используется.
  *
@@ -107,7 +107,7 @@ bool setFeedbackPin(const String &key, const String &value) {
     return false;
   }
   const int pin = value.toInt();
-  static const int reserved[] = {board::REC_BUTTON_PIN, board::SD_SCK_PIN, board::SD_MISO_PIN,
+  static const int reserved[] = {board::REC_BUTTON_PIN, board::REC_BUTTON2_PIN, board::SD_SCK_PIN, board::SD_MISO_PIN,
                                  board::SD_MOSI_PIN, board::SD_CS_PIN, board::PDM_CLK_PIN,
                                  board::PDM_DATA_PIN, board::BAT_ADC_PIN};
   for (int r : reserved) {

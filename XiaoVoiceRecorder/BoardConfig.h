@@ -38,6 +38,7 @@ constexpr int SD_MOSI_PIN = 9;
 constexpr int SD_CS_PIN = 44;
 
 constexpr int REC_BUTTON_PIN = 2;
+constexpr int REC_BUTTON2_PIN = -1;
 
 // BAT+ -> делитель -> GPIO1 (ADC1_CH0, не конфликтует с Wi-Fi).
 // Коэффициент делителя взят как 2:1 и НЕ подтверждён по схеме RevA: сверить
@@ -70,14 +71,20 @@ constexpr int SD_CS_PIN = 21;
 // Встроенная кнопка BOOT с внешней подтяжкой: REC без пайки. Удержание при
 // сбросе всё так же уводит в загрузчик. Подтвердить при первом включении.
 constexpr int REC_BUTTON_PIN = 0;
+// Внешняя кнопка прототипа: D1 (GPIO2) -> кнопка -> GND, подтяжка внутренняя.
+// Работает вместе с BOOT; пока не припаяна, пин читается как «отпущено».
+// Пины кнопки, вибро и LED — те же, что на RevA.
+constexpr int REC_BUTTON2_PIN = 2;
 
 // У штатной XIAO нет ни делителя, ни газометра: заряд прочитать нечем.
 constexpr int BAT_ADC_PIN = -1;
 constexpr float BAT_DIVIDER = 0.0f;
 
-// Не распаяны. Можно задать через Serial: led_pin=N vibro_pin=N.
-constexpr int VIBRO_PIN = -1;
-constexpr int LED_PIN = -1;
+// Прототип: D2 (GPIO3) -> резистор -> затвор MOSFET вибро, D3 (GPIO4) ->
+// резистор -> LED -> GND. Пока не припаяны, пин просто дёргается впустую.
+// Перекрывается через Serial: led_pin=N vibro_pin=N, -1 выключает.
+constexpr int VIBRO_PIN = 3;
+constexpr int LED_PIN = 4;
 
 #endif
 
