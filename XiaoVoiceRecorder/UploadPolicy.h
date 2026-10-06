@@ -31,6 +31,24 @@ inline SendResult classifyStatus(int status) {
   return SEND_RETRY;  // 422, 429, 5xx, обрыв
 }
 
+// Ответ GET /api/v1/upload/offset: {"offset":N}. false — числа нет или оно
+// больше файла: тогда верить нельзя, шлём с нуля.
+inline bool parseOffsetReply(const char *body, uint32_t total, uint32_t *offset) {
+  const char *key = strstr(body, "\"offset\":");
+  if (key == nullptr) return false;
+  const char *p = key + 9;
+  while (*p == ' ') ++p;
+  if (*p < '0' || *p > '9') return false;
+  uint64_t value = 0;
+  while (*p >= '0' && *p <= '9') {
+    value = value * 10 + static_cast<uint64_t>(*p - '0');
+    if (value > total) return false;
+    ++p;
+  }
+  *offset = static_cast<uint32_t>(value);
+  return true;
+}
+
 // Пауза перед следующей попыткой по числу подряд неудач: 1, 5, 15, 60, 60...
 // минут. Сброс — при первой удачной части.
 inline uint32_t backoffMs(uint32_t consecutiveFailures) {

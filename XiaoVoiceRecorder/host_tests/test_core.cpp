@@ -361,6 +361,21 @@ static void test_status_classification() {
   CHECK(classifyStatus(503) == SEND_RETRY);
   CHECK(classifyStatus(-1) == SEND_RETRY);
   CHECK(classifyStatus(0) == SEND_RETRY);
+  CHECK(classifyStatus(416) == SEND_RETRY);  // докачка: спросить место заново
+}
+
+static void test_offset_reply_parsing() {
+  using namespace uploadpolicy;
+  uint32_t off = 7;
+  CHECK(parseOffsetReply("{\"offset\":0}", 100, &off) && off == 0);
+  CHECK(parseOffsetReply("{\"offset\":5238784}", 19200044, &off) && off == 5238784);
+  CHECK(parseOffsetReply("{\"offset\": 100}", 100, &off) && off == 100);
+  off = 7;
+  CHECK(!parseOffsetReply("{\"offset\":101}", 100, &off) && off == 7);  // больше файла
+  CHECK(!parseOffsetReply("{\"offset\":99999999999999999999}", 100, &off));
+  CHECK(!parseOffsetReply("{\"status\":\"stored\"}", 100, &off));
+  CHECK(!parseOffsetReply("{\"offset\":-1}", 100, &off));
+  CHECK(!parseOffsetReply("", 100, &off));
 }
 
 static void test_backoff_schedule() {
@@ -476,6 +491,7 @@ int main() {
   test_battery_voltage_is_restored_through_the_divider();
   test_battery_percent_follows_a_lipo_curve_not_a_line();
   test_status_classification();
+  test_offset_reply_parsing();
   test_backoff_schedule();
   test_part_and_end_names();
   test_server_url_parsing();

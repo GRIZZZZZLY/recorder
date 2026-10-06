@@ -80,6 +80,65 @@ def _marks_header(value):
     return marks
 
 
+def _part_identity(authorization, x_device_id, x_session, x_part, x_crc32):
+    """Токен и то, что называет часть: общее для приёма и вопроса о докачке."""
+    if not DEVICE_TOKEN or authorization != f"Bearer {DEVICE_TOKEN}":
+        raise HTTPException(401, "неверный токен устройства")
+    if not x_device_id or not DEVICE_ID_RE.match(x_device_id):
+        raise HTTPException(400, "X-Device-Id: пусто или недопустимые символы")
+    session = _int_header(x_session, "X-Session", 1, 9999)
+    part = _int_header(x_part, "X-Part", 1, 99)
+    if not x_crc32 or not re.fullmatch(r"[0-9a-f]{8}", x_crc32):
+        raise HTTPException(400, "X-Crc32: ожидается 8 шестнадцатеричных цифр")
+    return session, part
+
+
+def _partial_path(device_id, session, part, crc, total):
+    """Недокачанная часть. В имени сумма и размер всего файла: байты в нём —
+    байты именно этого файла на своих местах, поэтому любой его префикс можно
+    продолжать, а другой файл той же части попадёт в другой .partial."""
+    return AUDIO_DIR / f"{device_id}_S{session:04d}_P{part:02d}.{crc}.{total}.partial"
+
+
+# Кто сейчас дописывает .partial. Новая попытка забирает файл себе, а старая,
+# которую сервер ещё не счёл оборванной, перестаёт писать на следующем куске.
+# Один процесс uvicorn, между await запросы не перемежаются.
+_partial_owner = {}
+
+
+@app.get("/api/v1/upload/offset")
+def upload_offset(
+    authorization: str = Header(None),
+    x_device_id: str = Header(None),
+    x_session: str = Header(None),
+    x_part: str = Header(None),
+    x_crc32: str = Header(None),
+    x_total: str = Header(None),
+):
+    """С какого байта продолжать. Уже принятая часть отвечает так же, как
+    приём, — диктофон помечает её доставленной без повторной отправки."""
+    session, part = _part_identity(authorization, x_device_id, x_session, x_part, x_crc32)
+    total = _int_header(x_total, "X-Total", 1, MAX_BYTES)
+    with closing(connect()) as conn:
+        row = conn.execute(
+            "SELECT bytes, crc32 FROM parts WHERE device_id=? AND session=? AND part=?",
+            (x_device_id, session, part),
+        ).fetchone()
+    if row is not None:
+        if row["bytes"] == total and row["crc32"] == x_crc32:
+            return {"status": "stored", "session": session, "part": part,
+                    "bytes": total, "crc32": x_crc32}
+        raise HTTPException(
+            409, f"часть уже принята с другими данными: {row['bytes']} байт, crc {row['crc32']}"
+        )
+    partial = _partial_path(x_device_id, session, part, x_crc32, total)
+    have = partial.stat().st_size if partial.exists() else 0
+    if have > total:  # чужой обрывок не может быть длиннее файла
+        partial.unlink()
+        have = 0
+    return {"offset": have}
+
+
 @app.post("/api/v1/upload")
 async def upload(
     request: Request,
@@ -93,18 +152,11 @@ async def upload(
     x_session_parts: str = Header(None),
     x_battery: str = Header(None),
     x_firmware: str = Header(None),
+    x_total: str = Header(None),
+    x_offset: str = Header(None),
 ):
-    if not DEVICE_TOKEN or authorization != f"Bearer {DEVICE_TOKEN}":
-        raise HTTPException(401, "неверный токен устройства")
-
-    if not x_device_id or not DEVICE_ID_RE.match(x_device_id):
-        raise HTTPException(400, "X-Device-Id: пусто или недопустимые символы")
-    session = _int_header(x_session, "X-Session", 1, 9999)
-    part = _int_header(x_part, "X-Part", 1, 99)
+    session, part = _part_identity(authorization, x_device_id, x_session, x_part, x_crc32)
     recovered = 1 if x_recovered == "1" else 0
-
-    if not x_crc32 or not re.fullmatch(r"[0-9a-f]{8}", x_crc32):
-        raise HTTPException(400, "X-Crc32: ожидается 8 шестнадцатеричных цифр")
 
     marks = _marks_header(x_marks)
     # Сколько частей в сессии, если диктофон знает. Меньше номера этой части
@@ -125,12 +177,16 @@ async def upload(
         if not re.fullmatch(r"[0-9A-Za-z.\-_+]+", firmware):
             raise HTTPException(400, "X-Firmware: допустимы буквы, цифры и .-_+")
 
+    name = f"{x_device_id}_S{session:04d}_P{part:02d}.wav"
+    final_path = AUDIO_DIR / name
+    meta = (x_device_id, session, part, recovered, marks, expected_parts, battery, firmware)
+
+    if x_total is not None:
+        return await _upload_resumable(request, x_crc32, x_total, x_offset, final_path, meta)
+
     declared = _int_header(
         request.headers.get("content-length"), "Content-Length", 1, MAX_BYTES
     )
-
-    name = f"{x_device_id}_S{session:04d}_P{part:02d}.wav"
-    final_path = AUDIO_DIR / name
     # Пишем во временный файл: незавершённая загрузка не должна выглядеть как
     # готовый файл, ровно по той же причине, что и .TMP на карте диктофона.
     # Имя своё у каждого запроса: повтор диктофона может прийти, пока сервер
@@ -159,60 +215,134 @@ async def upload(
         if actual_crc != x_crc32:
             raise HTTPException(422, f"CRC не совпал: {actual_crc} вместо {x_crc32}")
 
-        body = {
-            "session": session,
-            "part": part,
-            "bytes": received,
-            "crc32": actual_crc,
-        }
-
-        # Проверка и публикация идут без await: в одном процессе uvicorn другой
-        # запрос той же части не вклинится между SELECT и replace.
-        with closing(connect()) as conn:
-            row = conn.execute(
-                "SELECT bytes, crc32 FROM parts WHERE device_id=? AND session=? AND part=?",
-                (x_device_id, session, part),
-            ).fetchone()
-
-            if row is not None:
-                if row["bytes"] == received and row["crc32"] == actual_crc:
-                    # Тот же файл пришёл ещё раз: подтверждаем, аудио не трогаем.
-                    # Метки пишем и здесь: повтор идемпотентен, а первая попытка
-                    # могла оборваться после записи файла, но до их сохранения.
-                    save_marks(conn, x_device_id, session, part, marks)
-                    set_device_state(conn, x_device_id, battery, firmware)
-                    conn.commit()
-                    return JSONResponse({"status": "duplicate", **body}, status_code=200)
-                # Уже принятое аудио не перезаписываем молча.
-                raise HTTPException(
-                    409,
-                    f"часть уже принята с другими данными: "
-                    f"{row['bytes']} байт, crc {row['crc32']}",
-                )
-
-            tmp_path.replace(final_path)
-            # Формат — из заголовка самого файла: у моно с XIAO Sense секунда весит
-            # 32 000 байт, у стерео с Recorder RevA 64 000. Шкала времени и волна
-            # считаются из размера, поэтому множитель обязан быть свой у каждой
-            # части. None (заголовок не прочитался) означает «считать как моно».
-            bps = wavfmt.bytes_per_second(final_path)
-            conn.execute(
-                "INSERT INTO parts (device_id, session, part, bytes, crc32, recovered,"
-                " audio_path, expected_parts, bytes_per_second) VALUES (?,?,?,?,?,?,?,?,?)",
-                (x_device_id, session, part, received, actual_crc, recovered,
-                 str(final_path), expected_parts, bps),
-            )
-            save_marks(conn, x_device_id, session, part, marks)
-            set_device_state(conn, x_device_id, battery, firmware)
-            # Огибающая считается сразу: файл уже на диске и ещё горячий в кэше.
-            envelope.store(conn, x_device_id, session, part, final_path, bps)
-            conn.commit()
-
-        return JSONResponse({"status": "stored", **body}, status_code=201)
+        return _publish(tmp_path, final_path, received, actual_crc, meta)
     finally:
         # После публикации файла здесь уже нечего удалять. На обрыве связи
         # (ClientDisconnect), отказе и любой ошибке хвост не остаётся.
         tmp_path.unlink(missing_ok=True)
+
+
+async def _upload_resumable(request, x_crc32, x_total, x_offset, final_path, meta):
+    """Докачка: тело — байты файла с X-Offset до конца, X-Total — весь файл.
+
+    В отличие от обычного приёма оборванное НЕ выбрасывается: оно копится в
+    .partial, и следующая попытка продолжает с того, что дошло (сколько дошло,
+    диктофон спрашивает GET /api/v1/upload/offset). Часть принимается только
+    целиком и только когда сумма всего файла совпала."""
+    device_id, session, part = meta[0], meta[1], meta[2]
+    total = _int_header(x_total, "X-Total", 1, MAX_BYTES)
+    offset = _int_header(x_offset if x_offset is not None else "0", "X-Offset", 0, total)
+    declared = _int_header(
+        request.headers.get("content-length"), "Content-Length", 0, MAX_BYTES
+    )
+    if declared != total - offset:
+        raise HTTPException(400, f"Content-Length {declared} вместо {total - offset}")
+
+    partial = _partial_path(device_id, session, part, x_crc32, total)
+    have = partial.stat().st_size if partial.exists() else 0
+    if offset > have:
+        # Диктофон думает, что дошло больше, чем есть. Пусть спросит заново.
+        raise HTTPException(416, f"на сервере {have} байт, продолжать с {offset} нельзя")
+
+    token = uuid.uuid4().hex
+    _partial_owner[partial] = token
+    received = 0
+    try:
+        with open(partial, "r+b" if partial.exists() else "xb") as handle:
+            # Любой префикс — те же байты того же файла, поэтому отрезать
+            # лишнее, дописанное прошлой попыткой после offset, безопасно.
+            handle.truncate(offset)
+            handle.seek(offset)
+            try:
+                async for chunk in request.stream():
+                    if _partial_owner.get(partial) != token:
+                        # Файл забрала новая попытка: эта больше не пишет.
+                        return JSONResponse({"status": "superseded"}, status_code=409)
+                    received += len(chunk)
+                    if received > declared:
+                        raise HTTPException(400, "тело длиннее Content-Length")
+                    handle.write(chunk)
+            finally:
+                # Дошедшее на обрыве сохраняется: в этом весь смысл докачки.
+                handle.flush()
+                os.fsync(handle.fileno())
+    finally:
+        if _partial_owner.get(partial) == token:
+            del _partial_owner[partial]
+
+    if received != declared:
+        # Не 400: диктофон отложил бы часть в .REJECT. Дошедшее сохранено,
+        # следующая попытка продолжит.
+        raise HTTPException(422, f"получено {received} байт вместо {declared}")
+
+    crc = 0
+    with open(partial, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            crc = zlib.crc32(chunk, crc)
+    actual_crc = f"{crc & 0xFFFFFFFF:08x}"
+    try:
+        if actual_crc != x_crc32:
+            raise HTTPException(422, f"CRC не совпал: {actual_crc} вместо {x_crc32}")
+        return _publish(partial, final_path, total, actual_crc, meta)
+    finally:
+        # Принятый файл уже переехал; искажённый или конфликтный не нужен —
+        # следующая попытка начнёт с нуля.
+        partial.unlink(missing_ok=True)
+
+
+def _publish(src_path, final_path, received, actual_crc, meta):
+    """Целиком полученный и сверенный файл становится частью записи."""
+    device_id, session, part, recovered, marks, expected_parts, battery, firmware = meta
+    body = {
+        "session": session,
+        "part": part,
+        "bytes": received,
+        "crc32": actual_crc,
+    }
+
+    # Проверка и публикация идут без await: в одном процессе uvicorn другой
+    # запрос той же части не вклинится между SELECT и replace.
+    with closing(connect()) as conn:
+        row = conn.execute(
+            "SELECT bytes, crc32 FROM parts WHERE device_id=? AND session=? AND part=?",
+            (device_id, session, part),
+        ).fetchone()
+
+        if row is not None:
+            if row["bytes"] == received and row["crc32"] == actual_crc:
+                # Тот же файл пришёл ещё раз: подтверждаем, аудио не трогаем.
+                # Метки пишем и здесь: повтор идемпотентен, а первая попытка
+                # могла оборваться после записи файла, но до их сохранения.
+                save_marks(conn, device_id, session, part, marks)
+                set_device_state(conn, device_id, battery, firmware)
+                conn.commit()
+                return JSONResponse({"status": "duplicate", **body}, status_code=200)
+            # Уже принятое аудио не перезаписываем молча.
+            raise HTTPException(
+                409,
+                f"часть уже принята с другими данными: "
+                f"{row['bytes']} байт, crc {row['crc32']}",
+            )
+
+        src_path.replace(final_path)
+        # Формат — из заголовка самого файла: у моно с XIAO Sense секунда весит
+        # 32 000 байт, у стерео с Recorder RevA 64 000. Шкала времени и волна
+        # считаются из размера, поэтому множитель обязан быть свой у каждой
+        # части. None (заголовок не прочитался) означает «считать как моно».
+        bps = wavfmt.bytes_per_second(final_path)
+        conn.execute(
+            "INSERT INTO parts (device_id, session, part, bytes, crc32, recovered,"
+            " audio_path, expected_parts, bytes_per_second) VALUES (?,?,?,?,?,?,?,?,?)",
+            (device_id, session, part, received, actual_crc, recovered,
+             str(final_path), expected_parts, bps),
+        )
+        save_marks(conn, device_id, session, part, marks)
+        set_device_state(conn, device_id, battery, firmware)
+        # Огибающая считается сразу: файл уже на диске и ещё горячий в кэше.
+        envelope.store(conn, device_id, session, part, final_path, bps)
+        conn.commit()
+
+    return JSONResponse({"status": "stored", **body}, status_code=201)
 
 
 @app.get("/api/v1/sessions")

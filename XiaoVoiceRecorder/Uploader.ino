@@ -52,7 +52,7 @@ constexpr const char *NVS_NAMESPACE = "recorder";
 constexpr const char *NTP_SERVER = "pool.ntp.org";
 }  // namespace upl
 
-enum UpState { UP_IDLE, UP_WIFI, UP_CRC, UP_SEND, UP_REPLY, UP_CLOSE };
+enum UpState { UP_IDLE, UP_WIFI, UP_CRC, UP_PROBE, UP_SEND, UP_REPLY, UP_CLOSE };
 
 Preferences g_prefs;
 
@@ -92,6 +92,7 @@ char g_upPrefix[64];
 uint16_t g_upPort = 443;
 uint32_t g_upSize = 0;
 uint32_t g_upSent = 0;
+uint32_t g_upBodyFrom = 0;  // с какого байта шло тело этой попытки
 uint32_t g_upCrc = 0;
 uint32_t g_upCrcDone = 0;
 uint32_t g_wifiStartedMs = 0;
@@ -352,18 +353,38 @@ CrcStep serviceCrc(int chunks) {
   return g_upCrcDone >= g_upSize ? CRC_DONE : CRC_MORE;
 }
 
-// Шаг 3: TLS-соединение и заголовки. Тело уходит по кускам из UP_SEND.
-SendResult openConnection() {
-  if (!g_upFile.seek(0)) {
-    Serial.println("[up] Файл не перемотался.");
-    return SEND_RETRY;
+// Общие заголовки: токен и то, что называет часть. Нужны и вопросу о
+// докачке, и самой отправке.
+void appendPartHeaders(String &req) {
+  char buf[16];
+  req += "Host: ";
+  req += g_upHost;
+  if (g_upPort != 443) {
+    req += ":";
+    req += g_upPort;
   }
-  const String marks = marksHeaderFor(g_upName);
-  const uint16_t declared = g_upRecovered ? 0 : declaredPartsFor(g_upSession);
-  // Заряд — только с платы, которая умеет его измерить: на Sense заголовка
-  // нет, и сервер честно показывает «диктофон не сообщал».
-  const battery::Status batt = readBattery();
+  req += "\r\nAuthorization: Bearer ";
+  req += g_deviceToken;
+  req += "\r\nX-Device-Id: ";
+  req += g_deviceId;
+  snprintf(buf, sizeof(buf), "%u", g_upSession);
+  req += "\r\nX-Session: ";
+  req += buf;
+  snprintf(buf, sizeof(buf), "%u", g_upPart);
+  req += "\r\nX-Part: ";
+  req += buf;
+  snprintf(buf, sizeof(buf), "%08lx", static_cast<unsigned long>(g_upCrc));
+  req += "\r\nX-Crc32: ";
+  req += buf;
+  req += "\r\nX-Total: ";
+  req += g_upSize;
+  req += "\r\n";
+}
 
+// Шаг 3: TLS-соединение и вопрос серверу, сколько байт этой части у него уже
+// есть (докачка после обрыва). Ответ читает UP_PROBE, тело уходит потом по
+// тому же соединению.
+SendResult openConnection() {
   g_client.stop();
   g_client.setCACert(ISRG_ROOT_X1);
   g_client.setHandshakeTimeout(upl::HANDSHAKE_TIMEOUT_S);
@@ -375,35 +396,48 @@ SendResult openConnection() {
     Serial.printf("[up] Нет соединения с %s:%u: %s\n", g_upHost, g_upPort, err);
     return SEND_RETRY;
   }
+  String req;
+  req.reserve(384);
+  req += "GET ";
+  req += g_upPrefix;
+  req += "/api/v1/upload/offset HTTP/1.1\r\n";
+  appendPartHeaders(req);
+  req += "Connection: keep-alive\r\n\r\n";
+  if (g_client.print(req) != req.length()) {
+    Serial.println("[up] Вопрос о докачке не ушёл.");
+    g_client.stop();
+    return SEND_RETRY;
+  }
+  g_reply = "";
+  g_replyStartedMs = millis();
+  return SEND_OK;
+}
+
+// Шаг 4: заголовки отправки с байта offset. Тело — остаток файла.
+SendResult sendUploadHeaders(uint32_t offset) {
+  if (!g_upFile.seek(offset)) {
+    Serial.println("[up] Файл не перемотался.");
+    return SEND_RETRY;
+  }
+  const String marks = marksHeaderFor(g_upName);
+  const uint16_t declared = g_upRecovered ? 0 : declaredPartsFor(g_upSession);
+  // Заряд — только с платы, которая умеет его измерить: на Sense заголовка
+  // нет, и сервер честно показывает «диктофон не сообщал».
+  const battery::Status batt = readBattery();
 
   char buf[16];
   String req;
   req.reserve(512 + marks.length());
   req += "POST ";
   req += g_upPrefix;
-  req += "/api/v1/upload HTTP/1.1\r\nHost: ";
-  req += g_upHost;
-  if (g_upPort != 443) {
-    req += ":";
-    req += g_upPort;
-  }
-  req += "\r\nAuthorization: Bearer ";
-  req += g_deviceToken;
-  req += "\r\nContent-Type: application/octet-stream\r\nContent-Length: ";
-  req += g_upSize;
-  req += "\r\nX-Device-Id: ";
-  req += g_deviceId;
-  snprintf(buf, sizeof(buf), "%u", g_upSession);
-  req += "\r\nX-Session: ";
-  req += buf;
-  snprintf(buf, sizeof(buf), "%u", g_upPart);
-  req += "\r\nX-Part: ";
-  req += buf;
+  req += "/api/v1/upload HTTP/1.1\r\n";
+  appendPartHeaders(req);
+  req += "Content-Type: application/octet-stream\r\nContent-Length: ";
+  req += g_upSize - offset;
+  req += "\r\nX-Offset: ";
+  req += offset;
   req += "\r\nX-Recovered: ";
   req += g_upRecovered ? "1" : "0";
-  snprintf(buf, sizeof(buf), "%08lx", static_cast<unsigned long>(g_upCrc));
-  req += "\r\nX-Crc32: ";
-  req += buf;
   if (!marks.isEmpty()) {
     req += "\r\nX-Marks: ";
     req += marks;
@@ -431,9 +465,13 @@ SendResult openConnection() {
     g_client.stop();
     return SEND_RETRY;
   }
+  g_upSent = offset;
+  g_upBodyFrom = offset;
+  g_reply = "";
 
-  Serial.printf("[up] %s -> сервер, %lu байт, crc %08lx, меток %s, частей %u\n",
+  Serial.printf("[up] %s -> сервер, %lu байт%s, crc %08lx, меток %s, частей %u\n",
                 g_upName.c_str(), static_cast<unsigned long>(g_upSize),
+                offset ? (String(", докачка с ") + offset).c_str() : "",
                 static_cast<unsigned long>(g_upCrc),
                 marks.isEmpty() ? "нет" : marks.c_str(), declared);
   return SEND_OK;
@@ -451,12 +489,14 @@ SendResult sendBodyChunks(int chunks) {
   static uint8_t buffer[upl::CHUNK_BYTES];
   static uint32_t bodyStartedMs = 0;
   for (int i = 0; i < chunks && g_upSent < g_upSize; ++i) {
-    if (g_upSent == 0) bodyStartedMs = millis();
+    const uint32_t thisTry = g_upSent - g_upBodyFrom;
+    if (thisTry == 0) bodyStartedMs = millis();
     // Скорость каждый мегабайт: по ней видно, во что упирается отправка.
-    if (g_upSent > 0 && g_upSent % (1UL << 20) == 0) {
+    if (thisTry > 0 && thisTry % (1UL << 20) == 0) {
       const uint32_t ms = millis() - bodyStartedMs;
-      Serial.printf("[up] %lu МБ, %lu КБ/с\n", static_cast<unsigned long>(g_upSent >> 20),
-                    static_cast<unsigned long>(ms ? (g_upSent / 1024UL) * 1000UL / ms : 0));
+      Serial.printf("[up] %lu МБ из %lu, %lu КБ/с\n", static_cast<unsigned long>(g_upSent >> 20),
+                    static_cast<unsigned long>(g_upSize >> 20),
+                    static_cast<unsigned long>(ms ? (thisTry / 1024UL) * 1000UL / ms : 0));
     }
     const int read = g_upFile.read(buffer, sizeof(buffer));
     if (read <= 0) {
@@ -697,10 +737,49 @@ void serviceUpload() {
       }
       const SendResult opened = openConnection();
       if (opened == SEND_OK) {
-        g_upState = UP_SEND;
+        g_upState = UP_PROBE;
       } else {
         finishTransfer(opened);
       }
+      return;
+    }
+    case UP_PROBE: {
+      while (g_client.available() > 0 && g_reply.length() < upl::REPLY_MAX_BYTES) {
+        g_reply += static_cast<char>(g_client.read());
+      }
+      if (!replyComplete()) {
+        const bool closed = !g_client.connected() && g_client.available() == 0;
+        if (closed || now - g_replyStartedMs >= upl::REPLY_TIMEOUT_MS) {
+          Serial.println("[up] Сервер не ответил на вопрос о докачке.");
+          finishTransfer(SEND_RETRY);
+        }
+        return;
+      }
+      const int status = g_reply.startsWith("HTTP/1.") ? g_reply.substring(9, 12).toInt() : 0;
+      const int split = g_reply.indexOf("\r\n\r\n");
+      const String body = g_reply.substring(split + 4);
+      uint32_t offset = 0;
+      if (status == 200 && body.indexOf("\"stored\"") >= 0) {
+        // Часть уже принята, а ответ на прошлую попытку потерялся.
+        Serial.println("[up] Сервер уже принял эту часть.");
+        finishTransfer(classifyReply());
+        return;
+      }
+      if (status == 200) {
+        if (!uploadpolicy::parseOffsetReply(body.c_str(), g_upSize, &offset)) {
+          offset = 0;  // непонятный ответ: надёжнее с нуля
+        }
+      } else if (status != 404) {  // 404 — старый сервер без докачки: с нуля
+        finishTransfer(classifyReply());
+        return;
+      }
+      const SendResult sent = sendUploadHeaders(offset);
+      if (sent != SEND_OK) {
+        finishTransfer(sent);
+        return;
+      }
+      g_upState = g_upSent >= g_upSize ? UP_REPLY : UP_SEND;
+      g_replyStartedMs = now;
       return;
     }
     case UP_SEND: {
