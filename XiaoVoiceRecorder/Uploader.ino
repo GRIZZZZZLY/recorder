@@ -573,7 +573,13 @@ void serviceUpload() {
     case UP_WIFI: {
       if (WiFi.status() != WL_CONNECTED) {
         if (now - g_wifiStartedMs >= upl::WIFI_CONNECT_TIMEOUT_MS) {
-          Serial.println("[net] Сеть недоступна.");
+          // Причина отличает антенну и 5 ГГц (сеть не видна) от пароля.
+          const wl_status_t st = WiFi.status();
+          Serial.printf("[net] Сеть недоступна: %s (status %d).\n",
+                        st == WL_NO_SSID_AVAIL   ? "сеть не видна — антенна, 5 ГГц или имя"
+                        : st == WL_CONNECT_FAILED ? "сеть видна, не пускает — пароль"
+                                                  : "нет ответа",
+                        static_cast<int>(st));
           scheduleRetry();
           g_upState = UP_CLOSE;
         }
