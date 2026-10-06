@@ -97,6 +97,22 @@ static void test_ring_push_longer_than_capacity_keeps_tail() {
   CHECK(sequential(out, 16, 24));
 }
 
+static void test_ring_resync_leaves_headroom_so_first_frames_are_not_dropped() {
+  // Полный буфер при START: оставляем 48 из 64, следующие 16 байт микрофона
+  // ложатся в запас, а не затирают начало предзаписи.
+  uint8_t storage[64], in[100], out[64];
+  RingBuffer ring;
+  ring.init(storage, 64);
+  fill(in, 100, 0);
+  ring.push(in, 80);
+  ring.resync(48);
+  CHECK(ring.available() == 48);
+  ring.push(in + 80, 16);
+  CHECK(ring.pop(out, 64) == 64);
+  CHECK(ring.dropped() == 0);
+  CHECK(sequential(out, 64, 32));  // байты 32..95
+}
+
 static void test_ring_counts_overrun_as_dropped_when_recording() {
   uint8_t storage[64], in[100], out[64];
   RingBuffer ring;
@@ -445,6 +461,7 @@ int main() {
   test_ring_push_pop_with_wrap();
   test_ring_armed_keeps_last_capacity_bytes();
   test_ring_push_longer_than_capacity_keeps_tail();
+  test_ring_resync_leaves_headroom_so_first_frames_are_not_dropped();
   test_ring_counts_overrun_as_dropped_when_recording();
   test_ring_survives_counter_wraparound();
   test_button_short_press_fires_on_release();

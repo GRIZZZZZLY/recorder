@@ -109,7 +109,9 @@ class Writer {
     m_partLimit = false;
     m_endCreated = false;
     m_ring.resetStats();
-    m_ring.resync();
+    // Запас 1/16 ёмкости (2 с в моно): микрофону есть куда писать, пока
+    // открывается часть и уходит первая порция на карту.
+    m_ring.resync(m_ring.capacity() - m_ring.capacity() / 16);
     m_preRoll = m_ring.available();
     m_ringBase = m_ring.tail();
     if (!openPart()) return false;

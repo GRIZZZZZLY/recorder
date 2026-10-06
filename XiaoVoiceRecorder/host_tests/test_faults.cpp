@@ -413,7 +413,7 @@ static void test_mark_uses_the_moment_of_the_press_not_of_the_handling() {
   // метка дошла до карты. Она обязана указывать на момент нажатия.
   Rig r;
   r.writer.cfg.partMaxBytes = audio::MONO_16K.partMaxBytes();
-  r.capture(32000);  // секунда предзаписи
+  r.capture(16000);  // полсекунды предзаписи: меньше запаса, который START оставляет в кольце
   CHECK(r.writer.start(7));
   const uint32_t headAtPress = r.ring.head();   // ISR снял бы ровно это
 
@@ -422,12 +422,12 @@ static void test_mark_uses_the_moment_of_the_press_not_of_the_handling() {
 
   CHECK(r.writer.markAt(headAtPress));
   const std::vector<uint8_t> &m = r.fs.files["/REC0007_P01.MRK"];
-  CHECK(std::string(m.begin(), m.end()) == "1.00\n");
+  CHECK(std::string(m.begin(), m.end()) == "0.50\n");
 
   // Для сравнения: метка «по текущему моменту» отстала бы на эти две секунды.
   CHECK(r.writer.mark());
   const std::vector<uint8_t> &m2 = r.fs.files["/REC0007_P01.MRK"];
-  CHECK(std::string(m2.begin(), m2.end()) == "1.00\n3.00\n");
+  CHECK(std::string(m2.begin(), m2.end()) == "0.50\n2.50\n");
 }
 
 static void test_mark_position_survives_the_counter_wrapping() {
@@ -436,7 +436,7 @@ static void test_mark_position_survives_the_counter_wrapping() {
   Rig r;
   r.writer.cfg.partMaxBytes = audio::MONO_16K.partMaxBytes();
   r.ring.testSetCounters(0xFFFFF000u, 0xFFFFF000u);
-  r.capture(32000);
+  r.capture(16000);
   CHECK(r.writer.start(7));
   CHECK(r.writer.ringBase() == 0xFFFFF000u);
   const uint32_t headAtPress = r.ring.head();
@@ -444,7 +444,7 @@ static void test_mark_position_survives_the_counter_wrapping() {
   CHECK(r.drain());
   CHECK(r.writer.markAt(headAtPress));
   const std::vector<uint8_t> &m = r.fs.files["/REC0007_P01.MRK"];
-  CHECK(std::string(m.begin(), m.end()) == "1.00\n");
+  CHECK(std::string(m.begin(), m.end()) == "0.50\n");
 }
 
 int main() {

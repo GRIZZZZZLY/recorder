@@ -81,11 +81,17 @@ class RingBuffer {
 
   // Переставляет tail на самый старый уцелевший байт, не считая затёртое
   // потерей. Вызывается при START: всё, что буфер держит, — предзапись.
-  void resync() {
+  // keep — сколько самых свежих байт оставить. При START буфер полон до края,
+  // и первый же кадр микрофона, пришедший раньше первой записи на карту,
+  // затирал бы начало предзаписи и считался потерей (на плате: 512 кадров).
+  void resync(uint32_t keep = UINT32_MAX) {
+    if (keep > m_cap) {
+      keep = m_cap;
+    }
     const uint32_t h = m_head.load(std::memory_order_acquire);
     const uint32_t t = m_tail.load(std::memory_order_relaxed);
-    if (h - t > m_cap) {
-      m_tail.store(h - m_cap, std::memory_order_release);
+    if (h - t > keep) {
+      m_tail.store(h - keep, std::memory_order_release);
     }
   }
 
