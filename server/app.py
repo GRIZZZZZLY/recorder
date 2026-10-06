@@ -4,6 +4,7 @@
 завести строку в SQLite. Транскрибация и саммари живут отдельно и читают ту же
 базу; здесь их нет намеренно.
 """
+import logging
 import os
 import re
 import uuid
@@ -12,6 +13,7 @@ from contextlib import asynccontextmanager, closing
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
+from starlette.requests import ClientDisconnect
 
 import api_ui
 import audio
@@ -262,6 +264,11 @@ async def _upload_resumable(request, x_crc32, x_total, x_offset, final_path, met
                     if received > declared:
                         raise HTTPException(400, "тело длиннее Content-Length")
                     handle.write(chunk)
+            except ClientDisconnect:
+                # Обычный обрыв связи: не ошибка сервера, дошедшее остаётся.
+                logging.getLogger("uvicorn.error").info(
+                    "обрыв %s: в .partial %d байт из %d", partial.name, offset + received, total)
+                return JSONResponse({"status": "partial"}, status_code=422)
             finally:
                 # Дошедшее на обрыве сохраняется: в этом весь смысл докачки.
                 handle.flush()
