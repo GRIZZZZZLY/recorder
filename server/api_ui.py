@@ -151,6 +151,16 @@ def _speaker_key(raw):
         raise HTTPException(400, f"ключ говорящего: ожидается «часть:номер», а не {raw!r}")
 
 
+@router.delete("/sessions/{device_id}/{session}")
+def delete_session(device_id: str, session: int, _=Depends(owner)):
+    """Стереть запись: звук, расшифровку, саммари, задачи. Без корзины —
+    подтверждение спрашивает страница."""
+    with closing(db.connect()) as conn:
+        if not db.delete_session(conn, device_id, session):
+            raise HTTPException(404, "нет такой сессии")
+    return {"ok": True}
+
+
 @router.post("/sessions/{device_id}/{session}/speakers")
 def save_speakers(device_id: str, session: int, body: Speakers, _=Depends(owner)):
     me = _speaker_key(body.me) if body.me else None

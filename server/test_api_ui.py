@@ -585,3 +585,43 @@ def test_projects_count_open_tasks(env, monkeypatch):
         projects = client.get("/api/ui/projects", auth=AUTH).json()["projects"]
     assert projects and all("open_tasks" in item for item in projects)
     assert projects[0]["open_tasks"] >= 1
+
+
+def test_session_can_be_deleted_with_its_files(env, monkeypatch):
+    """Удаление стирает запись целиком — строки всех таблиц и звук, — а соседнюю
+    сессию не трогает. Поиск по удалённому разговору ничего не находит."""
+    prepared(env, monkeypatch)
+    assert upload(env, session=8).status_code == 201
+    run_all(env)
+    audio = env.db.AUDIO_DIR
+    (audio / "xiao-01_S0007_P02.deadbeef.100.partial").write_bytes(b"x")
+
+    with TestClient(env.app) as client:
+        assert client.delete("/api/ui/sessions/xiao-01/7").status_code == 401
+        assert client.delete("/api/ui/sessions/xiao-01/7", auth=AUTH).status_code == 200
+        assert client.get("/api/ui/sessions/xiao-01/7", auth=AUTH).status_code == 404
+        assert client.get("/api/ui/sessions/xiao-01/8", auth=AUTH).status_code == 200
+        found = client.get("/api/ui/search", params={"q": "смета"}, auth=AUTH).json()
+        assert found and {hit["session"] for hit in found} == {8}
+        assert client.delete("/api/ui/sessions/xiao-01/7", auth=AUTH).status_code == 404
+
+    with closing(env.db.connect()) as conn:
+        for table in env.db.SESSION_TABLES:
+            left = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE session=7").fetchone()[0]
+            assert left == 0, table
+    assert not list(audio.glob("xiao-01_S0007_*"))
+    assert list(audio.glob("xiao-01_S0008_*"))
+
+
+def test_worker_does_not_resurrect_a_deleted_session(env, monkeypatch):
+    """Воркер мог взять часть до удаления и закончить после: его запись не
+    должна вернуть разговор в поиск и задачи."""
+    prepared(env, monkeypatch)
+    with closing(env.db.connect()) as conn:
+        env.db.delete_session(conn, "xiao-01", 7)
+        env.db.save_transcript(conn, ("xiao-01", 7, 1), "смета", "[]",
+                               [{"text": "смета"}], 1.0)
+        env.db.sync_tasks(conn, "xiao-01", 7, [{"text": "Выслать смету"}])
+        assert not env.db.finish_archive(conn, ("xiao-01", 7, 1), "x.flac")
+        assert conn.execute("SELECT COUNT(*) FROM transcript_fts").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0

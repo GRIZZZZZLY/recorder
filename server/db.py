@@ -336,13 +336,17 @@ def claim_part_for_transcription(conn):
 def save_transcript(conn, key, text, words_json, utterances, duration_sec):
     """Сохраняет расшифровку части и перестраивает её строки в поиске."""
     device_id, session, part = key
-    conn.execute(
+    cursor = conn.execute(
         "UPDATE transcripts SET status='done', text=?, words=?, utterances=?,"
         " duration_sec=?, last_error=NULL, updated_at=datetime('now')"
         " WHERE device_id=? AND session=? AND part=?",
         (text, words_json, json.dumps(utterances, ensure_ascii=False),
          duration_sec, device_id, session, part),
     )
+    if cursor.rowcount == 0:
+        # Сессию удалили, пока часть расшифровывалась: в поиск её не возвращаем.
+        conn.commit()
+        return
     conn.execute(
         "DELETE FROM transcript_fts WHERE device_id=? AND session=? AND part=?",
         (device_id, session, part),
@@ -399,13 +403,16 @@ def claim_part_for_archive(conn):
 
 
 def finish_archive(conn, key, flac_path):
-    """Новый путь в базу. Удаление WAV — после этого и только после."""
-    conn.execute(
+    """Новый путь в базу. Удаление WAV — после этого и только после.
+
+    False — части больше нет: сессию удалили, пока шло сжатие."""
+    cursor = conn.execute(
         "UPDATE parts SET audio_path=?, archive_status='done', archive_error=NULL"
         " WHERE device_id=? AND session=? AND part=?",
         (str(flac_path), *key),
     )
     conn.commit()
+    return cursor.rowcount > 0
 
 
 def fail_archive(conn, key, error, retry_in_minutes):
@@ -512,6 +519,38 @@ def retry_part(conn, device_id, session, part):
         (device_id, session, part),
     )
     return cursor.rowcount > 0
+
+
+SESSION_TABLES = ("transcripts", "summaries", "speaker_names", "tasks", "question_states",
+                  "marks", "recording_days", "transcript_fts", "parts")
+
+
+def delete_session(conn, device_id, session):
+    """Стереть сессию целиком: строки во всех таблицах, потом её файлы.
+
+    Сначала база, потом диск: упади удаление файла, останется лишний файл без
+    строки, а не строка, ведущая в пустоту. Файлы ищутся и по имени, а не только
+    по audio_path: там же лежат WAV рядом с FLAC после краха воркера и .partial
+    недокачанной части. Возвращает False, если такой сессии не было.
+
+    Имя устройства в шаблон попадает только из строки parts, а туда — после
+    проверки приёмника (буквы, цифры, _ и -): знаков шаблона в нём нет."""
+    if not session_exists(conn, device_id, session):
+        return False
+    for table in SESSION_TABLES:
+        conn.execute(f"DELETE FROM {table} WHERE device_id=? AND session=?",
+                     (device_id, session))
+    conn.commit()
+    # Номер части и точка: иначе устройство «A_S0001_P01x» попало бы под
+    # шаблон устройства «A».
+    for path in AUDIO_DIR.glob(f"{device_id}_S{session:04d}_P[0-9][0-9].*"):
+        path.unlink(missing_ok=True)
+    return True
+
+
+def session_exists(conn, device_id, session):
+    return conn.execute("SELECT 1 FROM parts WHERE device_id=? AND session=?",
+                        (device_id, session)).fetchone() is not None
 
 
 def retry_summary(conn, device_id, session):
@@ -1052,6 +1091,8 @@ def sync_tasks(conn, device_id, session, tasks):
     Задача, пропавшая из пересобранного саммари, остаётся видимой с пометкой:
     молча убрать то, что владелец уже читал, — потеря.
     """
+    if not session_exists(conn, device_id, session):
+        return  # сессию удалили, пока собиралось саммари
     day = session_day(conn, device_id, session)
     known = tasks_by_source(conn, device_id, session)
     fresh = {item_id(item) for item in tasks or []}

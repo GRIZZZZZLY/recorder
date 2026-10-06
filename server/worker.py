@@ -162,7 +162,11 @@ def run_archive(conn):
             log.error("Сжать не удалось, часть остаётся в WAV, %s: %s", key, error)
         return True
 
-    db.finish_archive(conn, key, flac)
+    if not db.finish_archive(conn, key, flac):
+        # Сессию удалили, пока шло сжатие: свежий FLAC — лишняя копия удалённого.
+        flac.unlink(missing_ok=True)
+        wav.unlink(missing_ok=True)
+        return True
     try:
         wav.unlink()
     except OSError as error:

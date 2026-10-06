@@ -2,8 +2,8 @@
 
 import { Suspense, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { BookmarkSimple, CaretDown } from "@phosphor-icons/react/dist/ssr";
+import { useRouter, useSearchParams } from "next/navigation";
+import { BookmarkSimple, CaretDown, Trash } from "@phosphor-icons/react/dist/ssr";
 import { Card, Row, Section, Time } from "@/components/recorder/list";
 import { PageHeader } from "@/components/recorder/page-header";
 import { PlayerProvider, usePlayhead, useSeek } from "@/components/recorder/player";
@@ -11,12 +11,12 @@ import { SpeakersForm } from "@/components/recorder/speakers-form";
 import { SummaryList } from "@/components/recorder/summary-list";
 import { TaskRow } from "@/components/recorder/task-row";
 import { Empty, EmptyNote, Failed, Loading } from "@/components/recorder/states";
-import { Dot, EvidenceTime, Retry, SourceNote, Tag } from "@/components/recorder/ui";
+import { Button, Dot, EvidenceTime, Retry, SourceNote, Tag } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import { revealUtterance } from "@/lib/reveal";
 import { statusTone } from "@/lib/session-status";
 import { minutesSince, useNow } from "@/lib/use-now";
-import { ApiError, apiPost } from "@/lib/api";
+import { ApiError, apiDelete, apiPost } from "@/lib/api";
 import type { Mark, Question, Summary, Task, Utterance } from "@/lib/api";
 import { count, formatClock, formatDay, formatTime, humanError, keepNumbers, normalizeClock, recordTitle, todayIso } from "@/lib/format";
 import { cx } from "@/utils/cx";
@@ -88,6 +88,55 @@ function Parts({ parts, missing }: { parts: Part[]; missing: number[] }) {
  * превращает «сделаю завтра» в четверг — а от дня разговора считаются все
  * сроки задач. Поэтому дату можно поправить; сроки пересчитываются сразу.
  */
+/** Удаление без корзины: сервер стирает звук и всё, что из него выросло.
+ * Поэтому два нажатия, и второе — на кнопке, которая говорит, что сотрётся. */
+function DeleteSession({ deviceId, session }: { deviceId: string; session: number }) {
+  const router = useRouter();
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function remove() {
+    setBusy(true);
+    try {
+      await apiDelete(`/sessions/${encodeURIComponent(deviceId)}/${session}`);
+      // replace, а не push: «назад» не должен вести на стёртую запись.
+      router.replace("/records/");
+    } catch (err) {
+      setError(`не удалось удалить: ${(err as Error).message}`);
+      setBusy(false);
+    }
+  }
+
+  if (!asking) {
+    return (
+      <Button variant="ghost" icon={Trash} className="self-start" onClick={() => setAsking(true)}>
+        Удалить запись
+      </Button>
+    );
+  }
+  return (
+    <Section note="Удалить запись">
+      <Card>
+        <Row className="flex-col items-start gap-3">
+          <span className="text-note text-text-secondary">
+            Звук, расшифровка, саммари и задачи этой записи сотрутся. Вернуть их будет нельзя.
+          </span>
+          <span className="flex flex-wrap gap-2">
+            <Button variant="primary" disabled={busy} onClick={remove}>
+              {busy ? "Удаляю…" : "Удалить навсегда"}
+            </Button>
+            <Button variant="ghost" disabled={busy} onClick={() => { setAsking(false); setError(null); }}>
+              Отмена
+            </Button>
+          </span>
+        </Row>
+      </Card>
+      {error ? <p className="rise-in px-1 text-note text-accent-text">{error}</p> : null}
+    </Section>
+  );
+}
+
 function RecordedOn({ deviceId, session, day, onSaved }: {
   deviceId: string;
   session: number;
@@ -680,6 +729,7 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
               расшифровано {doneParts} из {count(data.parts.length, "части", "частей", "частей")}
             </p>
           )}
+          <DeleteSession deviceId={data.device_id} session={data.session} />
         </div>
 
         <div className="min-w-0 lg:col-start-1">
