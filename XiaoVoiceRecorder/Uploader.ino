@@ -56,8 +56,16 @@ enum UpState { UP_IDLE, UP_WIFI, UP_CRC, UP_SEND, UP_REPLY, UP_CLOSE };
 
 Preferences g_prefs;
 
-String g_wifiSsid;
-String g_wifiPass;
+// До трёх сетей: дом, офис, телефон. Ключи wifi_ssid/wifi_pass, затем с
+// суффиксом 2 и 3. Неудача сразу переходит к следующей заданной сети;
+// удачная запоминается до перезагрузки и пробуется первой.
+constexpr int WIFI_SLOTS = 3;
+const char *const SSID_KEYS[WIFI_SLOTS] = {"wifi_ssid", "wifi_ssid2", "wifi_ssid3"};
+const char *const PASS_KEYS[WIFI_SLOTS] = {"wifi_pass", "wifi_pass2", "wifi_pass3"};
+String g_wifiSsids[WIFI_SLOTS];
+String g_wifiPasses[WIFI_SLOTS];
+int g_wifiIdx = 0;    // сеть текущей или следующей попытки
+int g_wifiTried = 0;  // сколько сетей не ответило подряд в этом круге
 String g_serverUrl;
 String g_deviceToken;
 String g_deviceId;
@@ -91,10 +99,29 @@ uint32_t g_replyStartedMs = 0;
 uint32_t g_transferStartedMs = 0;
 String g_reply;
 
+int wifiCount() {
+  int n = 0;
+  for (const String &s : g_wifiSsids) n += s.isEmpty() ? 0 : 1;
+  return n;
+}
+
+// Ставит g_wifiIdx на заданную сеть, начиная с from (по кругу).
+void pickWifiFrom(int from) {
+  for (int k = 0; k < WIFI_SLOTS; ++k) {
+    const int i = (from + k) % WIFI_SLOTS;
+    if (!g_wifiSsids[i].isEmpty()) {
+      g_wifiIdx = i;
+      return;
+    }
+  }
+}
+
 void loadUploadConfig() {
   g_prefs.begin(upl::NVS_NAMESPACE, true);
-  g_wifiSsid = g_prefs.getString("wifi_ssid", "");
-  g_wifiPass = g_prefs.getString("wifi_pass", "");
+  for (int i = 0; i < WIFI_SLOTS; ++i) {
+    g_wifiSsids[i] = g_prefs.getString(SSID_KEYS[i], "");
+    g_wifiPasses[i] = g_prefs.getString(PASS_KEYS[i], "");
+  }
   g_serverUrl = g_prefs.getString("server_url", "");
   g_deviceToken = g_prefs.getString("device_token", "");
   g_deviceId = g_prefs.getString("device_id", "xiao-01");
@@ -104,7 +131,8 @@ void loadUploadConfig() {
 // Значения приходят строками key=value через Serial. Пароль и токен обратно
 // не печатаются никогда.
 bool setUploadConfig(const String &key, const String &value) {
-  static const char *allowed[] = {"wifi_ssid", "wifi_pass", "server_url",
+  static const char *allowed[] = {"wifi_ssid", "wifi_pass", "wifi_ssid2", "wifi_pass2",
+                                  "wifi_ssid3", "wifi_pass3", "server_url",
                                   "device_token", "device_id"};
   for (const char *name : allowed) {
     if (key == name) {
@@ -124,8 +152,13 @@ bool setUploadConfig(const String &key, const String &value) {
 void printUploadConfig() {
   Serial.println("--- UPLOAD CONFIG ---");
   Serial.printf("device_id:    %s\n", g_deviceId.c_str());
-  Serial.printf("wifi_ssid:    %s\n", g_wifiSsid.isEmpty() ? "(не задано)" : g_wifiSsid.c_str());
-  Serial.printf("wifi_pass:    %s\n", g_wifiPass.isEmpty() ? "(не задано)" : "(задан)");
+  for (int i = 0; i < WIFI_SLOTS; ++i) {
+    if (i > 0 && g_wifiSsids[i].isEmpty()) continue;
+    Serial.printf("%-11s   %s, пароль %s%s\n", SSID_KEYS[i],
+                  g_wifiSsids[i].isEmpty() ? "(не задано)" : g_wifiSsids[i].c_str(),
+                  g_wifiPasses[i].isEmpty() ? "не задан" : "задан",
+                  i == g_wifiIdx && !g_wifiSsids[i].isEmpty() ? "  <- следующая попытка" : "");
+  }
   Serial.printf("server_url:   %s\n", g_serverUrl.isEmpty() ? "(не задано)" : g_serverUrl.c_str());
   Serial.printf("device_token: %s\n", g_deviceToken.isEmpty() ? "(не задано)" : "(задан)");
   Serial.printf("Отправлено частей: %lu, отказов: %lu, подряд неудач: %lu\n",
@@ -141,12 +174,13 @@ void printUploadConfig() {
   }
   Serial.printf("Отправка во время записи: %s\n", UPLOAD_DURING_RECORDING ? "включена" : "выключена");
   Serial.printf("Место на карте: %s\n", g_cardLow ? "МАЛО, удалять нечего" : "достаточно");
-  Serial.println("Задать: wifi_ssid=... wifi_pass=... server_url=... device_token=...");
+  Serial.println("Задать: wifi_ssid=... wifi_pass=... (вторая и третья сеть: wifi_ssid2= wifi_pass2= ...)");
+  Serial.println("        server_url=... device_token=...  Убрать сеть: wifi_ssid2= (пусто)");
   Serial.println("---------------------");
 }
 
 bool uploadConfigured() {
-  return !g_wifiSsid.isEmpty() && !g_serverUrl.isEmpty() && !g_deviceToken.isEmpty();
+  return wifiCount() > 0 && !g_serverUrl.isEmpty() && !g_deviceToken.isEmpty();
 }
 
 bool uploadBusy() { return g_upState != UP_IDLE; }
@@ -228,6 +262,13 @@ void watchWifiReason() {
   }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
 }
 
+bool wifiKnown(const String &ssid) {
+  for (const String &s : g_wifiSsids) {
+    if (!s.isEmpty() && s == ssid) return true;
+  }
+  return false;
+}
+
 // Команда w: какие сети плата видит и с каким сигналом. Только вне записи и
 // отправки — сканирование занимает радио на пару секунд.
 void scanWifi() {
@@ -237,7 +278,7 @@ void scanWifi() {
   for (int i = 0; i < n; ++i) {
     Serial.printf("  %-32s %4d dBm  канал %2d%s\n", WiFi.SSID(i).c_str(),
                   static_cast<int>(WiFi.RSSI(i)), static_cast<int>(WiFi.channel(i)),
-                  WiFi.SSID(i) == g_wifiSsid ? "  <- настроенная" : "");
+                  wifiKnown(WiFi.SSID(i)) ? "  <- настроенная" : "");
   }
   WiFi.scanDelete();
   WiFi.mode(WIFI_OFF);
@@ -587,12 +628,14 @@ void serviceUpload() {
         g_nextUploadAttemptMs = now + upl::EMPTY_QUEUE_RECHECK_MS;
         return;
       }
+      pickWifiFrom(g_wifiIdx);
+      g_wifiReason = 0;
       WiFi.mode(WIFI_STA);
-      WiFi.begin(g_wifiSsid.c_str(), g_wifiPass.c_str());
+      WiFi.begin(g_wifiSsids[g_wifiIdx].c_str(), g_wifiPasses[g_wifiIdx].c_str());
       g_wifiStartedMs = now;
       g_ntpRequested = false;
       g_upState = UP_WIFI;
-      Serial.printf("[net] Подключение к %s...\n", g_wifiSsid.c_str());
+      Serial.printf("[net] Подключение к %s...\n", g_wifiSsids[g_wifiIdx].c_str());
       return;
     }
     case UP_WIFI: {
@@ -607,14 +650,22 @@ void serviceUpload() {
                             ? "сеть видна, не пускает — пароль"
                             : "нет ответа",
                         static_cast<int>(st), static_cast<unsigned>(why));
-          scheduleRetry();
+          pickWifiFrom(g_wifiIdx + 1);
+          if (++g_wifiTried < wifiCount()) {
+            g_uploadArmed = true;  // следующая сеть — сразу, без паузы
+          } else {
+            g_wifiTried = 0;       // не ответила ни одна: обычная пауза
+            scheduleRetry();
+          }
           g_upState = UP_CLOSE;
         }
         return;
       }
       if (!g_ntpRequested) {
         // Часы — только когда сеть уже есть ради отправки, никогда ради времени.
-        Serial.printf("[net] Подключено, IP %s\n", WiFi.localIP().toString().c_str());
+        g_wifiTried = 0;
+        Serial.printf("[net] Подключено к %s, IP %s, сигнал %d dBm\n", g_wifiSsids[g_wifiIdx].c_str(),
+                      WiFi.localIP().toString().c_str(), static_cast<int>(WiFi.RSSI()));
         configTime(0, 0, upl::NTP_SERVER);
         g_ntpRequested = true;
       }
