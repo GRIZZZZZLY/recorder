@@ -163,6 +163,8 @@ void armUpload();
 void serviceUpload();
 void preemptUpload();
 bool uploadBusy();
+void scanWifi();
+void watchWifiReason();
 void cleanupSentParts();
 void continueInNewSession();
 void feedbackSetup();
@@ -672,6 +674,7 @@ void printHelp() {
   Serial.println("  l  файлы на карте (не во время записи)");
   Serial.println("  c  настройки отправки");
   Serial.println("  u  отправить готовые части сейчас");
+  Serial.println("  w  какие сети Wi-Fi видно и сигнал");
   Serial.println("  k  очистка .SENT по порогу места");
   Serial.println("  p  микрофон вкл/выкл в ARMED (замер тока без захвата)");
   Serial.println("  h  справка");
@@ -720,6 +723,10 @@ void processSerialLine(const String &line) {
     case 'u': case 'U':
       armUpload();
       Serial.println("[up] Отправка запрошена.");
+      break;
+    case 'w': case 'W':
+      if (g_state == ST_RECORDING || uploadBusy()) Serial.println("[net] Не во время записи и отправки.");
+      else scanWifi();
       break;
     case 'k': case 'K':
       if (g_state == ST_RECORDING) Serial.println("[clean] Не во время записи.");
@@ -788,6 +795,7 @@ void setup() {
   Serial.printf("[sys] PSRAM: %lu bytes\n", static_cast<unsigned long>(ESP.getPsramSize()));
 
   loadUploadConfig();
+  watchWifiReason();
   const bool ringOk = allocateRing();
   g_sdReady = initSd();
   if (g_sdReady) {

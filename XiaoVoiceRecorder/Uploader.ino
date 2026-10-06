@@ -218,6 +218,31 @@ String marksHeaderFor(const String &partName) {
   return count > 0 ? String(header) : String();
 }
 
+// Последняя причина отказа от роутера (wifi_err_reason_t): 15/204 — пароль,
+// 201 — сеть не найдена. WiFi.status() этого не различает.
+volatile uint8_t g_wifiReason = 0;
+
+void watchWifiReason() {
+  WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t info) {
+    g_wifiReason = info.wifi_sta_disconnected.reason;
+  }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+}
+
+// Команда w: какие сети плата видит и с каким сигналом. Только вне записи и
+// отправки — сканирование занимает радио на пару секунд.
+void scanWifi() {
+  WiFi.mode(WIFI_STA);
+  const int n = WiFi.scanNetworks();
+  Serial.printf("[net] Видно сетей: %d\n", n < 0 ? 0 : n);
+  for (int i = 0; i < n; ++i) {
+    Serial.printf("  %-32s %4d dBm  канал %2d%s\n", WiFi.SSID(i).c_str(),
+                  static_cast<int>(WiFi.RSSI(i)), static_cast<int>(WiFi.channel(i)),
+                  WiFi.SSID(i) == g_wifiSsid ? "  <- настроенная" : "");
+  }
+  WiFi.scanDelete();
+  WiFi.mode(WIFI_OFF);
+}
+
 void disconnectWifi() {
   WiFi.disconnect(true, true);
   WiFi.mode(WIFI_OFF);
@@ -575,11 +600,13 @@ void serviceUpload() {
         if (now - g_wifiStartedMs >= upl::WIFI_CONNECT_TIMEOUT_MS) {
           // Причина отличает антенну и 5 ГГц (сеть не видна) от пароля.
           const wl_status_t st = WiFi.status();
-          Serial.printf("[net] Сеть недоступна: %s (status %d).\n",
-                        st == WL_NO_SSID_AVAIL   ? "сеть не видна — антенна, 5 ГГц или имя"
-                        : st == WL_CONNECT_FAILED ? "сеть видна, не пускает — пароль"
-                                                  : "нет ответа",
-                        static_cast<int>(st));
+          const uint8_t why = g_wifiReason;
+          Serial.printf("[net] Сеть недоступна: %s (status %d, reason %u).\n",
+                        st == WL_NO_SSID_AVAIL || why == 201 ? "сеть не видна — антенна, 5 ГГц или имя"
+                        : st == WL_CONNECT_FAILED || why == 15 || why == 204 || why == 2
+                            ? "сеть видна, не пускает — пароль"
+                            : "нет ответа",
+                        static_cast<int>(st), static_cast<unsigned>(why));
           scheduleRetry();
           g_upState = UP_CLOSE;
         }
