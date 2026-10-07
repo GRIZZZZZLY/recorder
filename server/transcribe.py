@@ -10,6 +10,7 @@
 """
 import json
 import os
+import subprocess
 
 import httpx
 
@@ -142,6 +143,35 @@ def parse_payload(payload):
     )
 
 
+FFMPEG = os.environ.get("RECORDER_FFMPEG", "ffmpeg")
+# Выравнивание громкости перед расшифровкой. Микрофон XIAO Sense пишет тихо:
+# средняя громкость -37..-41 дБ при норме для речи около -20. Замер 7 октября
+# 2026 на записи 0014 (4 мин, офис): с выравниванием 137 слов вместо 106,
+# вернулись пропущенные тихие фразы и потерянное «не» («не будут»). Файл на
+# диске не меняется — только то, что слышит Deepgram. 0 выключает.
+LOUDNORM = os.environ.get("RECORDER_STT_LOUDNORM", "1") != "0"
+LOUDNORM_FILTER = "highpass=f=80,loudnorm=I=-20:TP=-2:LRA=11"
+
+
+def loudness_normalized(path):
+    """WAV с выровненной громкостью той же длины, или None — тогда уходит
+    исходный файл. Сбой ffmpeg расшифровку не останавливает."""
+    if not LOUDNORM:
+        return None
+    try:
+        done = subprocess.run(
+            [FFMPEG, "-nostdin", "-loglevel", "error", "-i", str(path),
+             "-af", LOUDNORM_FILTER, "-ar", "16000", "-ac", "1",
+             "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"],
+            capture_output=True, timeout=300,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if done.returncode != 0 or len(done.stdout) <= 44:
+        return None
+    return done.stdout
+
+
 def transcribe_file(path):
     if not API_KEY:
         raise TranscribeError("не задан DEEPGRAM_API_KEY", retryable=True,
@@ -155,12 +185,13 @@ def transcribe_file(path):
     if len(audio) <= 44:
         raise TranscribeError("в файле нет аудио", retryable=False)
 
-    headers = {
-        "Authorization": f"Token {API_KEY}",
-        # Часть, уже переведённую в архив, отдаём как FLAC: Deepgram принимает
-        # оба формата, но чужой Content-Type — повод для отказа 400.
-        "Content-Type": "audio/flac" if str(path).endswith(".flac") else "audio/wav",
-    }
+    # Часть, уже переведённую в архив, отдаём как FLAC: Deepgram принимает
+    # оба формата, но чужой Content-Type — повод для отказа 400.
+    content_type = "audio/flac" if str(path).endswith(".flac") else "audio/wav"
+    louder = loudness_normalized(path)
+    if louder is not None:
+        audio, content_type = louder, "audio/wav"
+    headers = {"Authorization": f"Token {API_KEY}", "Content-Type": content_type}
 
     try:
         response = httpx.post(

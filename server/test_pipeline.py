@@ -96,6 +96,9 @@ def env(tmp_path, monkeypatch):
     # Архив выключен: ffmpeg есть не на всякой машине разработки, а тесты
     # обязаны вести себя одинаково. Проверки архива включают его сами.
     monkeypatch.setenv("RECORDER_ARCHIVE_FLAC", "0")
+    # Настоящий Claude проверки не зовут никогда: на VPS он установлен, и
+    # проверка без подмены изложения висела там до таймаута в 900 с.
+    monkeypatch.setenv("RECORDER_CLAUDE_BIN", "claude-is-not-called-in-tests")
 
     import archive, db, duedate, textnorm, stt, transcribe, summarize
     import app as app_module

@@ -53,6 +53,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("RECORDER_OWNER_PASSWORD", PASSWORD)
     monkeypatch.setenv("DEEPGRAM_API_KEY", "key-for-tests")
     monkeypatch.setenv("RECORDER_ARCHIVE_FLAC", "1")
+    # Настоящий Claude проверки не зовут никогда: на VPS он установлен, и
+    # проверка без подмены изложения висела там до таймаута в 900 с.
+    monkeypatch.setenv("RECORDER_CLAUDE_BIN", "claude-is-not-called-in-tests")
 
     import archive, db, stt, transcribe, textnorm, duedate, summarize
     import app as app_module
@@ -480,3 +483,74 @@ def test_flac_part_is_sent_to_deepgram_as_flac(env, monkeypatch):
     monkeypatch.setattr(env.transcribe.httpx, "post", fake_post)
     env.transcribe.transcribe_file(str(flac))
     assert seen["Content-Type"] == "audio/flac"
+
+
+def _capture_post(env, monkeypatch):
+    seen = {}
+
+    class Reply:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"metadata": {"duration": 1.0},
+                    "results": {"channels": [{"alternatives": [{"transcript": "да"}]}]}}
+
+    def fake_post(url, params=None, headers=None, content=None, timeout=None):
+        seen["headers"], seen["content"] = headers, content
+        return Reply()
+
+    monkeypatch.setattr(env.transcribe.httpx, "post", fake_post)
+    return seen
+
+
+def _quiet_wav(path, seconds=2, amplitude=300):
+    """Тон 440 Гц около -40 дБ: громкость, как у записей XIAO Sense."""
+    import math
+    import struct
+    import wave
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"".join(
+            struct.pack("<h", int(amplitude * math.sin(2 * math.pi * 440 * i / 16000)))
+            for i in range(16000 * seconds)))
+
+
+def _rms(wav_bytes):
+    import array
+    samples = array.array("h", wav_bytes[44:])
+    return (sum(s * s for s in samples) / len(samples)) ** 0.5
+
+
+@needs_ffmpeg
+def test_quiet_part_reaches_deepgram_louder_and_same_length(env, monkeypatch):
+    """Тихая запись уходит на расшифровку громче, но той же длины: иначе
+    времена реплик разъедутся со звуком на сайте."""
+    seen = _capture_post(env, monkeypatch)
+    quiet = env.tmp / "quiet.wav"
+    _quiet_wav(quiet)
+    env.transcribe.transcribe_file(str(quiet))
+    sent = seen["content"]
+    assert seen["headers"]["Content-Type"] == "audio/wav"
+    assert _rms(sent) > 5 * _rms(quiet.read_bytes())  # больше +14 дБ
+    assert abs(len(sent) - quiet.stat().st_size) <= 64 * 2  # та же длина
+
+
+def test_without_ffmpeg_the_original_goes_to_deepgram(env, monkeypatch):
+    seen = _capture_post(env, monkeypatch)
+    monkeypatch.setattr(env.transcribe, "FFMPEG", "no-such-ffmpeg-binary")
+    quiet = env.tmp / "quiet.wav"
+    _quiet_wav(quiet)
+    env.transcribe.transcribe_file(str(quiet))
+    assert seen["content"] == quiet.read_bytes()
+
+
+def test_loudnorm_switch_off_sends_the_original(env, monkeypatch):
+    seen = _capture_post(env, monkeypatch)
+    monkeypatch.setattr(env.transcribe, "LOUDNORM", False)
+    quiet = env.tmp / "quiet.wav"
+    _quiet_wav(quiet)
+    env.transcribe.transcribe_file(str(quiet))
+    assert seen["content"] == quiet.read_bytes()
