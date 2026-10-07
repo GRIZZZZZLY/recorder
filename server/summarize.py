@@ -10,7 +10,11 @@
 import json
 import os
 import subprocess
+import tempfile
+import time
 from pathlib import Path
+
+import httpx
 
 import db
 import textnorm
@@ -18,6 +22,10 @@ import textnorm
 CLAUDE_BIN = os.environ.get("RECORDER_CLAUDE_BIN", "claude")
 MODEL = os.environ.get("RECORDER_SUMMARY_MODEL", "claude-opus-5")
 TIMEOUT_SEC = int(os.environ.get("RECORDER_SUMMARY_TIMEOUT", 900))
+# claude — Claude Code по подписке; gemini — Gemini API (summarize_gemini).
+ENGINE = os.environ.get("RECORDER_SUMMARY_ENGINE", "claude")
+GEMINI_MODELS = os.environ.get(
+    "RECORDER_SUMMARY_GEMINI_MODELS", "gemini-3.8-flash,gemini-3.5-flash-lite").split(",")
 
 ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = ROOT / "shared" / "summary.schema.json"
@@ -58,6 +66,8 @@ def summarize(transcript):
     """
     if not transcript.strip():
         raise SummaryError("пустой транскрипт", retryable=False)
+    if ENGINE == "gemini":
+        return summarize_gemini(transcript)
 
     try:
         completed = subprocess.run(
@@ -67,6 +77,11 @@ def summarize(transcript):
             text=True,
             encoding="utf-8",
             timeout=TIMEOUT_SEC,
+            # Выкладка стирает и заново создаёт /opt/recorder/server. Воркер,
+            # не перезапущенный после неё, сидит в удалённом каталоге, и claude
+            # (node) падает на старте с ENOENT uv_cwd — так 7 октября 2026
+            # молча не строились саммари 0014–0016. Каталог времянок не стирается.
+            cwd=tempfile.gettempdir(),
         )
     except FileNotFoundError:
         raise SummaryError(f"не найден исполняемый файл {CLAUDE_BIN}", retryable=False)
@@ -100,6 +115,57 @@ def summarize(transcript):
         "duration_ms": payload.get("duration_ms"),
     }
     return result
+
+
+def summarize_gemini(transcript):
+    """То же саммари через Gemini API тем же ключом, что и расшифровка.
+
+    Бесплатный тариф, замер 7 октября 2026: Pro отвечает 429 (не бесплатна),
+    3.8 Flash — 503 «high demand», 3.5 Flash-Lite отвечает. Поэтому модели
+    идут списком: перегружена или кончился лимит — берём следующую.
+    """
+    import gemini
+
+    if not gemini.API_KEY:
+        raise SummaryError("не задан GEMINI_API_KEY", retryable=False)
+    body = {
+        "systemInstruction": {"parts": [{"text": PROMPT_PATH.read_text(encoding="utf-8")}]},
+        "contents": [{"role": "user", "parts": [{"text": transcript}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseJsonSchema": json.loads(SCHEMA_PATH.read_text(encoding="utf-8")),
+        },
+    }
+    errors = []
+    for model in GEMINI_MODELS:
+        started = time.monotonic()
+        try:
+            response = httpx.post(
+                f"{gemini.BASE}/v1beta/models/{model}:generateContent",
+                headers={"x-goog-api-key": gemini.API_KEY}, json=body, timeout=TIMEOUT_SEC,
+            )
+        except httpx.HTTPError as error:
+            errors.append(f"{model}: {error}")
+            continue
+        if response.status_code in (429, 500, 503):
+            errors.append(f"{model}: {response.status_code}")
+            continue
+        if response.status_code != 200:
+            raise SummaryError(f"Gemini {model} отказал {response.status_code}:"
+                               f" {response.text[:300]}",
+                               retryable=response.status_code not in (400, 404))
+        try:
+            parts = response.json()["candidates"][0]["content"]["parts"]
+            result = json.loads("".join(p.get("text", "") for p in parts
+                                        if not p.get("thought")))
+        except (KeyError, IndexError, ValueError):
+            raise SummaryError(f"ответ Gemini {model} не разобран: {response.text[:300]}")
+        if not isinstance(result, dict) or "summary" not in result:
+            raise SummaryError(f"в ответе Gemini {model} нет summary: {str(result)[:300]}")
+        result["_meta"] = {"model": model, "cost_usd": 0,
+                           "duration_ms": int((time.monotonic() - started) * 1000)}
+        return result
+    raise SummaryError("все модели Gemini заняты: " + "; ".join(errors))
 
 
 def is_auth_failure(message):

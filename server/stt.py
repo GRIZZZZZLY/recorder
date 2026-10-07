@@ -1,7 +1,8 @@
 """Точка расширения для распознавания речи.
 
-Deepgram остаётся основным и единственным работающим движком. Этот модуль
-существует ради одного: остальной сервер не должен знать его имени. Воркер
+Движков два: Deepgram (по умолчанию) и Gemini 3.5 Transcribe (gemini.py,
+RECORDER_STT=gemini). Этот модуль существует ради одного: остальной сервер
+не должен знать имени движка. Воркер
 берёт движок через `backend()`, а форма результата описана здесь, а не внутри
 реализации.
 
@@ -63,7 +64,16 @@ class DeepgramBackend(TranscriptionBackend):
         return transcribe.transcribe_file(path)
 
 
-BACKENDS = {"deepgram": DeepgramBackend}
+class GeminiBackend(TranscriptionBackend):
+    name = "gemini"
+
+    def transcribe(self, path):
+        import gemini
+
+        return gemini.transcribe_file(path)
+
+
+BACKENDS = {"deepgram": DeepgramBackend, "gemini": GeminiBackend}
 
 
 def backend():

@@ -1065,3 +1065,21 @@ def test_digest_counts_without_calling_model(env, monkeypatch):
     assert day["new_tasks"] == 1
     assert abs(day["minutes"] - 1.0) < 0.01
     assert day["my_open_tasks"] == 0        # «это я» ещё не отмечен
+
+
+def test_summary_survives_a_deleted_working_directory(monkeypatch):
+    # Выкладка стирает каталог кода под работающим воркером; claude не должен
+    # наследовать этот каталог, иначе падает с ENOENT uv_cwd.
+    import summarize
+
+    seen = {}
+
+    def run(*args, **kwargs):
+        seen.update(kwargs)
+        raise summarize.subprocess.TimeoutExpired("claude", 1)
+
+    monkeypatch.setattr(summarize.subprocess, "run", run)
+    with pytest.raises(summarize.SummaryError):
+        summarize.summarize("текст")
+    assert seen.get("cwd") and os.path.isdir(seen["cwd"])
+    assert os.path.realpath(seen["cwd"]) != os.path.realpath(os.path.dirname(summarize.__file__))

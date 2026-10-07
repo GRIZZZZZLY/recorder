@@ -120,7 +120,12 @@ RECORDER_MIN_WORD_CONFIDENCE=0.7       # ниже этой уверенност�
 RECORDER_ARCHIVE_FLAC=1                # 0 выключает перевод принятого WAV в FLAC
 RECORDER_FLAC_LEVEL=8                  # уровень сжатия FLAC, считает сервер
 RECORDER_FFMPEG=ffmpeg                 # путь к ffmpeg, если он не в PATH
-RECORDER_STT=deepgram                  # движок распознавания; другой пока не написан
+RECORDER_STT=deepgram                  # движок распознавания: deepgram или gemini
+GEMINI_API_KEY=...                     # ключ Google AI Studio, нужен при RECORDER_STT=gemini
+RECORDER_GEMINI_CHUNK_SEC=300          # порция звука в одном запросе; бесплатный тариф: не больше ~330
+RECORDER_GEMINI_GAP_SEC=65             # пауза между запросами; на платном тарифе можно 0
+RECORDER_SUMMARY_ENGINE=claude         # саммари: claude (Claude Code по подписке) или gemini (тот же GEMINI_API_KEY)
+RECORDER_SUMMARY_GEMINI_MODELS=gemini-3.8-flash,gemini-3.5-flash-lite  # по порядку; занята — следующая
 RECORDER_SUMMARY_MODEL=claude-opus-5
 RECORDER_SUMMARY_TIMEOUT=900
 RECORDER_CLAUDE_BIN=claude
