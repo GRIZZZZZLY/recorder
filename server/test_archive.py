@@ -12,6 +12,7 @@ ffmpeg есть, и там они идут.
 """
 import importlib
 import shutil
+import subprocess
 import sqlite3
 import struct
 import zlib
@@ -65,6 +66,10 @@ def env(tmp_path, monkeypatch):
                    app_module, worker):
         importlib.reload(module)
     db.init_storage()
+    # Плеер отдаёт громкую копию (audio.loud_copy); проверки отдачи сверяют
+    # байты исходника, громкость проверяется отдельно.
+    import audio
+    monkeypatch.setattr(audio, "PLAY_LOUDNORM", False)
 
     class Env:
         pass
@@ -554,3 +559,34 @@ def test_loudnorm_switch_off_sends_the_original(env, monkeypatch):
     _quiet_wav(quiet)
     env.transcribe.transcribe_file(str(quiet))
     assert seen["content"] == quiet.read_bytes()
+
+
+@needs_ffmpeg
+def test_player_gets_a_louder_copy_of_the_same_length(env, monkeypatch):
+    """Владелец слушает выровненную копию, исходник на диске не меняется."""
+    import audio
+    monkeypatch.setattr(audio, "PLAY_LOUDNORM", True)
+    quiet = env.tmp / "audio" / "xiao-01_S0007_P01.wav"
+    quiet.parent.mkdir(exist_ok=True)
+    _quiet_wav(quiet)
+    before = quiet.read_bytes()
+
+    loud = audio.loud_copy(quiet)
+    assert loud.name == "xiao-01_S0007_P01.loud.flac"
+    assert quiet.read_bytes() == before
+    decoded = subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-i", str(loud), "-f", "wav", "-c:a", "pcm_s16le", "pipe:1"],
+        capture_output=True, check=True).stdout
+    assert _rms(decoded) > 5 * _rms(before)
+    assert abs(len(decoded) - len(before)) <= 64 * 2
+    assert audio.loud_copy(quiet) == loud  # второй раз — готовая копия
+
+
+def test_player_falls_back_to_the_original_without_ffmpeg(env, monkeypatch):
+    import audio
+    monkeypatch.setattr(audio, "PLAY_LOUDNORM", True)
+    monkeypatch.setattr(audio, "FFMPEG", "no-such-ffmpeg-binary")
+    quiet = env.tmp / "q.wav"
+    _quiet_wav(quiet)
+    assert audio.loud_copy(quiet) is None
+    assert list(env.tmp.glob("*.tmp")) == []

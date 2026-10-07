@@ -108,6 +108,10 @@ def env(tmp_path, monkeypatch):
                    app_module, worker):
         importlib.reload(module)
     db.init_storage()
+    # Плеер отдаёт громкую копию (audio.loud_copy); проверки отдачи сверяют
+    # байты исходника, громкость проверяется отдельно.
+    import audio
+    monkeypatch.setattr(audio, "PLAY_LOUDNORM", False)
 
     class Env:
         pass
