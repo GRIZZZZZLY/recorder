@@ -25,8 +25,12 @@ router = APIRouter()
 # расшифровки); исходник не меняется. 0 выключает.
 PLAY_LOUDNORM = os.environ.get("RECORDER_PLAY_LOUDNORM", "1") != "0"
 # Громче, чем для расшифровки (-20): -16 LUFS — привычная громкость речи
-# на телефоне. Пик не выше -1,5 дБ, чтобы не хрипело.
-PLAY_FILTER = "highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11"
+# на телефоне. Пик не выше -1,5 дБ, чтобы не хрипело. speechnorm поднимает
+# тихие фразы (дальний собеседник) не больше чем вдвое (+6 дБ); шум в паузах
+# растёт так же. Шумодавы (arnndn, noisereduce) владелец на слух отверг —
+# звучат грязнее исходника. Сменив фильтр, удалить кэш *.loud.flac на VPS.
+_NORM = "loudnorm=I=-16:TP=-1.5:LRA=11"
+PLAY_FILTER = f"highpass=f=80,{_NORM},speechnorm=e=2:r=0.0005:l=1,{_NORM}"
 
 
 def loud_copy(path):
