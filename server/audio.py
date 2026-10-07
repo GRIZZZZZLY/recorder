@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 
 import db
 from auth import owner
-from transcribe import FFMPEG, LOUDNORM_FILTER
+from transcribe import FFMPEG
 
 router = APIRouter()
 
@@ -24,6 +24,9 @@ router = APIRouter()
 # Владелец слушает копию с выровненной громкостью (тот же фильтр, что перед
 # расшифровкой); исходник не меняется. 0 выключает.
 PLAY_LOUDNORM = os.environ.get("RECORDER_PLAY_LOUDNORM", "1") != "0"
+# Громче, чем для расшифровки (-20): -16 LUFS — привычная громкость речи
+# на телефоне. Пик не выше -1,5 дБ, чтобы не хрипело.
+PLAY_FILTER = "highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11"
 
 
 def loud_copy(path):
@@ -39,7 +42,7 @@ def loud_copy(path):
     try:
         done = subprocess.run(
             [FFMPEG, "-nostdin", "-loglevel", "error", "-i", str(path),
-             "-af", LOUDNORM_FILTER, "-ar", "16000", "-ac", "1",
+             "-af", PLAY_FILTER, "-ar", "16000", "-ac", "1",
              "-c:a", "flac", "-f", "flac", str(tmp)],
             capture_output=True, timeout=300,
         )
