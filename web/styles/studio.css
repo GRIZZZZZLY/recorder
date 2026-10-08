@@ -668,10 +668,6 @@ html:not([data-entered]) .studio-record-grid > *:nth-child(n + 4) { animation-de
   background: rgb(255 255 255 / 0.07);
 }
 
-.studio-small-play svg {
-  margin-left: 2px;
-}
-
 .studio-small-play:active {
   transform: translateY(1px);
 }
