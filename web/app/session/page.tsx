@@ -8,6 +8,7 @@ import { Card, Row, Section } from "@/components/recorder/list";
 import { PageHeader } from "@/components/recorder/page-header";
 import { Transcript } from "@/components/recorder/transcript";
 import { PlayerProvider, useSeek } from "@/components/recorder/player";
+import { ShareLinks } from "@/components/recorder/share-links";
 import { SpeakersForm } from "@/components/recorder/speakers-form";
 import { SummaryList } from "@/components/recorder/summary-list";
 import { TaskRow } from "@/components/recorder/task-row";
@@ -568,6 +569,7 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
               расшифровано {doneParts} из {count(data.parts.length, "части", "частей", "частей")}
             </p>
           )}
+          <ShareLinks deviceId={data.device_id} session={data.session} />
           <DeleteSession deviceId={data.device_id} session={data.session} />
         </div>
 
