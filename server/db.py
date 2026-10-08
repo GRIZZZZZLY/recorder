@@ -139,6 +139,11 @@ CREATE TABLE IF NOT EXISTS speaker_names (
     name      TEXT    NOT NULL DEFAULT '',
     is_me     INTEGER NOT NULL DEFAULT 0,
     auto      INTEGER NOT NULL DEFAULT 0,
+    -- Версия расшифровки части (transcripts.updated_at), под которую имя
+    -- поставлено. После повторной расшифровки номера другие: по голосу
+    -- переезжают только имена старой версии, а то, что владелец вписал уже
+    -- под новую, остаётся на месте.
+    transcript_at TEXT,
     PRIMARY KEY (device_id, session, part, speaker)
 );
 
@@ -151,10 +156,12 @@ CREATE TABLE IF NOT EXISTS voice_prints (
     speaker   INTEGER NOT NULL,
     seconds   REAL    NOT NULL,
     vec       BLOB    NOT NULL,
-    -- Отпечаток старше расшифровки своей части — часть расшифрована заново, и
-    -- номера в нём уже чужие: такой отпечаток не участвует ни в профилях, ни
-    -- в подписях, пока его не снимут заново (воркер или --backfill).
-    created_at TEXT   NOT NULL DEFAULT (datetime('now')),
+    -- Версия расшифровки, с реплик которой снят отпечаток. Не совпадает с
+    -- текущей — часть расшифрована заново, номера уже чужие: такой отпечаток
+    -- не участвует ни в профилях, ни в подписях, пока его не снимут заново
+    -- (воркер или --backfill). Сравнение на равенство, а не по времени: часы
+    -- и значения по умолчанию при миграции здесь ни при чём.
+    transcript_at TEXT,
     PRIMARY KEY (device_id, session, part, speaker)
 );
 
@@ -314,14 +321,19 @@ def init_storage():
                            for row in conn.execute("PRAGMA table_info(speaker_names)")}
         if "auto" not in speaker_columns:
             conn.execute("ALTER TABLE speaker_names ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
-        # Отпечатки, снятые до появления даты, сняты с текущих расшифровок.
-        # ALTER не принимает datetime('now') как значение по умолчанию.
-        print_columns = {row["name"]
-                         for row in conn.execute("PRAGMA table_info(voice_prints)")}
-        if "created_at" not in print_columns:
-            conn.execute("ALTER TABLE voice_prints ADD COLUMN created_at TEXT NOT NULL"
-                         " DEFAULT '1970-01-01 00:00:00'")
-            conn.execute("UPDATE voice_prints SET created_at = datetime('now')")
+        # Отпечатки и имена, записанные до появления версии, относятся к
+        # текущим расшифровкам. Столбец и его заполнение — одной транзакцией:
+        # падение между ними оставило бы пустые версии.
+        for table in ("voice_prints", "speaker_names"):
+            columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if "transcript_at" not in columns:
+                if not conn.in_transaction:
+                    conn.execute("BEGIN IMMEDIATE")
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN transcript_at TEXT")
+                conn.execute(
+                    f"UPDATE {table} SET transcript_at = (SELECT t.updated_at FROM transcripts t"
+                    f" WHERE t.device_id = {table}.device_id AND t.session = {table}.session"
+                    f" AND t.part = {table}.part)")
         conn.commit()
 
 
@@ -550,22 +562,14 @@ def session_speakers(conn):
 # между отдельной проверкой и записью сессию тоже успевают удалить, и в базе
 # остались бы отпечатки голоса и имена удалённого разговора.
 _SESSION_ALIVE = "EXISTS (SELECT 1 FROM parts WHERE device_id = ? AND session = ?)"
+# Текущая версия расшифровки части: подставляется в ту же вставку.
+_VERSION = "(SELECT updated_at FROM transcripts WHERE device_id = ? AND session = ? AND part = ?)"
 
 
-def save_voice_prints(conn, key, prints):
-    """Отпечатки части заменяются целиком: после повторной расшифровки номера
-    говорящих другие, и подписи по голосу этой части уходят вместе со старыми
-    отпечатками. Имена владельца остаются. prints: {номер: (vec, секунд)}."""
-    device_id, session, part = key
-    conn.execute("DELETE FROM voice_prints WHERE device_id=? AND session=? AND part=?", key)
-    _drop_guesses(conn, key)
-    conn.executemany(
-        "INSERT INTO voice_prints (device_id, session, part, speaker, seconds, vec)"
-        " SELECT ?, ?, ?, ?, ?, ? WHERE " + _SESSION_ALIVE,
-        [(device_id, session, part, speaker, round(float(seconds), 1), blob, device_id, session)
-         for speaker, (blob, seconds) in prints.items()],
-    )
-    conn.commit()
+def transcript_version(conn, key):
+    row = conn.execute("SELECT updated_at FROM transcripts"
+                       " WHERE device_id=? AND session=? AND part=?", key).fetchone()
+    return row["updated_at"] if row else None
 
 
 def _drop_guesses(conn, key):
@@ -582,13 +586,6 @@ def drop_auto_names(conn, key):
     conn.commit()
 
 
-def owner_names(conn, key):
-    """{номер: (имя, is_me)} — имена владельца одной части."""
-    return {row["speaker"]: (row["name"], row["is_me"]) for row in conn.execute(
-        "SELECT speaker, name, is_me FROM speaker_names"
-        " WHERE device_id=? AND session=? AND part=? AND auto=0", key)}
-
-
 def part_prints(conn, key):
     """{номер: vec} одной части, в том числе устаревшие: по ним имена владельца
     переезжают на номера новой расшифровки."""
@@ -596,41 +593,100 @@ def part_prints(conn, key):
         "SELECT speaker, vec FROM voice_prints WHERE device_id=? AND session=? AND part=?", key)}
 
 
-def move_owner_names(conn, key, moves, expected):
+def _save_prints(conn, key, prints, version):
+    device_id, session, part = key
+    conn.execute("DELETE FROM voice_prints WHERE device_id=? AND session=? AND part=?", key)
+    _drop_guesses(conn, key)
+    conn.executemany(
+        "INSERT INTO voice_prints (device_id, session, part, speaker, seconds, vec, transcript_at)"
+        " SELECT ?, ?, ?, ?, ?, ?, COALESCE(?, " + _VERSION + ") WHERE " + _SESSION_ALIVE,
+        [(device_id, session, part, speaker, round(float(seconds), 1), blob, version,
+          *key, device_id, session)
+         for speaker, (blob, seconds) in prints.items()],
+    )
+
+
+def save_voice_prints(conn, key, prints, version=None):
+    """Отпечатки части заменяются целиком: после повторной расшифровки номера
+    говорящих другие, и подписи по голосу этой части уходят вместе со старыми
+    отпечатками. Имена владельца остаются. prints: {номер: (vec, секунд)};
+    version — версия расшифровки, с которой сняты отпечатки (по умолчанию
+    текущая)."""
+    _save_prints(conn, key, prints, version)
+    conn.commit()
+
+
+def _move_names(conn, key, moves, old_version, new_version):
+    device_id, session, part = key
+    moving = conn.execute(
+        "SELECT speaker, name, is_me FROM speaker_names WHERE device_id=? AND session=?"
+        " AND part=? AND auto=0 AND transcript_at IS ?", (*key, old_version)).fetchall()
+    for row in moving:
+        conn.execute("DELETE FROM speaker_names WHERE device_id=? AND session=?"
+                     " AND part=? AND speaker=? AND auto=0", (*key, row["speaker"]))
+    for row in moving:
+        target = moves.get(row["speaker"])
+        if target is None:
+            continue
+        conn.execute(
+            "INSERT INTO speaker_names"
+            " (device_id, session, part, speaker, name, is_me, auto, transcript_at)"
+            " SELECT ?, ?, ?, ?, ?, ?, 0, COALESCE(?, " + _VERSION + ") WHERE " + _SESSION_ALIVE +
+            " ON CONFLICT(device_id, session, part, speaker) DO UPDATE SET"
+            " name=excluded.name, is_me=excluded.is_me, auto=0,"
+            " transcript_at=excluded.transcript_at"
+            " WHERE speaker_names.auto = 1",
+            (device_id, session, part, target, row["name"], row["is_me"], new_version,
+             *key, device_id, session),
+        )
+    if moving:
+        _summary_stale(conn, device_id, session)
+
+
+def move_owner_names(conn, key, moves, old_version, new_version=None):
     """Имена владельца части после повторной расшифровки. moves: {старый
     номер: новый номер или None}; номер без пары по голосу теряет имя.
 
-    expected — owner_names, снятые до того, как начали считать отпечатки.
-    Переезжают только строки, которые с тех пор не менялись: всё, что владелец
-    вписал за это время, уже относится к новой расшифровке и остаётся на месте,
-    а при столкновении его свежее слово важнее переезжающего имени. Вызывать
-    после save_voice_prints: подписи по голосу этой части к тому времени сняты."""
-    device_id, session, part = key
+    Переезжают только имена, поставленные под старую версию расшифровки
+    (old_version — версия старых отпечатков). Всё, что владелец вписал уже под
+    новую, остаётся на месте, а при столкновении его слово важнее переезжающего
+    имени."""
     conn.execute("BEGIN IMMEDIATE")
     try:
-        moving = {speaker: entry for speaker, entry in owner_names(conn, key).items()
-                  if expected.get(speaker) == entry}
-        for speaker in moving:
-            conn.execute("DELETE FROM speaker_names WHERE device_id=? AND session=?"
-                         " AND part=? AND speaker=? AND auto=0", (*key, speaker))
-        for speaker, (name, is_me) in moving.items():
-            target = moves.get(speaker)
-            if target is None:
-                continue
-            conn.execute(
-                "INSERT INTO speaker_names (device_id, session, part, speaker, name, is_me, auto)"
-                " SELECT ?, ?, ?, ?, ?, ?, 0 WHERE " + _SESSION_ALIVE +
-                " ON CONFLICT(device_id, session, part, speaker) DO UPDATE SET"
-                " name=excluded.name, is_me=excluded.is_me, auto=0"
-                " WHERE speaker_names.auto = 1",
-                (device_id, session, part, target, name, is_me, device_id, session),
-            )
-        if moving:
-            _summary_stale(conn, device_id, session)
+        _move_names(conn, key, moves, old_version, new_version)
         conn.commit()
     except Exception:
         conn.rollback()
         raise
+
+
+def replace_part_prints(conn, key, prints, version, mapper):
+    """Новые отпечатки части и переезд имён владельца — одной транзакцией:
+    иначе сбой между ними оставил бы свежие отпечатки с именами на чужих
+    номерах, а --backfill такую часть уже не перепроверил бы. mapper получает
+    старые отпечатки {номер: vec} и возвращает переезды {старый: новый}."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        old = part_prints(conn, key)
+        old_version = conn.execute(
+            "SELECT transcript_at FROM voice_prints WHERE device_id=? AND session=? AND part=?"
+            " LIMIT 1", key).fetchone()
+        _save_prints(conn, key, prints, version)
+        if old:
+            _move_names(conn, key, mapper(old), old_version["transcript_at"], version)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def owner_display_name(conn):
+    """Как владелец пишет своё имя: самое частое имя у строк «это я» во всём
+    архиве. Пусто, пока не отмечал."""
+    row = conn.execute(
+        "SELECT name FROM speaker_names WHERE is_me = 1 AND auto = 0 AND TRIM(name) != ''"
+        " GROUP BY name ORDER BY COUNT(*) DESC, MIN(rowid) LIMIT 1").fetchone()
+    return row["name"] if row else ""
 
 
 def voice_prints(conn, device_id=None, session=None):
@@ -645,7 +701,7 @@ def voice_prints(conn, device_id=None, session=None):
     остальных (из них профили). Без сессии — весь архив."""
     where = (" WHERE NOT EXISTS (SELECT 1 FROM transcripts t"
              "   WHERE t.device_id = v.device_id AND t.session = v.session AND t.part = v.part"
-             "     AND (t.status != 'done' OR t.updated_at > v.created_at))")
+             "     AND (t.status != 'done' OR v.transcript_at IS NOT t.updated_at))")
     args = ()
     if device_id is not None:
         where += (" AND ((s.auto = 0 AND TRIM(s.name) != '')"
@@ -780,12 +836,14 @@ def _summary_stale(conn, device_id, session):
 
 def set_speaker(conn, device_id, session, part, speaker, name, is_me):
     conn.execute(
-        "INSERT INTO speaker_names (device_id, session, part, speaker, name, is_me, auto)"
-        " SELECT ?, ?, ?, ?, ?, ?, 0 WHERE " + _SESSION_ALIVE +
+        "INSERT INTO speaker_names"
+        " (device_id, session, part, speaker, name, is_me, auto, transcript_at)"
+        " SELECT ?, ?, ?, ?, ?, ?, 0, " + _VERSION + " WHERE " + _SESSION_ALIVE +
         " ON CONFLICT(device_id, session, part, speaker) DO UPDATE SET"
-        " name=excluded.name, is_me=excluded.is_me, auto=0",
+        " name=excluded.name, is_me=excluded.is_me, auto=0,"
+        " transcript_at=excluded.transcript_at",
         (device_id, session, part, speaker, name.strip(), 1 if is_me else 0,
-         device_id, session),
+         device_id, session, part, device_id, session),
     )
     _summary_stale(conn, device_id, session)
     conn.commit()

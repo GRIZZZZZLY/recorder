@@ -44,8 +44,8 @@ function MeSwitch({ value, current, onChange }: {
   );
 }
 
-export function SpeakersForm({ deviceId, session, speakers, onSaved }:
-  { deviceId: string; session: number; speakers: Speaker[]; onSaved: () => void }) {
+export function SpeakersForm({ deviceId, session, speakers, meName, onSaved }:
+  { deviceId: string; session: number; speakers: Speaker[]; meName: string; onSaved: () => void }) {
   // То, что страница показала при загрузке: сравниваем с ним, а не шлём всё.
   // Форма пересоздаётся при каждом новом списке говорящих (key в page.tsx).
   const [shown] = useState(() =>
@@ -117,8 +117,8 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
                 )}
               </div>
               <MeSwitch value={key} current={me} onChange={(value) => {
+                setNames((old) => pickMe(speakers, shown, old, me, value, meName));
                 setMe(value);
-                setNames((old) => pickMe(speakers, old, value));
               }} />
             </Row>
           );

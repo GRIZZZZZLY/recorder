@@ -31,16 +31,25 @@ export function isGuess(speaker: { part: number; speaker: number; name: string; 
 type Row = { part: number; speaker: number; name: string; is_me: boolean; auto: boolean };
 
 /**
- * Имена после выбора «это я» на строке key. На угаданной строке догадку
- * заменяет ваше имя (если оно уже известно в этой записи) или пустое поле:
- * иначе сохранение записало бы чужое имя как ваше, ваш голос ушёл бы в чужой
- * профиль, а задачи того человека стали бы вашими.
+ * Имена после того, как «это я» перешло со строки prevMe на строку me.
+ *
+ * На угаданной строке догадку заменяет ваше имя — из этой записи или, если
+ * здесь вы ещё не отмечены, из других (meName); не известно — пустое поле.
+ * Иначе сохранение записало бы чужое имя как ваше: ваш голос ушёл бы в чужой
+ * профиль, а задачи того человека стали бы вашими. Если «это я» перещёлкнули
+ * на другую строку, прежней строке возвращается её догадка — пока владелец
+ * сам не вписал туда что-то другое.
  */
-export function pickMe(speakers: Row[], names: Record<string, string>, key: string): Record<string, string> {
-  const row = speakers.find((s) => `${s.part}:${s.speaker}` === key);
-  if (!row || !row.auto || names[key] !== row.name) return names;
-  const mine = speakers.find((s) => s.is_me && !s.auto && s.name)?.name ?? "";
-  return { ...names, [key]: mine };
+export function pickMe(speakers: Row[], shown: Record<string, string>, names: Record<string, string>,
+                       prevMe: string, me: string, meName: string): Record<string, string> {
+  const mine = speakers.find((s) => s.is_me && !s.auto && s.name)?.name || meName;
+  const guessed = (key: string) => speakers.some((s) => `${s.part}:${s.speaker}` === key && s.auto);
+  const next = { ...names };
+  if (prevMe && prevMe !== me && guessed(prevMe) && next[prevMe] === mine && shown[prevMe] !== mine) {
+    next[prevMe] = shown[prevMe] ?? "";
+  }
+  if (me && guessed(me) && next[me] === (shown[me] ?? "")) next[me] = mine;
+  return next;
 }
 
 export function changedNames(shown: Record<string, string>, names: Record<string, string>,

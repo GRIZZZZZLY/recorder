@@ -295,8 +295,8 @@ def test_failed_prints_after_retranscription_wait_for_the_next_try(env, monkeypa
                                          1: (vp.pack([0, 1.0, 0]), 9.0)})
         db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
         db.set_auto_names(conn, "xiao-01", 7, {(1, 1): "Мария"})
-        # Часть расшифрована заново: отпечатки старше текста.
-        conn.execute("UPDATE voice_prints SET created_at = datetime('now', '-1 hour')")
+        # Часть расшифрована заново: у текста новая версия.
+        conn.execute("UPDATE transcripts SET updated_at = datetime('now', '+1 minute')")
         conn.commit()
 
     def broken(path, utterances):
@@ -432,7 +432,7 @@ def test_names_are_not_written_into_a_session_deleted_mid_way(env, write):
         if write == "auto":
             db.set_auto_names(conn, "xiao-01", 7, {(1, 1): "Мария"})
         else:
-            db.move_owner_names(conn, KEY, {0: 2}, {0: ("Игорь", 0)})
+            db.move_owner_names(conn, KEY, {0: 2}, db.transcript_version(conn, KEY))
         conn.set_trace_callback(None)
         assert done == [True]
         assert conn.execute("SELECT COUNT(*) FROM speaker_names").fetchone()[0] == 0
@@ -487,20 +487,31 @@ def test_names_for_a_deleted_session_are_refused(env):
     assert response.status_code == 404
 
 
-def test_names_typed_during_retranscription_are_left_alone(env):
+def test_names_fixed_after_a_failed_embed_stay_put(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
     upload(env)
+    run_all(env)
     db = env.db
+    igor, maria = [1.0, 0, 0], [0, 1.0, 0]
     with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, KEY, {0: (vp.pack(igor), 9.0), 1: (vp.pack(maria), 9.0)})
         db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
-        expected = db.owner_names(conn, KEY)
-        # Пока снимались отпечатки, владелец подписал номера новой расшифровки.
-        db.set_speaker(conn, "xiao-01", 7, 1, 1, "Пётр", False)
-        db.set_speaker(conn, "xiao-01", 7, 1, 3, "Иван", False)
-        db.move_owner_names(conn, KEY, {0: 1}, expected)
-        # Игорь ушёл бы на номер Петра — свежее слово владельца важнее.
+        db.set_speaker(conn, "xiao-01", 7, 1, 1, "Мария", False)
+        # Новая расшифровка поменяла номера местами, снять отпечатки не вышло,
+        # и владелец сам поправил имена под новую нумерацию.
+        conn.execute("UPDATE transcripts SET updated_at = datetime('now', '+1 minute')")
+        conn.commit()
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Мария", False)
+        db.set_speaker(conn, "xiao-01", 7, 1, 1, "Игорь", False)
+    monkeypatch.setattr(vp, "embed_part", lambda path, utterances: {
+        0: (vp.normalized(maria), 9.0), 1: (vp.normalized(igor), 9.0)})
+    with closing(db.connect()) as conn:
+        assert vp.backfill(conn) == 1
+        # Исправления владельца уже про новую нумерацию — их не переносят обратно.
         assert db.speaker_names(conn, "xiao-01", 7) == {
-            (1, 1): {"name": "Пётр", "is_me": False, "auto": False},
-            (1, 3): {"name": "Иван", "is_me": False, "auto": False}}
+            (1, 0): {"name": "Мария", "is_me": False, "auto": False},
+            (1, 1): {"name": "Игорь", "is_me": False, "auto": False}}
 
 
 def test_dropping_guesses_sends_the_summary_back(env, monkeypatch):
@@ -543,3 +554,110 @@ def test_backfill_goes_on_after_a_part_that_fails(env, monkeypatch):
     with closing(env.db.connect()) as conn:
         assert vp.backfill(conn) == 2
         assert sorted({r["session"] for r in env.db.voice_prints(conn)}) == [8]
+
+
+
+def test_prints_on_a_migrated_database_stay_usable(env, monkeypatch):
+    # Живая база: таблица отпечатков создана до появления версии расшифровки.
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    upload(env)
+    run_all(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        conn.execute("DROP TABLE voice_prints")
+        conn.execute("CREATE TABLE voice_prints (device_id TEXT NOT NULL, session INTEGER NOT NULL,"
+                     " part INTEGER NOT NULL, speaker INTEGER NOT NULL, seconds REAL NOT NULL,"
+                     " vec BLOB NOT NULL, PRIMARY KEY (device_id, session, part, speaker))")
+        conn.execute("INSERT INTO voice_prints VALUES ('xiao-01', 7, 1, 0, 9.0, ?)",
+                     (vp.pack([1.0, 0, 0]),))
+        conn.commit()
+    db.init_storage()
+    with closing(db.connect()) as conn:
+        assert [r["speaker"] for r in db.voice_prints(conn)] == [0]
+        db.save_voice_prints(conn, KEY, {1: (vp.pack([0, 1.0, 0]), 9.0)})
+        assert [r["speaker"] for r in db.voice_prints(conn)] == [1]
+
+
+def test_failed_name_move_keeps_the_old_prints(env, monkeypatch):
+    upload(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, KEY, {0: (vp.pack([1.0, 0, 0]), 9.0)})
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+    monkeypatch.setattr(vp, "embed_part", lambda path, utterances: {
+        2: (vp.normalized([0, 1.0, 0]), 9.0)})
+
+    def broken(old, new):
+        raise RuntimeError("база занята")
+    monkeypatch.setattr(vp, "carry_over", broken)
+    with closing(db.connect()) as conn:
+        with pytest.raises(RuntimeError):
+            vp.remember_part(conn, KEY, "part.flac", [])
+        # Отпечатки и имена меняются вместе или не меняются вовсе.
+        assert [(r["speaker"]) for r in db.voice_prints(conn)] == [0]
+        assert db.speaker_names(conn, "xiao-01", 7)[(1, 0)]["name"] == "Игорь"
+
+
+def test_names_do_not_jump_between_two_different_people():
+    igor = vp.normalized([1, 0, 0])
+    # Ни Мария, ни Пётр не Игорь: похожи на него почти одинаково и не похожи
+    # друг на друга — имени здесь не место.
+    maria, petr = vp.normalized([0.65, 0.76, 0]), vp.normalized([0.63, -0.1, 0.77])
+    assert vp.carry_over({0: igor}, {1: maria, 2: petr}) == {0: None}
+
+
+def test_backfill_rolls_back_a_part_that_breaks_mid_way(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    upload(env, session=7)
+    upload(env, session=8)
+    run_all(env)
+    real = vp.remember_part
+
+    def remember(conn, key, *args, **kwargs):
+        if key[1] == 7:
+            conn.execute("BEGIN IMMEDIATE")      # сломалась посреди своей транзакции
+            raise RuntimeError("сбой")
+        return real(conn, key, *args, **kwargs)
+    monkeypatch.setattr(vp, "remember_part", remember)
+    monkeypatch.setattr(vp, "embed_part", lambda path, utterances: {
+        0: (vp.normalized([1, 0, 0]), 9.0)})
+    with closing(env.db.connect()) as conn:
+        assert vp.backfill(conn) == 2
+        assert sorted({r["session"] for r in env.db.voice_prints(conn)}) == [8]
+
+
+def test_backfill_names_other_sessions_when_one_refresh_fails(env, monkeypatch):
+    upload(env, session=7)
+    upload(env, session=8)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, ("xiao-01", 7, 1), {0: (vp.pack([1.0, 0, 0]), 9.0),
+                                                       1: (vp.pack([0.97, 0.05, 0]), 9.0)})
+        db.save_voice_prints(conn, ("xiao-01", 8, 1), {0: (vp.pack([0.98, 0.1, 0]), 9.0)})
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+    real = vp.refresh_session
+
+    def refresh(conn, device_id, session):
+        if session == 7:
+            raise RuntimeError("занято")
+        return real(conn, device_id, session)
+    monkeypatch.setattr(vp, "refresh_session", refresh)
+    with closing(db.connect()) as conn:
+        vp.backfill(conn)
+        assert db.speaker_names(conn, "xiao-01", 8)[(1, 0)]["name"] == "Игорь"
+
+
+def test_page_knows_the_owners_name_from_other_recordings(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    upload(env, session=7)
+    upload(env, session=8)
+    run_all(env)
+    with closing(env.db.connect()) as conn:
+        env.db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", True)
+    with TestClient(env.app) as client:
+        body = client.get("/api/ui/sessions/xiao-01/8", auth=AUTH).json()
+    # «Это я» в новой записи ставит это имя, а не пустое поле.
+    assert body["me_name"] == "Игорь"

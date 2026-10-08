@@ -81,17 +81,22 @@ def best_name(vector, profiles):
 
 def carry_over(old, new):
     """После повторной расшифровки: {старый номер: новый номер того же голоса
-    или None}. Порог тот же, что у узнавания, а разрыва нет: Gemini делит
-    человека на номера по 5-минутным порциям, старый номер похож на свою
-    порцию (0,96) почти так же, как на соседнюю того же человека (0,87), и
-    правило разрыва теряло бы имя. Спор решает другое: каждый новый номер
-    достаётся одному старому — самому похожему."""
+    или None}. Порог и разрыв те же, что у узнавания, с одним исключением:
+    Gemini делит человека на номера по 5-минутным порциям, и старый номер
+    похож на свою порцию (0,96) почти так же, как на соседнюю (0,87). Если два
+    ближайших новых номера сами похожи друг на друга — это один человек, и
+    разрыв не нужен; если нет — это два разных человека, и имя не переезжает
+    ни к одному. Спорный новый номер достаётся самому похожему старому."""
     found = []
     for before, voice in old.items():
         scores = sorted(((similarity(voice, other), after) for after, other in new.items()),
                         reverse=True)
-        if scores and scores[0][0] >= THRESHOLD:
-            found.append((scores[0][0], before, scores[0][1]))
+        if not scores or scores[0][0] < THRESHOLD:
+            continue
+        if (len(scores) > 1 and scores[0][0] - scores[1][0] < MARGIN
+                and similarity(new[scores[0][1]], new[scores[1][1]]) < THRESHOLD):
+            continue
+        found.append((scores[0][0], before, scores[0][1]))
     moves, taken = dict.fromkeys(old), set()
     for _, before, after in sorted(found, reverse=True):
         if after not in taken:
@@ -243,21 +248,24 @@ def refresh_session(conn, device_id, session):
         raise
 
 
-def remember_part(conn, key, audio_path, utterances):
+def remember_part(conn, key, audio_path, utterances, version=None):
     """После расшифровки части: снять отпечатки и подписать знакомые голоса.
+    version — версия расшифровки, с реплик которой снимаем (по умолчанию
+    текущая); если пока снимали, часть расшифровали снова, отпечатки сразу
+    окажутся устаревшими и будут сняты заново.
 
     Если у части были отпечатки, она расшифрована заново и номера в ней другие:
-    имена владельца переезжают за своим голосом (carry_over), не найденные по
-    голосу снимаются — под старым номером теперь другой человек, и его голос
-    ушёл бы в чужой профиль."""
-    expected = db.owner_names(conn, key)
-    old = {speaker: unpack(blob) for speaker, blob in db.part_prints(conn, key).items()}
+    имена владельца, поставленные под старую версию, переезжают за своим
+    голосом (carry_over), не найденные по голосу снимаются — под старым
+    номером теперь другой человек, и его голос ушёл бы в чужой профиль."""
+    if version is None:
+        version = db.transcript_version(conn, key)
     try:
         prints = embed_part(audio_path, utterances)
     except Exception as error:
         # Снять нельзя. Догадки части уходят: номера могли смениться. Старые
-        # отпечатки остаются, но они старше текста и не участвуют ни в
-        # профилях, ни в подписях; имена владельца ждут следующей попытки
+        # отпечатки остаются, но их версия уже не текущая, и они не участвуют
+        # ни в профилях, ни в подписях; имена владельца ждут следующей попытки
         # (--backfill), чтобы переехать по голосу.
         if isinstance(error, VoiceUnavailable):
             log.info("Отпечатки голоса не сняты: %s", error)
@@ -265,26 +273,27 @@ def remember_part(conn, key, audio_path, utterances):
             log.exception("Отпечатки голоса не сняты, %s", audio_path)
         db.drop_auto_names(conn, key)
         return 0
-    db.save_voice_prints(conn, key, {speaker: (pack(vector), seconds)
-                                     for speaker, (vector, seconds) in prints.items()})
-    if old:
-        db.move_owner_names(conn, key, carry_over(
-            old, {speaker: vector for speaker, (vector, _) in prints.items()}), expected)
+    new = {speaker: vector for speaker, (vector, _) in prints.items()}
+    db.replace_part_prints(
+        conn, key, {speaker: (pack(vector), seconds)
+                    for speaker, (vector, seconds) in prints.items()}, version,
+        lambda old: carry_over({speaker: unpack(blob) for speaker, blob in old.items()}, new))
     return refresh_session(conn, key[0], key[1])
 
 
 def backfill(conn):
-    """Отпечатки для частей, где их нет или они старше расшифровки (часть
-    расшифрована заново, а снять не вышло), и подписи во всех сессиях. После
-    установки модели и после сбоев: python voiceprint.py --backfill.
-    Возвращает число частей, у которых снимались отпечатки."""
+    """Отпечатки для частей, где их нет или они сняты с прежней версии
+    расшифровки (часть расшифрована заново, а снять не вышло), и подписи во
+    всех сессиях. После установки модели и после сбоев:
+    python voiceprint.py --backfill. Возвращает число частей, у которых
+    снимались отпечатки."""
     rows = conn.execute(
-        "SELECT t.device_id, t.session, t.part, t.utterances, p.audio_path"
+        "SELECT t.device_id, t.session, t.part, t.utterances, t.updated_at, p.audio_path"
         " FROM transcripts t JOIN parts p"
         "   ON p.device_id = t.device_id AND p.session = t.session AND p.part = t.part"
         " WHERE t.status = 'done' AND NOT EXISTS (SELECT 1 FROM voice_prints v"
         "   WHERE v.device_id = t.device_id AND v.session = t.session AND v.part = t.part"
-        "     AND v.created_at >= t.updated_at)"
+        "     AND v.transcript_at IS t.updated_at)"
         " ORDER BY t.device_id, t.session, t.part"
     ).fetchall()
     # ponytail: часть, где ни у кого не набралось 8 с речи, отпечатков не
@@ -293,7 +302,8 @@ def backfill(conn):
     for row in rows:
         key = (row["device_id"], row["session"], row["part"])
         try:
-            remember_part(conn, key, row["audio_path"], json.loads(row["utterances"] or "[]"))
+            remember_part(conn, key, row["audio_path"], json.loads(row["utterances"] or "[]"),
+                          row["updated_at"])
         except Exception:
             # Одна сломанная часть не должна останавливать остальные.
             log.exception("Отпечатки %s сессия %04d часть %02d не сняты", *key)
@@ -301,7 +311,12 @@ def backfill(conn):
                 conn.rollback()
     for device_id, session in conn.execute(
             "SELECT DISTINCT device_id, session FROM voice_prints").fetchall():
-        refresh_session(conn, device_id, session)
+        try:
+            refresh_session(conn, device_id, session)
+        except Exception:
+            log.exception("Имена по голосу %s сессия %04d не пересчитаны", device_id, session)
+            if conn.in_transaction:
+                conn.rollback()
     return len(rows)
 
 

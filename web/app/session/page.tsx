@@ -48,6 +48,8 @@ type Detail = {
   timeline: Utterance[];
   marks: Mark[];
   speakers: { part: number; speaker: number; name: string; is_me: boolean; auto: boolean }[];
+  /** Как владелец пишет своё имя (по строкам «это я» во всём архиве); пусто — не отмечал. */
+  me_name: string;
   tasks: Task[];
   questions: Question[];
 };
@@ -716,7 +718,8 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
             <div className="mt-6 flex flex-col gap-6">
               <SpeechShare timeline={data.timeline} />
               <SpeakersForm key={JSON.stringify(data.speakers)} deviceId={data.device_id}
-                            session={data.session} speakers={data.speakers} onSaved={reload} />
+                            session={data.session} speakers={data.speakers} meName={data.me_name}
+                            onSaved={reload} />
               <RecordedOn key={data.day} deviceId={data.device_id} session={data.session} day={data.day.slice(0, 10)}
                           onSaved={reload} />
             </div>

@@ -101,6 +101,9 @@ def session_detail(device_id: str, session: int, _=Depends(owner)):
         offsets = db.part_offsets(conn, device_id, session)
         marks = db.session_marks(conn, device_id, session)
         names = db.speaker_names(conn, device_id, session)
+        # «Это я» на угаданной строке ставит это имя: в новой записи своей
+        # строки «это я» ещё нет, а пустое поле стёрло бы верную догадку.
+        me_name = db.owner_display_name(conn)
         # Номер говорящего живёт внутри своей части: части уходят в Deepgram
         # поодиночке, и нумерация в каждой своя.
         speakers = sorted({(u["part"], u["speaker"]) for u in timeline
@@ -138,6 +141,7 @@ def session_detail(device_id: str, session: int, _=Depends(owner)):
                       "is_me": bool(names.get((part, speaker), {}).get("is_me")),
                       "auto": bool(names.get((part, speaker), {}).get("auto"))}
                      for part, speaker in speakers],
+        "me_name": me_name,
         "tasks": tasks,
         "questions": questions,
     }

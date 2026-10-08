@@ -46,9 +46,24 @@ test("«это я» на угаданной строке ставит ваше �
     { part: 2, speaker: 0, name: "Мария", is_me: false, auto: true },
     { part: 2, speaker: 1, name: "Пётр", is_me: false, auto: false },
   ];
-  const names = { "1:0": "Игорь", "2:0": "Мария", "2:1": "Пётр" };
-  assert.deepEqual(pickMe(speakers, names, "2:0"), { ...names, "2:0": "Игорь" });
-  assert.deepEqual(pickMe(speakers, names, "2:1"), names);   // имя владельца не трогаем
+  const shown = { "1:0": "Игорь", "2:0": "Мария", "2:1": "Пётр" };
+  assert.deepEqual(pickMe(speakers, shown, shown, "1:0", "2:0", ""), { ...shown, "2:0": "Игорь" });
+  assert.deepEqual(pickMe(speakers, shown, shown, "1:0", "2:1", ""), shown);   // имя владельца не трогаем
   const nobody = speakers.map((s) => ({ ...s, is_me: false }));
-  assert.deepEqual(pickMe(nobody, names, "2:0"), { ...names, "2:0": "" });  // своё имя неизвестно — впишите
+  // В этой записи своего имени нет — берём из других записей, иначе пустое поле.
+  assert.deepEqual(pickMe(nobody, shown, shown, "", "2:0", "Игорь"), { ...shown, "2:0": "Игорь" });
+  assert.deepEqual(pickMe(nobody, shown, shown, "", "2:0", ""), { ...shown, "2:0": "" });
+});
+
+test("«это я» перещёлкнули на другую строку — прежняя догадка возвращается", async () => {
+  const { pickMe } = await import("./speakers.ts");
+  const speakers = [
+    { part: 1, speaker: 0, name: "Мария", is_me: false, auto: true },
+    { part: 1, speaker: 1, name: "Пётр", is_me: false, auto: true },
+  ];
+  const shown = { "1:0": "Мария", "1:1": "Пётр" };
+  const first = pickMe(speakers, shown, shown, "", "1:0", "Игорь");
+  assert.deepEqual(first, { "1:0": "Игорь", "1:1": "Пётр" });
+  assert.deepEqual(pickMe(speakers, shown, first, "1:0", "1:1", "Игорь"),
+                   { "1:0": "Мария", "1:1": "Игорь" });
 });
