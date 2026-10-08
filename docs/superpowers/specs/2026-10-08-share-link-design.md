@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS shares (
   404, если записи нет.
 - `GET /api/ui/sessions/{device_id}/{session}/shares` → живые ссылки
   `[{token, created_at, expires_at}]`, новые сверху.
-- `DELETE /api/ui/shares/{token}` → 204; повторное закрытие тоже 204.
+- `DELETE /api/ui/shares/{token}` → 200 `{"ok": true}`, как у удаления записи:
+  `apiDelete` на сайте читает JSON из ответа. Повторное закрытие — тоже 200.
 
 ### Гостю (без пароля, новый модуль `server/share.py`)
 
@@ -129,6 +130,8 @@ CREATE TABLE IF NOT EXISTS shares (
 - Тот же плеер: волна, скорость, переход между частями.
 - Изложение и расшифровка, которая едет за звуком.
 - Без меню разделов, без правки, удаления и формы имён.
+- Свой `layout.tsx` с `robots: noindex`, `referrer: no-referrer` и `manifest: null`:
+  манифест приложения владельца лежит под паролем.
 - 404 → «Ссылка больше не работает. Попросите владельца прислать новую.»
   Ссылки на вход не показываются.
 
@@ -136,9 +139,10 @@ CREATE TABLE IF NOT EXISTS shares (
 
 - `components/recorder/shell.tsx`: на `/shared` отдаёт страницу без меню и не
   запрашивает `/digest` — иначе гость получал бы 401 и ссылку на вход.
-- `lib/audio.ts` и `components/recorder/player.tsx`: плеер получает адрес звука
-  части снаружи; по умолчанию — `/audio/…`, у гостя — `/share/{token}/audio/…`.
-  `loadedPart` узнаёт оба вида адреса.
+- `components/recorder/player.tsx`: необязательное свойство `audioBase`; по
+  умолчанию — `/audio/{device}/{session}`, у гостя — `/share/{token}/audio`.
+  `loadedPart` не меняется: со страницы гостя нет переходов внутри сайта, общий
+  звуковой элемент на ней живёт с нуля.
 - Расшифровка (`Transcript`, `Line`, `LevelMeter`) переезжает из
   `app/session/page.tsx` в `components/recorder/transcript.tsx`, чтобы обе страницы
   брали её из одного места.
