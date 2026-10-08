@@ -25,9 +25,11 @@ import logging
 import math
 import os
 import subprocess
+from collections import Counter
 from pathlib import Path
 
 import db
+import textnorm
 from transcribe import FFMPEG, LOUDNORM_FILTER
 
 log = logging.getLogger("voiceprint")
@@ -79,15 +81,16 @@ def best_name(vector, profiles):
 
 def carry_over(old, new):
     """После повторной расшифровки: {старый номер: новый номер того же голоса
-    или None}. Порог и разрыв те же, что у узнавания. Каждый новый номер
-    достаётся одному старому — самому похожему: Gemini иногда делит одного
-    человека на два номера, а имя должно оказаться в одном месте."""
+    или None}. Порог тот же, что у узнавания, а разрыва нет: Gemini делит
+    человека на номера по 5-минутным порциям, старый номер похож на свою
+    порцию (0,96) почти так же, как на соседнюю того же человека (0,87), и
+    правило разрыва теряло бы имя. Спор решает другое: каждый новый номер
+    достаётся одному старому — самому похожему."""
     found = []
     for before, voice in old.items():
         scores = sorted(((similarity(voice, other), after) for after, other in new.items()),
                         reverse=True)
-        if scores and scores[0][0] >= THRESHOLD and (
-                len(scores) == 1 or scores[0][0] - scores[1][0] >= MARGIN):
+        if scores and scores[0][0] >= THRESHOLD:
             found.append((scores[0][0], before, scores[0][1]))
     moves, taken = dict.fromkeys(old), set()
     for _, before, after in sorted(found, reverse=True):
@@ -164,18 +167,25 @@ def samples(path):
     return pcm.astype(np.float32) / 32768
 
 
+class VoiceUnavailable(Exception):
+    """Отпечатки снять нельзя: узнавание выключено, нет модели или звука."""
+
+
 def embed_part(audio_path, utterances):
-    """{номер: (отпечаток, секунд речи)} для номеров части с достаточной речью.
-    {} — узнавание выключено или звук не прочитался: номера останутся без имён."""
+    """{номер: (отпечаток, секунд речи)} для номеров части с достаточной речью;
+    {} — ни у кого не набралось речи. VoiceUnavailable — снять нельзя: это не
+    то же, что «отпечатков нет», после повторной расшифровки от этого зависит,
+    что станет с именами владельца."""
     spans = label_spans(utterances)
-    model = extractor() if spans else None
-    if model is None:
+    if not spans:
         return {}
+    model = extractor()
+    if model is None:
+        raise VoiceUnavailable("узнавание по голосу выключено или нет модели")
     import numpy as np
     audio = samples(audio_path)
     if audio is None:
-        log.warning("Отпечатки голоса не сняты: ffmpeg не прочитал %s", audio_path)
-        return {}
+        raise VoiceUnavailable(f"ffmpeg не прочитал {audio_path}")
     prints = {}
     for speaker, found in spans.items():
         speech = np.concatenate([audio[int(start * RATE):int(end * RATE)]
@@ -202,15 +212,27 @@ def refresh_session(conn, device_id, session):
     Чтение и запись идут под одной блокировкой базы: сайт и воркер могут
     пересчитывать одну сессию одновременно, и без неё более старый результат
     записался бы поверх нового. Пересчёт — миллисекунды, второй просто ждёт."""
-    if not conn.in_transaction:
-        conn.execute("BEGIN IMMEDIATE")
+    if not ENABLED:
+        return 0
+    if conn.in_transaction:
+        # Чужая открытая транзакция: блокировку не взять, а set_auto_names
+        # зафиксировал бы чужие незаконченные записи.
+        raise RuntimeError("refresh_session: у соединения открыта транзакция")
+    conn.execute("BEGIN IMMEDIATE")
     try:
         rows = db.voice_prints(conn, device_id, session)
+        # «Игорь» и «игорь» — один человек, а не два почти одинаковых профиля,
+        # из-за которых правило разрыва не назвало бы никого. Имя для подписи —
+        # самое частое написание владельца.
         named = {}
         for row in rows:
             if row["owner_name"]:
-                named.setdefault(row["owner_name"], []).append(unpack(row["vec"]))
-        profiles = {name: centroid(vectors) for name, vectors in named.items()}
+                group = textnorm.normalize(row["owner_name"]) or row["owner_name"]
+                spellings, vectors = named.setdefault(group, (Counter(), []))
+                spellings[row["owner_name"]] += 1
+                vectors.append(unpack(row["vec"]))
+        profiles = {spellings.most_common(1)[0][0]: centroid(vectors)
+                    for spellings, vectors in named.values()}
         names = {(row["part"], row["speaker"]): best_name(unpack(row["vec"]), profiles)
                  for row in rows
                  if (row["device_id"], row["session"]) == (device_id, session)
@@ -222,39 +244,47 @@ def refresh_session(conn, device_id, session):
 
 
 def remember_part(conn, key, audio_path, utterances):
-    """После расшифровки части: снять отпечатки и подписать знакомые голоса."""
+    """После расшифровки части: снять отпечатки и подписать знакомые голоса.
+
+    Если у части были отпечатки, она расшифрована заново и номера в ней другие:
+    имена владельца переезжают за своим голосом (carry_over), не найденные по
+    голосу снимаются — под старым номером теперь другой человек, и его голос
+    ушёл бы в чужой профиль."""
+    expected = db.owner_names(conn, key)
+    old = {speaker: unpack(blob) for speaker, blob in db.part_prints(conn, key).items()}
     try:
         prints = embed_part(audio_path, utterances)
-    except Exception:
-        # Отпечатки части всё равно заменяются, пусть и пустыми: после
-        # повторной расшифровки номера другие, и старые догадки стояли бы
-        # под чужими словами.
-        log.exception("Отпечатки голоса не сняты, %s", audio_path)
-        prints = {}
-    old = {row["speaker"]: unpack(row["vec"]) for row in db.voice_prints(conn, key[0], key[1])
-           if (row["device_id"], row["session"], row["part"]) == tuple(key)}
+    except Exception as error:
+        # Снять нельзя. Догадки части уходят: номера могли смениться. Старые
+        # отпечатки остаются, но они старше текста и не участвуют ни в
+        # профилях, ни в подписях; имена владельца ждут следующей попытки
+        # (--backfill), чтобы переехать по голосу.
+        if isinstance(error, VoiceUnavailable):
+            log.info("Отпечатки голоса не сняты: %s", error)
+        else:
+            log.exception("Отпечатки голоса не сняты, %s", audio_path)
+        db.drop_auto_names(conn, key)
+        return 0
     db.save_voice_prints(conn, key, {speaker: (pack(vector), seconds)
                                      for speaker, (vector, seconds) in prints.items()})
-    if old and prints:
-        # Повторная расшифровка: номера другие. Имена владельца переезжают за
-        # своим голосом; не найденные по голосу снимаются — под старым номером
-        # теперь другой человек, и его голос ушёл бы в чужой профиль. Без новых
-        # отпечатков (модель упала) сравнить не с чем — имена не трогаем.
+    if old:
         db.move_owner_names(conn, key, carry_over(
-            old, {speaker: vector for speaker, (vector, _) in prints.items()}))
+            old, {speaker: vector for speaker, (vector, _) in prints.items()}), expected)
     return refresh_session(conn, key[0], key[1])
 
 
 def backfill(conn):
-    """Отпечатки для частей, расшифрованных до появления модели, и подписи во
-    всех сессиях. Один раз после установки: python voiceprint.py --backfill.
+    """Отпечатки для частей, где их нет или они старше расшифровки (часть
+    расшифрована заново, а снять не вышло), и подписи во всех сессиях. После
+    установки модели и после сбоев: python voiceprint.py --backfill.
     Возвращает число частей, у которых снимались отпечатки."""
     rows = conn.execute(
         "SELECT t.device_id, t.session, t.part, t.utterances, p.audio_path"
         " FROM transcripts t JOIN parts p"
         "   ON p.device_id = t.device_id AND p.session = t.session AND p.part = t.part"
         " WHERE t.status = 'done' AND NOT EXISTS (SELECT 1 FROM voice_prints v"
-        "   WHERE v.device_id = t.device_id AND v.session = t.session AND v.part = t.part)"
+        "   WHERE v.device_id = t.device_id AND v.session = t.session AND v.part = t.part"
+        "     AND v.created_at >= t.updated_at)"
         " ORDER BY t.device_id, t.session, t.part"
     ).fetchall()
     # ponytail: часть, где ни у кого не набралось 8 с речи, отпечатков не
@@ -262,10 +292,13 @@ def backfill(conn):
     # команды это дешевле отдельной отметки «проверено».
     for row in rows:
         key = (row["device_id"], row["session"], row["part"])
-        prints = embed_part(row["audio_path"], json.loads(row["utterances"] or "[]"))
-        db.save_voice_prints(conn, key, {speaker: (pack(vector), seconds)
-                                         for speaker, (vector, seconds) in prints.items()})
-        log.info("Отпечатки %s сессия %04d часть %02d: %d", *key, len(prints))
+        try:
+            remember_part(conn, key, row["audio_path"], json.loads(row["utterances"] or "[]"))
+        except Exception:
+            # Одна сломанная часть не должна останавливать остальные.
+            log.exception("Отпечатки %s сессия %04d часть %02d не сняты", *key)
+            if conn.in_transaction:
+                conn.rollback()
     for device_id, session in conn.execute(
             "SELECT DISTINCT device_id, session FROM voice_prints").fetchall():
         refresh_session(conn, device_id, session)

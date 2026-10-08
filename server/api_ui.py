@@ -167,6 +167,8 @@ def delete_session(device_id: str, session: int, _=Depends(owner)):
 def save_speakers(device_id: str, session: int, body: Speakers, _=Depends(owner)):
     me = _speaker_key(body.me) if body.me else None
     with closing(db.connect()) as conn:
+        if not db.session_exists(conn, device_id, session):
+            raise HTTPException(404, "нет такой сессии")
         shown = db.speaker_names(conn, device_id, session)
         for key, name in body.names.items():
             part, speaker = _speaker_key(key)

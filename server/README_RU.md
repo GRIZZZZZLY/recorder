@@ -54,7 +54,7 @@ curl -fsSL -o /var/lib/recorder/models/campplus.onnx https://github.com/k2-fsa/s
 echo "aa3cfc16963a10586a9393f5035d6d6b57e98d358b347f80c2a30bf4f00ceba2  /var/lib/recorder/models/campplus.onnx" | sha256sum -c
 ```
 
-Затем перезапустить воркер и один раз снять отпечатки с уже расшифрованных частей: `cd /opt/recorder/server && set -a && . /etc/recorder/recorder.env && set +a && python3 voiceprint.py --backfill`. Без библиотеки или файла модели сервер работает как раньше. Откат: `RECORDER_VOICE=0` и перезапуск — имена по голосу остаются в базе, новые не ставятся; убрать их — `DELETE FROM speaker_names WHERE auto=1`.
+Затем перезапустить воркер и один раз снять отпечатки с уже расшифрованных частей: `cd /opt/recorder/server && set -a && . /etc/recorder/recorder.env && set +a && python3 voiceprint.py --backfill`. Без библиотеки или файла модели сервер работает как раньше. Откат: `RECORDER_VOICE=0` и перезапуск обеих служб — имена по голосу остаются в базе, новые не ставятся ни воркером, ни сайтом; убрать их — `DELETE FROM speaker_names WHERE auto=1`.
 
 **Состояние обработки** на `/status`: очередь, ошибки, пропуски частей, расхождение длительности по файлу и по Deepgram, восстановленные части, части, которые не удалось сжать в архив, последняя выгрузка, минуты Deepgram.
 
@@ -144,7 +144,7 @@ RECORDER_SUMMARY_TIMEOUT=900
 RECORDER_CLAUDE_BIN=claude
 CLAUDE_CODE_OAUTH_TOKEN=...            # долгоживущий токен, см. docs/step0-claude-headless-check.md
 RECORDER_VOICE=1                       # 0 выключает узнавание по голосу
-RECORDER_VOICE_MODEL=$RECORDER_DATA/models/campplus.onnx  # файл модели CAM++
+RECORDER_VOICE_MODEL=/var/lib/recorder/models/campplus.onnx  # файл модели CAM++; по умолчанию models/campplus.onnx в RECORDER_DATA
 RECORDER_VOICE_THRESHOLD=0.6           # меньше — номер остаётся без имени
 RECORDER_VOICE_MARGIN=0.1              # насколько лучший кандидат обязан опережать второго
 RECORDER_VOICE_MIN_SEC=8               # меньше речи у номера — отпечаток не снимается

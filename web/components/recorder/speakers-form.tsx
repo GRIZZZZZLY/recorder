@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Card, Row, Section } from "@/components/recorder/list";
 import { Button } from "@/components/recorder/ui";
 import { apiPost } from "@/lib/api";
-import { changedNames, isGuess } from "@/lib/speakers";
+import { changedNames, isGuess, pickMe } from "@/lib/speakers";
 import { cx } from "@/utils/cx";
 
 type Speaker = { part: number; speaker: number; name: string; is_me: boolean; auto: boolean };
@@ -116,7 +116,10 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
                   </span>
                 )}
               </div>
-              <MeSwitch value={key} current={me} onChange={setMe} />
+              <MeSwitch value={key} current={me} onChange={(value) => {
+                setMe(value);
+                setNames((old) => pickMe(speakers, old, value));
+              }} />
             </Row>
           );
         })}

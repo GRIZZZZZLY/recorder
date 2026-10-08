@@ -284,22 +284,38 @@ def test_speech_past_the_end_of_the_audio_gives_no_print(monkeypatch):
     assert model.lengths == []
 
 
-def test_failed_model_on_retranscription_drops_old_guesses(env, monkeypatch):
+def test_failed_prints_after_retranscription_wait_for_the_next_try(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
     upload(env)
+    run_all(env)
     db = env.db
     with closing(db.connect()) as conn:
         db.save_voice_prints(conn, KEY, {0: (vp.pack([1.0, 0, 0]), 9.0),
                                          1: (vp.pack([0, 1.0, 0]), 9.0)})
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
         db.set_auto_names(conn, "xiao-01", 7, {(1, 1): "Мария"})
+        # Часть расшифрована заново: отпечатки старше текста.
+        conn.execute("UPDATE voice_prints SET created_at = datetime('now', '-1 hour')")
+        conn.commit()
 
     def broken(path, utterances):
         raise RuntimeError("модель упала")
     monkeypatch.setattr(vp, "embed_part", broken)
     with closing(db.connect()) as conn:
-        # Номера части уже другие: старая догадка стояла бы под чужими словами.
         vp.remember_part(conn, KEY, "part.flac", [])
+        # Номера уже другие: догадки ушли, имя владельца ждёт, старые отпечатки
+        # не участвуют ни в профилях, ни в подписях.
+        assert db.speaker_names(conn, "xiao-01", 7) == {
+            (1, 0): {"name": "Игорь", "is_me": False, "auto": False}}
         assert db.voice_prints(conn) == []
-        assert db.speaker_names(conn, "xiao-01", 7) == {}
+    # Следующая попытка с рабочей моделью переносит имя по голосу.
+    monkeypatch.setattr(vp, "embed_part", lambda path, utterances: {
+        2: (vp.normalized([0.97, 0.05, 0]), 9.0)})
+    with closing(db.connect()) as conn:
+        assert vp.backfill(conn) == 1
+        assert db.speaker_names(conn, "xiao-01", 7) == {
+            (1, 2): {"name": "Игорь", "is_me": False, "auto": False}}
 
 
 def test_old_voices_find_their_new_numbers_one_to_one():
@@ -407,14 +423,123 @@ def test_names_are_not_written_into_a_session_deleted_mid_way(env, write):
         done = []
 
         def delete_in_between(statement):
+            # Перенос имён берёт блокировку базы: удалить сессию можно только до
+            # неё, после — удаление ждёт и потом убирает всё само.
             if not done and statement.lstrip().upper().startswith(("INSERT INTO SPEAKER_NAMES",
-                                                                     "DELETE FROM SPEAKER_NAMES")):
+                                                                     "BEGIN IMMEDIATE")):
                 done.append(db.delete_session(other, "xiao-01", 7))
         conn.set_trace_callback(delete_in_between)
         if write == "auto":
             db.set_auto_names(conn, "xiao-01", 7, {(1, 1): "Мария"})
         else:
-            db.move_owner_names(conn, KEY, {0: 2})
+            db.move_owner_names(conn, KEY, {0: 2}, {0: ("Игорь", 0)})
         conn.set_trace_callback(None)
         assert done == [True]
         assert conn.execute("SELECT COUNT(*) FROM speaker_names").fetchone()[0] == 0
+
+
+def test_names_survive_retranscription_when_one_person_has_two_chunk_numbers():
+    # Gemini делит человека на номера по 5-минутным порциям: старый номер похож
+    # на свою порцию (0,96) и почти так же на соседнюю (0,87) — имя не должно теряться.
+    old_first, old_second = vp.normalized([1, 0, 0]), vp.normalized([0.80, -0.60, 0])
+    new_first, new_second = vp.normalized([0.96, 0.28, 0]), vp.normalized([0.87, -0.493, 0])
+    assert vp.carry_over({0: old_first, 10: old_second}, {0: new_first, 10: new_second}) \
+        == {0: 0, 10: 10}
+
+
+def test_voice_switch_off_stops_new_guesses(env, monkeypatch):
+    upload(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, KEY, {0: (vp.pack([1.0, 0, 0]), 9.0),
+                                         1: (vp.pack([0.95, 0.1, 0]), 9.0)})
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+    monkeypatch.setattr(vp, "ENABLED", False)
+    with closing(db.connect()) as conn:
+        assert vp.refresh_session(conn, "xiao-01", 7) == 0
+        assert (1, 1) not in db.speaker_names(conn, "xiao-01", 7)
+
+
+def test_one_name_written_two_ways_is_one_person(env):
+    for session in (7, 8, 9):
+        upload(env, session=session)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, ("xiao-01", 7, 1), {0: (vp.pack([1.0, 0, 0]), 9.0)})
+        db.save_voice_prints(conn, ("xiao-01", 8, 1), {0: (vp.pack([0.98, 0.1, 0]), 9.0)})
+        db.save_voice_prints(conn, ("xiao-01", 9, 1), {0: (vp.pack([0.97, 0.05, 0]), 9.0)})
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+        db.set_speaker(conn, "xiao-01", 8, 1, 0, "игорь", False)
+        vp.refresh_session(conn, "xiao-01", 9)
+        assert db.speaker_names(conn, "xiao-01", 9)[(1, 0)]["name"] == "Игорь"
+
+
+def test_names_for_a_deleted_session_are_refused(env):
+    upload(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        assert db.delete_session(conn, "xiao-01", 7)
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+        assert conn.execute("SELECT COUNT(*) FROM speaker_names").fetchone()[0] == 0
+    with TestClient(env.app) as client:
+        response = client.post("/api/ui/sessions/xiao-01/7/speakers", auth=AUTH,
+                               json={"names": {"1:0": "Игорь"}, "me": None})
+    assert response.status_code == 404
+
+
+def test_names_typed_during_retranscription_are_left_alone(env):
+    upload(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+        expected = db.owner_names(conn, KEY)
+        # Пока снимались отпечатки, владелец подписал номера новой расшифровки.
+        db.set_speaker(conn, "xiao-01", 7, 1, 1, "Пётр", False)
+        db.set_speaker(conn, "xiao-01", 7, 1, 3, "Иван", False)
+        db.move_owner_names(conn, KEY, {0: 1}, expected)
+        # Игорь ушёл бы на номер Петра — свежее слово владельца важнее.
+        assert db.speaker_names(conn, "xiao-01", 7) == {
+            (1, 1): {"name": "Пётр", "is_me": False, "auto": False},
+            (1, 3): {"name": "Иван", "is_me": False, "auto": False}}
+
+
+def test_dropping_guesses_sends_the_summary_back(env, monkeypatch):
+    upload(env)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
+    summary_stub(env, monkeypatch)
+    run_all(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, KEY, {1: (vp.pack([0, 1.0, 0]), 9.0)})
+        db.set_auto_names(conn, "xiao-01", 7, {(1, 1): "Мария"})
+        conn.execute("UPDATE summaries SET parts_covered = 1")
+        conn.commit()
+        db.save_voice_prints(conn, KEY, {})          # новая расшифровка без отпечатков
+        covered = conn.execute("SELECT parts_covered FROM summaries WHERE session=7").fetchone()[0]
+    assert covered == 0
+
+
+def test_refresh_refuses_to_run_inside_someone_elses_transaction(env):
+    upload(env)
+    with closing(env.db.connect()) as conn:
+        conn.execute("UPDATE parts SET bytes = bytes WHERE session = 7")
+        with pytest.raises(RuntimeError):
+            vp.refresh_session(conn, "xiao-01", 7)
+        conn.rollback()
+
+
+def test_backfill_goes_on_after_a_part_that_fails(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    upload(env, session=7)
+    upload(env, session=8)
+    run_all(env)
+
+    def embed(path, utterances):
+        if "_S0007_" in str(path):
+            raise RuntimeError("битый файл")
+        return {0: (vp.normalized([1, 0, 0]), 9.0)}
+    monkeypatch.setattr(vp, "embed_part", embed)
+    with closing(env.db.connect()) as conn:
+        assert vp.backfill(conn) == 2
+        assert sorted({r["session"] for r in env.db.voice_prints(conn)}) == [8]

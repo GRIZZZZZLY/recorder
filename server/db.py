@@ -151,6 +151,10 @@ CREATE TABLE IF NOT EXISTS voice_prints (
     speaker   INTEGER NOT NULL,
     seconds   REAL    NOT NULL,
     vec       BLOB    NOT NULL,
+    -- Отпечаток старше расшифровки своей части — часть расшифрована заново, и
+    -- номера в нём уже чужие: такой отпечаток не участвует ни в профилях, ни
+    -- в подписях, пока его не снимут заново (воркер или --backfill).
+    created_at TEXT   NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (device_id, session, part, speaker)
 );
 
@@ -310,6 +314,14 @@ def init_storage():
                            for row in conn.execute("PRAGMA table_info(speaker_names)")}
         if "auto" not in speaker_columns:
             conn.execute("ALTER TABLE speaker_names ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
+        # Отпечатки, снятые до появления даты, сняты с текущих расшифровок.
+        # ALTER не принимает datetime('now') как значение по умолчанию.
+        print_columns = {row["name"]
+                         for row in conn.execute("PRAGMA table_info(voice_prints)")}
+        if "created_at" not in print_columns:
+            conn.execute("ALTER TABLE voice_prints ADD COLUMN created_at TEXT NOT NULL"
+                         " DEFAULT '1970-01-01 00:00:00'")
+            conn.execute("UPDATE voice_prints SET created_at = datetime('now')")
         conn.commit()
 
 
@@ -546,8 +558,7 @@ def save_voice_prints(conn, key, prints):
     отпечатками. Имена владельца остаются. prints: {номер: (vec, секунд)}."""
     device_id, session, part = key
     conn.execute("DELETE FROM voice_prints WHERE device_id=? AND session=? AND part=?", key)
-    conn.execute("DELETE FROM speaker_names"
-                 " WHERE device_id=? AND session=? AND part=? AND auto=1", key)
+    _drop_guesses(conn, key)
     conn.executemany(
         "INSERT INTO voice_prints (device_id, session, part, speaker, seconds, vec)"
         " SELECT ?, ?, ?, ?, ?, ? WHERE " + _SESSION_ALIVE,
@@ -557,32 +568,69 @@ def save_voice_prints(conn, key, prints):
     conn.commit()
 
 
-def move_owner_names(conn, key, moves):
-    """Имена владельца части после повторной расшифровки. moves: {старый
-    номер: новый номер или None}; номер без пары по голосу теряет имя. Вызывать
-    после save_voice_prints: подписи по голосу этой части к тому времени уже
-    сняты и с переехавшими именами не столкнутся."""
-    device_id, session, part = key
-    rows = conn.execute(
-        "SELECT speaker, name, is_me FROM speaker_names"
-        " WHERE device_id=? AND session=? AND part=? AND auto=0", key).fetchall()
-    if not rows:
-        return
-    conn.execute("DELETE FROM speaker_names"
-                 " WHERE device_id=? AND session=? AND part=? AND auto=0", key)
-    for row in rows:
-        target = moves.get(row["speaker"])
-        if target is None:
-            continue
-        conn.execute(
-            "INSERT INTO speaker_names (device_id, session, part, speaker, name, is_me, auto)"
-            " SELECT ?, ?, ?, ?, ?, ?, 0 WHERE " + _SESSION_ALIVE +
-            " ON CONFLICT(device_id, session, part, speaker) DO UPDATE SET"
-            " name=excluded.name, is_me=excluded.is_me, auto=0",
-            (device_id, session, part, target, row["name"], row["is_me"], device_id, session),
-        )
-    _summary_stale(conn, device_id, session)
+def _drop_guesses(conn, key):
+    """Снять подписи по голосу одной части. Имена уходят из текста для модели —
+    саммари сессии пересобирается."""
+    cursor = conn.execute("DELETE FROM speaker_names"
+                          " WHERE device_id=? AND session=? AND part=? AND auto=1", key)
+    if cursor.rowcount:
+        _summary_stale(conn, key[0], key[1])
+
+
+def drop_auto_names(conn, key):
+    _drop_guesses(conn, key)
     conn.commit()
+
+
+def owner_names(conn, key):
+    """{номер: (имя, is_me)} — имена владельца одной части."""
+    return {row["speaker"]: (row["name"], row["is_me"]) for row in conn.execute(
+        "SELECT speaker, name, is_me FROM speaker_names"
+        " WHERE device_id=? AND session=? AND part=? AND auto=0", key)}
+
+
+def part_prints(conn, key):
+    """{номер: vec} одной части, в том числе устаревшие: по ним имена владельца
+    переезжают на номера новой расшифровки."""
+    return {row["speaker"]: row["vec"] for row in conn.execute(
+        "SELECT speaker, vec FROM voice_prints WHERE device_id=? AND session=? AND part=?", key)}
+
+
+def move_owner_names(conn, key, moves, expected):
+    """Имена владельца части после повторной расшифровки. moves: {старый
+    номер: новый номер или None}; номер без пары по голосу теряет имя.
+
+    expected — owner_names, снятые до того, как начали считать отпечатки.
+    Переезжают только строки, которые с тех пор не менялись: всё, что владелец
+    вписал за это время, уже относится к новой расшифровке и остаётся на месте,
+    а при столкновении его свежее слово важнее переезжающего имени. Вызывать
+    после save_voice_prints: подписи по голосу этой части к тому времени сняты."""
+    device_id, session, part = key
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        moving = {speaker: entry for speaker, entry in owner_names(conn, key).items()
+                  if expected.get(speaker) == entry}
+        for speaker in moving:
+            conn.execute("DELETE FROM speaker_names WHERE device_id=? AND session=?"
+                         " AND part=? AND speaker=? AND auto=0", (*key, speaker))
+        for speaker, (name, is_me) in moving.items():
+            target = moves.get(speaker)
+            if target is None:
+                continue
+            conn.execute(
+                "INSERT INTO speaker_names (device_id, session, part, speaker, name, is_me, auto)"
+                " SELECT ?, ?, ?, ?, ?, ?, 0 WHERE " + _SESSION_ALIVE +
+                " ON CONFLICT(device_id, session, part, speaker) DO UPDATE SET"
+                " name=excluded.name, is_me=excluded.is_me, auto=0"
+                " WHERE speaker_names.auto = 1",
+                (device_id, session, part, target, name, is_me, device_id, session),
+            )
+        if moving:
+            _summary_stale(conn, device_id, session)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def voice_prints(conn, device_id=None, session=None):
@@ -590,13 +638,18 @@ def voice_prints(conn, device_id=None, session=None):
 
     owner_name — имя от владельца ('' — стёр, NULL — не называл или имя
     поставил сервер). has_owner_row — владелец трогал номер, в том числе стёр
-    имя: такой номер сервер не подписывает. С сессией — только то, что нужно
+    имя: такой номер сервер не подписывает. Устаревшие отпечатки (часть
+    расшифрована заново, а снять новые ещё не вышло) не отдаются. С сессией —
+    только то, что нужно
     для её подписи: все номера этой сессии и названные владельцем номера
     остальных (из них профили). Без сессии — весь архив."""
-    where, args = "", ()
+    where = (" WHERE NOT EXISTS (SELECT 1 FROM transcripts t"
+             "   WHERE t.device_id = v.device_id AND t.session = v.session AND t.part = v.part"
+             "     AND (t.status != 'done' OR t.updated_at > v.created_at))")
+    args = ()
     if device_id is not None:
-        where = (" WHERE (s.auto = 0 AND TRIM(s.name) != '')"
-                 " OR (v.device_id = ? AND v.session = ?)")
+        where += (" AND ((s.auto = 0 AND TRIM(s.name) != '')"
+                  " OR (v.device_id = ? AND v.session = ?))")
         args = (device_id, session)
     return conn.execute(
         "SELECT v.device_id, v.session, v.part, v.speaker, v.vec,"
@@ -728,10 +781,11 @@ def _summary_stale(conn, device_id, session):
 def set_speaker(conn, device_id, session, part, speaker, name, is_me):
     conn.execute(
         "INSERT INTO speaker_names (device_id, session, part, speaker, name, is_me, auto)"
-        " VALUES (?,?,?,?,?,?,0)"
+        " SELECT ?, ?, ?, ?, ?, ?, 0 WHERE " + _SESSION_ALIVE +
         " ON CONFLICT(device_id, session, part, speaker) DO UPDATE SET"
         " name=excluded.name, is_me=excluded.is_me, auto=0",
-        (device_id, session, part, speaker, name.strip(), 1 if is_me else 0),
+        (device_id, session, part, speaker, name.strip(), 1 if is_me else 0,
+         device_id, session),
     )
     _summary_stale(conn, device_id, session)
     conn.commit()

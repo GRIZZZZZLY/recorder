@@ -38,3 +38,17 @@ test("«это я» на угаданной строке — уже подтве
   assert.equal(isGuess(row, "Пётр", ""), false);       // имя исправлено
   assert.equal(isGuess({ ...row, auto: false }, "Игорь", ""), false);
 });
+
+test("«это я» на угаданной строке ставит ваше имя, а не догадку", async () => {
+  const { pickMe } = await import("./speakers.ts");
+  const speakers = [
+    { part: 1, speaker: 0, name: "Игорь", is_me: true, auto: false },
+    { part: 2, speaker: 0, name: "Мария", is_me: false, auto: true },
+    { part: 2, speaker: 1, name: "Пётр", is_me: false, auto: false },
+  ];
+  const names = { "1:0": "Игорь", "2:0": "Мария", "2:1": "Пётр" };
+  assert.deepEqual(pickMe(speakers, names, "2:0"), { ...names, "2:0": "Игорь" });
+  assert.deepEqual(pickMe(speakers, names, "2:1"), names);   // имя владельца не трогаем
+  const nobody = speakers.map((s) => ({ ...s, is_me: false }));
+  assert.deepEqual(pickMe(nobody, names, "2:0"), { ...names, "2:0": "" });  // своё имя неизвестно — впишите
+});

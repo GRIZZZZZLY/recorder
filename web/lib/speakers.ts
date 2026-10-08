@@ -28,6 +28,21 @@ export function isGuess(speaker: { part: number; speaker: number; name: string; 
   return speaker.auto && name === speaker.name && me !== `${speaker.part}:${speaker.speaker}`;
 }
 
+type Row = { part: number; speaker: number; name: string; is_me: boolean; auto: boolean };
+
+/**
+ * Имена после выбора «это я» на строке key. На угаданной строке догадку
+ * заменяет ваше имя (если оно уже известно в этой записи) или пустое поле:
+ * иначе сохранение записало бы чужое имя как ваше, ваш голос ушёл бы в чужой
+ * профиль, а задачи того человека стали бы вашими.
+ */
+export function pickMe(speakers: Row[], names: Record<string, string>, key: string): Record<string, string> {
+  const row = speakers.find((s) => `${s.part}:${s.speaker}` === key);
+  if (!row || !row.auto || names[key] !== row.name) return names;
+  const mine = speakers.find((s) => s.is_me && !s.auto && s.name)?.name ?? "";
+  return { ...names, [key]: mine };
+}
+
 export function changedNames(shown: Record<string, string>, names: Record<string, string>,
                              shownMe: string, me: string): Record<string, string> {
   const changed: Record<string, string> = {};
