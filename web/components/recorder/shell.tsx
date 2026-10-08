@@ -60,7 +60,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
   // Страница гостя по ссылке: ни меню разделов, ни запроса /digest — тот под
   // паролем владельца, и гость получил бы отказ со ссылкой на вход.
-  const guest = pathname.startsWith("/shared");
+  const guest = pathname === "/shared" || pathname.startsWith("/shared/");
   // Для «назад» в шапке страницы: знать, из какого раздела пришли.
   useEffect(() => visited(pathname), [pathname]);
   const { data } = useApi<DigestBody>(guest ? null : "/digest");

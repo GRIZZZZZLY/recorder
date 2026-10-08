@@ -65,7 +65,7 @@ export type SharedDetail = {
 /** Запись по ключу из ссылки. Мимо /api/ui: там всё под паролем владельца. */
 export async function sharedGet(token: string): Promise<SharedDetail> {
   const response = await fetch(`/api/share/${encodeURIComponent(token)}`);
-  if (!response.ok) throw new ApiError(response.status, "ссылка не работает");
+  if (!response.ok) throw new ApiError(response.status, response.status === 404 ? "ссылка не работает" : `ошибка ${response.status}`);
   return (await response.json()) as SharedDetail;
 }
 

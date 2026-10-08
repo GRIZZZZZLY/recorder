@@ -167,8 +167,9 @@ export function PlayerProvider({ deviceId, session, title, parts, marks = [], au
       setPosition(seconds);
       if (!play) return;
       // Автовоспроизведение может быть запрещено браузером — тогда молча
-      // ничего не происходит, если не сообщить об этом явно.
-      element.play().then(() => setBlocked(false)).catch(() => setBlocked(true));
+      // ничего не происходит, если не сообщить об этом явно. Другой отказ (ссылку
+      // закрыли посреди прослушивания) — не запрет браузера, подсказки не будет.
+      element.play().then(() => setBlocked(false)).catch((err: Error) => setBlocked(err.name === "NotAllowedError"));
     };
     if (!switching && element.readyState >= 1) {
       start();
@@ -235,7 +236,7 @@ export function PlayerProvider({ deviceId, session, title, parts, marks = [], au
       else if (first !== null) seek(first, 0, title);
       return;
     }
-    if (element.paused) element.play().then(() => setBlocked(false)).catch(() => setBlocked(true));
+    if (element.paused) element.play().then(() => setBlocked(false)).catch((err: Error) => setBlocked(err.name === "NotAllowedError"));
     else element.pause();
   }
 

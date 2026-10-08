@@ -22,15 +22,15 @@ function LevelMeter({ level }: { level: number }) {
   );
 }
 
+/** Оттенки подписей говорящих: голоса различимы на глаз, как в «Кто сколько
+ * говорил». Все ступени — не ниже 4,5:1 на поверхности. */
+const VOICE_SHADES = ["text-text-primary", "text-[#d6ccb8]", "text-text-secondary", "text-text-tertiary"];
+
 /**
  * Строка транскрипта. Вынесена и запомнена (`memo`) не ради красоты: положение
  * звука приходит четыре раза в секунду, и без этого на каждом такте
  * перерисовывались бы все реплики часового разговора, а не две изменившиеся.
  */
-/** Оттенки подписей говорящих: голоса различимы на глаз, как в «Кто сколько
- * говорил». Все ступени — не ниже 4,5:1 на поверхности. */
-const VOICE_SHADES = ["text-text-primary", "text-[#d6ccb8]", "text-text-secondary", "text-text-tertiary"];
-
 const Line = memo(function Line({ utterance, marked, active, level, shade, onPlay }: {
   utterance: Utterance;
   marked: boolean;
@@ -57,8 +57,8 @@ const Line = memo(function Line({ utterance, marked, active, level, shade, onPla
         // Звучит прямо сейчас: подложка и светлый текст. Полоска слева — там же,
         // где у реплики-основания вспышка, поэтому цвет другой, светлый.
         // Звучит — горит: светится то, что живо. Раньше полоска в 2 px и
-      // бледная подложка терялись, и самый живой момент был почти не виден.
-      active && "bg-surface-elevated shadow-[inset_3px_0_0_var(--color-fill),inset_0_0_28px_rgb(217_211_199/0.09)]",
+        // бледная подложка терялись, и самый живой момент был почти не виден.
+        active && "bg-surface-elevated shadow-[inset_3px_0_0_var(--color-fill),inset_0_0_28px_rgb(217_211_199/0.09)]",
       )}
       aria-current={active ? "true" : undefined}
     >

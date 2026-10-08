@@ -16,7 +16,10 @@ import { formatClock, formatDay, formatTime, keepNumbers, recordTitle } from "@/
 const NO_MARKS = new Set<string>();
 
 function Body() {
-  const token = useSearchParams().get("t") ?? "";
+  const raw = useSearchParams().get("t") ?? "";
+  // Ключ с «/» или «..» увёл бы запрос на чужой путь (вплоть до /login), а гость
+  // увидел бы «Проверьте связь»: такой ключ заведомо мёртвый, сети не трогаем.
+  const token = /^[A-Za-z0-9_-]+$/.test(raw) ? raw : "";
   const [result, setResult] = useState<{ token: string; data: SharedDetail | null; error: Error | null }>(
     { token: "", data: null, error: null });
 
@@ -43,7 +46,7 @@ function Body() {
   if (!token || error) {
     const gone = !token || (error instanceof ApiError && error.status === 404);
     return gone
-      ? <Empty title="Ссылка больше не работает" text="Попросите прислать новую." />
+      ? <Empty title="Ссылка больше не работает" text="Попросите владельца прислать новую." />
       : <Empty title="Не удалось открыть запись" text="Проверьте связь и обновите страницу." />;
   }
   if (!data || result.token !== token) return <Loading />;
@@ -59,6 +62,7 @@ function Body() {
         title={title}
         aside={
           <span className="flex flex-wrap items-center gap-x-3.5 gap-y-1">
+            {/* Без темы дата уже в заголовке (recordTitle), второй раз не повторяем. */}
             {topic ? <span>{formatDay(data.day)}, {formatTime(data.first_at)}</span> : null}
             {duration > 0 ? <span className="font-mono">{formatClock(duration)}</span> : null}
           </span>

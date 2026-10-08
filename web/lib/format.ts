@@ -71,6 +71,14 @@ function parseStamp(stamp: string | null | undefined): Date | null {
   return Number.isFinite(at.getTime()) ? at : null;
 }
 
+/** "2026-09-12 23:40:07" (UTC) → "13 сентября" по местному календарю: у человека
+ * восточнее Гринвича ссылка «до» уже наступила следующим числом. */
+export function formatLocalDay(stamp: string | null | undefined): string {
+  const at = parseStamp(stamp);
+  if (!at) return "дата неизвестна";
+  return `${at.getDate()} ${MONTHS[at.getMonth()]}`;
+}
+
 /** "2026-09-12 16:40:07" (UTC) → "19:40" по местным часам. Время выгрузки первой части. */
 export function formatTime(stamp: string | null | undefined): string {
   const at = parseStamp(stamp);
