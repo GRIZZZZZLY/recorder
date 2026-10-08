@@ -17,4 +17,7 @@ cd "$ROOT"
 tar czf - --exclude='__pycache__' --exclude='.pytest_cache' server shared \
   | ssh "$HOST" "rm -rf '$REMOTE_DIR' && mkdir -p '$REMOTE_DIR' \
       && tar xzf - -C '$REMOTE_DIR' \
-      && cd '$REMOTE_DIR/server' && python3 -m pytest ${*:--q}"
+      && cd '$REMOTE_DIR/server' && timeout --kill-after=30 1200 python3 -m pytest ${*:--q}"
+# timeout: 7 окт 2026 зависшая проверка звала настоящий claude; оборванный
+# прогон оставил три процесса claude, которые сутки держали 3,9 ГБ памяти.
+# Вызов настоящего claude в проверках закрыт фикстурой, это — страховка.
