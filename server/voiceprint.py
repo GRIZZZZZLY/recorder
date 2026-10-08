@@ -125,9 +125,10 @@ _extractor_failed = False
 
 
 def extractor():
-    """Модель грузится один раз на процесс (~90 МБ памяти, с минутой звука до
-    ~230 МБ — см. MAX_SEC). None — узнавание выключено; причина пишется в лог
-    один раз. Новую модель подхватывает только перезапуск воркера."""
+    """Модель грузится один раз на процесс. Замер на живом архиве 8 октября:
+    пик процесса 490 МБ вместе с раскрытым звуком части. None — узнавание
+    выключено; причина пишется в лог один раз. Новую модель подхватывает
+    только перезапуск воркера."""
     global _extractor, _extractor_failed
     if _extractor is None and not _extractor_failed:
         try:
@@ -196,18 +197,28 @@ def refresh_session(conn, device_id, session):
 
     ponytail: при сохранении имён пересчитывается только своя сессия; старые
     сессии подписывает `--backfill`. Пересчёт всего архива на каждое имя
-    отправил бы на пересборку все саммари разом."""
-    rows = db.voice_prints(conn)
-    named = {}
-    for row in rows:
-        if row["owner_name"]:
-            named.setdefault(row["owner_name"], []).append(unpack(row["vec"]))
-    profiles = {name: centroid(vectors) for name, vectors in named.items()}
-    names = {(row["part"], row["speaker"]): best_name(unpack(row["vec"]), profiles)
-             for row in rows
-             if (row["device_id"], row["session"]) == (device_id, session)
-             and not row["has_owner_row"]}
-    return db.set_auto_names(conn, device_id, session, names)
+    отправил бы на пересборку все саммари разом.
+
+    Чтение и запись идут под одной блокировкой базы: сайт и воркер могут
+    пересчитывать одну сессию одновременно, и без неё более старый результат
+    записался бы поверх нового. Пересчёт — миллисекунды, второй просто ждёт."""
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        rows = db.voice_prints(conn, device_id, session)
+        named = {}
+        for row in rows:
+            if row["owner_name"]:
+                named.setdefault(row["owner_name"], []).append(unpack(row["vec"]))
+        profiles = {name: centroid(vectors) for name, vectors in named.items()}
+        names = {(row["part"], row["speaker"]): best_name(unpack(row["vec"]), profiles)
+                 for row in rows
+                 if (row["device_id"], row["session"]) == (device_id, session)
+                 and not row["has_owner_row"]}
+        return db.set_auto_names(conn, device_id, session, names)   # он же и фиксирует
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def remember_part(conn, key, audio_path, utterances):
@@ -220,7 +231,7 @@ def remember_part(conn, key, audio_path, utterances):
         # под чужими словами.
         log.exception("Отпечатки голоса не сняты, %s", audio_path)
         prints = {}
-    old = {row["speaker"]: unpack(row["vec"]) for row in db.voice_prints(conn)
+    old = {row["speaker"]: unpack(row["vec"]) for row in db.voice_prints(conn, key[0], key[1])
            if (row["device_id"], row["session"], row["part"]) == tuple(key)}
     db.save_voice_prints(conn, key, {speaker: (pack(vector), seconds)
                                      for speaker, (vector, seconds) in prints.items()})

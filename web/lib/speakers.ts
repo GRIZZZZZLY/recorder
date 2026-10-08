@@ -18,6 +18,16 @@ export function nameCounts(speakers: { name: string; auto: boolean }[]): { unnam
   };
 }
 
+/**
+ * Показывать ли пометку «по голосу». Догадка перестаёт быть догадкой, как
+ * только владелец исправил имя или отметил строку «это я»: при сохранении
+ * сервер запишет её как слово владельца, и страница не должна говорить иное.
+ */
+export function isGuess(speaker: { part: number; speaker: number; name: string; auto: boolean },
+                        name: string, me: string): boolean {
+  return speaker.auto && name === speaker.name && me !== `${speaker.part}:${speaker.speaker}`;
+}
+
 export function changedNames(shown: Record<string, string>, names: Record<string, string>,
                              shownMe: string, me: string): Record<string, string> {
   const changed: Record<string, string> = {};

@@ -533,21 +533,25 @@ def session_speakers(conn):
     return found
 
 
+# Сессию могут удалить, пока часть расшифровывается или пока сайт сохраняет
+# имена. Проверка «сессия ещё есть» стоит в самой вставке, а не перед ней:
+# между отдельной проверкой и записью сессию тоже успевают удалить, и в базе
+# остались бы отпечатки голоса и имена удалённого разговора.
+_SESSION_ALIVE = "EXISTS (SELECT 1 FROM parts WHERE device_id = ? AND session = ?)"
+
+
 def save_voice_prints(conn, key, prints):
     """Отпечатки части заменяются целиком: после повторной расшифровки номера
     говорящих другие, и подписи по голосу этой части уходят вместе со старыми
     отпечатками. Имена владельца остаются. prints: {номер: (vec, секунд)}."""
     device_id, session, part = key
-    if not session_exists(conn, device_id, session):
-        # Сессию удалили, пока часть расшифровывалась: биометрию не сохраняем.
-        return
     conn.execute("DELETE FROM voice_prints WHERE device_id=? AND session=? AND part=?", key)
     conn.execute("DELETE FROM speaker_names"
                  " WHERE device_id=? AND session=? AND part=? AND auto=1", key)
     conn.executemany(
         "INSERT INTO voice_prints (device_id, session, part, speaker, seconds, vec)"
-        " VALUES (?,?,?,?,?,?)",
-        [(device_id, session, part, speaker, round(float(seconds), 1), blob)
+        " SELECT ?, ?, ?, ?, ?, ? WHERE " + _SESSION_ALIVE,
+        [(device_id, session, part, speaker, round(float(seconds), 1), blob, device_id, session)
          for speaker, (blob, seconds) in prints.items()],
     )
     conn.commit()
@@ -572,21 +576,28 @@ def move_owner_names(conn, key, moves):
             continue
         conn.execute(
             "INSERT INTO speaker_names (device_id, session, part, speaker, name, is_me, auto)"
-            " VALUES (?,?,?,?,?,?,0)"
+            " SELECT ?, ?, ?, ?, ?, ?, 0 WHERE " + _SESSION_ALIVE +
             " ON CONFLICT(device_id, session, part, speaker) DO UPDATE SET"
             " name=excluded.name, is_me=excluded.is_me, auto=0",
-            (device_id, session, part, target, row["name"], row["is_me"]),
+            (device_id, session, part, target, row["name"], row["is_me"], device_id, session),
         )
     _summary_stale(conn, device_id, session)
     conn.commit()
 
 
-def voice_prints(conn):
-    """Все отпечатки и то, как владелец назвал их номера.
+def voice_prints(conn, device_id=None, session=None):
+    """Отпечатки и то, как владелец назвал их номера.
 
     owner_name — имя от владельца ('' — стёр, NULL — не называл или имя
     поставил сервер). has_owner_row — владелец трогал номер, в том числе стёр
-    имя: такой номер сервер не подписывает."""
+    имя: такой номер сервер не подписывает. С сессией — только то, что нужно
+    для её подписи: все номера этой сессии и названные владельцем номера
+    остальных (из них профили). Без сессии — весь архив."""
+    where, args = "", ()
+    if device_id is not None:
+        where = (" WHERE (s.auto = 0 AND TRIM(s.name) != '')"
+                 " OR (v.device_id = ? AND v.session = ?)")
+        args = (device_id, session)
     return conn.execute(
         "SELECT v.device_id, v.session, v.part, v.speaker, v.vec,"
         " CASE WHEN s.auto = 0 THEN TRIM(s.name) END AS owner_name,"
@@ -594,7 +605,8 @@ def voice_prints(conn):
         " FROM voice_prints v LEFT JOIN speaker_names s"
         "   ON s.device_id = v.device_id AND s.session = v.session"
         "  AND s.part = v.part AND s.speaker = v.speaker"
-        " ORDER BY v.device_id, v.session, v.part, v.speaker"
+        + where +
+        " ORDER BY v.device_id, v.session, v.part, v.speaker", args
     ).fetchall()
 
 
@@ -608,11 +620,11 @@ def set_auto_names(conn, device_id, session, names):
         if name:
             cursor = conn.execute(
                 "INSERT INTO speaker_names (device_id, session, part, speaker, name, is_me, auto)"
-                " VALUES (?,?,?,?,?,0,1)"
+                " SELECT ?, ?, ?, ?, ?, 0, 1 WHERE " + _SESSION_ALIVE +
                 " ON CONFLICT(device_id, session, part, speaker) DO UPDATE SET"
                 " name=excluded.name"
                 " WHERE speaker_names.auto = 1 AND speaker_names.name != excluded.name",
-                (*key, name),
+                (*key, name, device_id, session),
             )
         else:
             cursor = conn.execute(

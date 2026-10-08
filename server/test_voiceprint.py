@@ -340,3 +340,81 @@ def test_first_prints_of_a_part_leave_owner_names_alone(env, monkeypatch):
     with closing(db.connect()) as conn:
         vp.remember_part(conn, KEY, "part.flac", [])
         assert db.speaker_names(conn, "xiao-01", 7)[(1, 0)]["name"] == "Игорь"
+
+
+def test_session_deleted_during_save_keeps_no_prints(env):
+    # Удаление сессии между проверкой и записью не должно оставить биометрию.
+    upload(env)
+    db = env.db
+    with closing(db.connect()) as conn, closing(db.connect()) as other:
+        done = []
+
+        def delete_in_between(statement):
+            if not done and statement.lstrip().upper().startswith("DELETE FROM VOICE_PRINTS"):
+                done.append(db.delete_session(other, "xiao-01", 7))
+        conn.set_trace_callback(delete_in_between)
+        db.save_voice_prints(conn, KEY, {0: (vp.pack([1.0, 0, 0]), 9.0)})
+        conn.set_trace_callback(None)
+        assert done == [True]
+        assert db.voice_prints(conn) == []
+
+
+def test_refresh_reads_and_writes_names_under_one_lock(env):
+    import sqlite3
+    upload(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, KEY, {0: (vp.pack([1.0, 0, 0]), 9.0)})
+    blocked = []
+    with closing(db.connect()) as conn, closing(sqlite3.connect(db.DB_PATH, timeout=0)) as other:
+        def try_write(statement):
+            if not blocked and "FROM voice_prints v" in statement:
+                try:
+                    other.execute("UPDATE parts SET bytes = bytes WHERE session = 7")
+                    other.commit()
+                    blocked.append(False)
+                except sqlite3.OperationalError:
+                    other.rollback()
+                    blocked.append(True)
+        conn.set_trace_callback(try_write)
+        vp.refresh_session(conn, "xiao-01", 7)
+        conn.set_trace_callback(None)
+    # Пока сайт пересчитывает имена, воркер ждёт, а не пишет поверх более старым результатом.
+    assert blocked == [True]
+
+
+def test_prints_for_one_session_bring_only_named_voices_from_others(env):
+    upload(env, session=7)
+    upload(env, session=8)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, ("xiao-01", 7, 1), {0: (vp.pack([1.0, 0, 0]), 9.0),
+                                                       1: (vp.pack([0, 1.0, 0]), 9.0)})
+        db.save_voice_prints(conn, ("xiao-01", 8, 1), {0: (vp.pack([0, 0, 1.0]), 9.0)})
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+        rows = db.voice_prints(conn, "xiao-01", 8)
+    # Профилю нужны только названные голоса других сессий; сравнивать — свои номера.
+    assert [(r["session"], r["speaker"]) for r in rows] == [(7, 0), (8, 0)]
+
+
+@pytest.mark.parametrize("write", ["auto", "move"])
+def test_names_are_not_written_into_a_session_deleted_mid_way(env, write):
+    upload(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+    with closing(db.connect()) as conn, closing(db.connect()) as other:
+        done = []
+
+        def delete_in_between(statement):
+            if not done and statement.lstrip().upper().startswith(("INSERT INTO SPEAKER_NAMES",
+                                                                     "DELETE FROM SPEAKER_NAMES")):
+                done.append(db.delete_session(other, "xiao-01", 7))
+        conn.set_trace_callback(delete_in_between)
+        if write == "auto":
+            db.set_auto_names(conn, "xiao-01", 7, {(1, 1): "Мария"})
+        else:
+            db.move_owner_names(conn, KEY, {0: 2})
+        conn.set_trace_callback(None)
+        assert done == [True]
+        assert conn.execute("SELECT COUNT(*) FROM speaker_names").fetchone()[0] == 0

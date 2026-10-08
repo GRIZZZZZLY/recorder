@@ -29,3 +29,12 @@ test("угаданные по голосу имена считаются отд�
   ];
   assert.deepEqual(nameCounts(speakers), { unnamed: 1, guessed: 2 });
 });
+
+test("«это я» на угаданной строке — уже подтверждение, пометка «по голосу» снимается", async () => {
+  const { isGuess } = await import("./speakers.ts");
+  const row = { part: 1, speaker: 0, name: "Игорь", auto: true };
+  assert.equal(isGuess(row, "Игорь", ""), true);
+  assert.equal(isGuess(row, "Игорь", "1:0"), false);   // выбрано «это я»
+  assert.equal(isGuess(row, "Пётр", ""), false);       // имя исправлено
+  assert.equal(isGuess({ ...row, auto: false }, "Игорь", ""), false);
+});

@@ -4,7 +4,8 @@ import { useState } from "react";
 import { Card, Row, Section } from "@/components/recorder/list";
 import { Button } from "@/components/recorder/ui";
 import { apiPost } from "@/lib/api";
-import { changedNames } from "@/lib/speakers";
+import { changedNames, isGuess } from "@/lib/speakers";
+import { cx } from "@/utils/cx";
 
 type Speaker = { part: number; speaker: number; name: string; is_me: boolean; auto: boolean };
 
@@ -82,6 +83,7 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
           const key = keyOf(speaker);
           const name = names[key] ?? "";
           const who = `Говорящий ${speaker.speaker + 1}`;
+          const guess = isGuess(speaker, name, me);
           return (
             <Row key={key}>
               <span aria-hidden
@@ -94,20 +96,26 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
                   ч.{String(speaker.part).padStart(2, "0")}
                 </span>
               )}
-              <input
-                value={name}
-                placeholder={who}
-                aria-label={manyParts ? `Имя: ${who}, часть ${speaker.part}` : `Имя: ${who}`}
-                onChange={(event) =>
-                  setNames((old) => ({ ...old, [key]: event.target.value }))}
-                className="min-w-0 flex-1 rounded-inner bg-transparent px-2 py-1 text-row text-text-primary transition-colors placeholder:text-text-tertiary hover:bg-hairline max-md:min-h-11"
-              />
-              {speaker.auto && name === speaker.name && (
-                <span className="shrink-0 text-micro text-text-tertiary"
-                      title="Имя поставлено по сходству голоса с теми, кого вы уже называли. Неверно — исправьте или сотрите.">
-                  по голосу
-                </span>
-              )}
+              {/* Пометка лежит поверх поля, а не рядом: иначе поля в строках
+                  с догадкой и без неё разной ширины, и столбец имён пляшет. */}
+              <div className="relative min-w-0 flex-1">
+                <input
+                  value={name}
+                  placeholder={who}
+                  aria-label={`Имя: ${who}${manyParts ? `, часть ${speaker.part}` : ""}${guess ? ", угадано по голосу" : ""}`}
+                  title={guess ? "Имя поставлено по сходству голоса с теми, кого вы уже называли. Неверно — исправьте или сотрите." : undefined}
+                  onChange={(event) =>
+                    setNames((old) => ({ ...old, [key]: event.target.value }))}
+                  className={cx("w-full rounded-inner bg-transparent px-2 py-1 text-row text-text-primary transition-colors placeholder:text-text-tertiary hover:bg-hairline max-md:min-h-11",
+                                guess && "pr-20")}
+                />
+                {guess && (
+                  <span aria-hidden
+                        className="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-micro text-text-tertiary">
+                    по голосу
+                  </span>
+                )}
+              </div>
               <MeSwitch value={key} current={me} onChange={setMe} />
             </Row>
           );
@@ -119,7 +127,7 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
           {manyParts
             ? "Номера — метки диаризации внутри своей части, между частями не совпадают."
             : "Номера — метки диаризации, транскрипт не меняется."}
-          {speakers.some((s) => s.auto) && " «По голосу» — догадка: сохраните исправление, и она станет вашим именем."}
+          {speakers.some((s) => s.auto) && " «По голосу» — догадка: исправьте имя или отметьте «это я» и сохраните — тогда это ваше слово."}
         </span>
       </div>
       {error ? <p className="rise-in px-1 text-note text-accent-text">{error}</p> : null}
