@@ -19,6 +19,7 @@ import archive
 import db
 import stt
 import summarize
+import voiceprint
 
 log = logging.getLogger("worker")
 
@@ -66,6 +67,13 @@ def run_transcription(conn):
         result.duration_sec,
     )
     log.info("Готово: %d символов, %.1f с аудио", len(result.text), result.duration_sec)
+    try:
+        changed = voiceprint.remember_part(conn, key, row["audio_path"], result.utterances)
+        if changed:
+            log.info("Имена по голосу: изменено %d", changed)
+    except Exception:
+        # Расшифровка уже сохранена; без имён по голосу часть остаётся рабочей.
+        log.exception("Отпечатки голоса не сняты, %s", key)
     return True
 
 

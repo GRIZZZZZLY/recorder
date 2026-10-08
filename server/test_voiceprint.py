@@ -120,3 +120,77 @@ def test_old_speaker_names_become_owner_rows(env):
     with closing(db.connect()) as conn:
         assert db.speaker_names(conn, "xiao-01", 7)[(1, 0)] == {
             "name": "Игорь", "is_me": True, "auto": False}
+
+
+TWO_VOICES = {1: [(0.5, 0, "привет, это Игорь"), (4.0, 1, "добрый день")],
+              2: [(0.5, 0, "продолжим")]}
+
+
+def voices(monkeypatch, table):
+    """Подмена модели: отпечаток берётся из таблицы {(сессия, часть): {номер: вектор}}."""
+    def embed(path, utterances):
+        name = Path(path).name                       # xiao-01_S0007_P01.wav
+        key = (int(name.split("_S")[1][:4]), int(name.split("_P")[1][:2]))
+        return {speaker: (vp.normalized(vector), 9.0)
+                for speaker, vector in table.get(key, {}).items()}
+    monkeypatch.setattr(vp, "embed_part", embed)
+
+
+def test_voice_named_once_is_recognised_in_the_next_recording(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    voices(monkeypatch, {(7, 1): {0: [1, 0, 0], 1: [0, 1, 0]},
+                         (8, 1): {0: [0, 0, 1], 1: [0.95, 0.1, 0]}})
+    upload(env, session=7)
+    run_all(env)
+    with closing(env.db.connect()) as conn:
+        env.db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+    upload(env, session=8)
+    run_all(env)
+    with closing(env.db.connect()) as conn:
+        names = env.db.speaker_names(conn, "xiao-01", 8)
+        timeline, _ = env.db.session_timeline(conn, "xiao-01", 8)
+    assert names == {(1, 1): {"name": "Игорь", "is_me": False, "auto": True}}
+    assert {u["speaker"]: u["label"] for u in timeline} == {0: "Говорящий 1", 1: "Игорь"}
+
+
+def test_voice_failure_leaves_the_transcript_in_place(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+
+    def broken(path, utterances):
+        raise RuntimeError("модель упала")
+    monkeypatch.setattr(vp, "embed_part", broken)
+    upload(env)
+    run_all(env)
+    with closing(env.db.connect()) as conn:
+        status = conn.execute("SELECT status FROM transcripts WHERE session=7").fetchone()[0]
+    assert status == "done"
+
+
+def test_without_model_parts_get_no_prints(env, monkeypatch):
+    # 9 секунд речи одного номера: отпечаток сняли бы, будь модель на месте.
+    long = {1: [(0.5, 0, "раз"), (4.0, 0, "два"), (7.5, 0, "три")]}
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, long))
+    summary_stub(env, monkeypatch)
+    upload(env)
+    run_all(env)
+    assert vp.extractor() is None
+    with closing(env.db.connect()) as conn:
+        assert env.db.voice_prints(conn) == []
+
+
+def test_backfill_prints_old_parts_and_names_known_voices(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    upload(env, session=7)
+    upload(env, session=8)
+    run_all(env)                                     # модели ещё нет: отпечатков нет
+    with closing(env.db.connect()) as conn:
+        env.db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+    voices(monkeypatch, {(7, 1): {0: [1, 0, 0], 1: [0, 1, 0]},
+                         (8, 1): {0: [0, 0, 1], 1: [0.95, 0.1, 0]}})
+    with closing(env.db.connect()) as conn:
+        assert vp.backfill(conn) == 2
+        assert vp.backfill(conn) == 0                # повтор ничего не делает
+        assert env.db.speaker_names(conn, "xiao-01", 8)[(1, 1)]["name"] == "Игорь"
