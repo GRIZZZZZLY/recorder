@@ -263,80 +263,97 @@ def connect():
     return conn
 
 
+# CREATE TABLE IF NOT EXISTS не добавляет колонки в уже существующую таблицу.
+# У частей, принятых до появления колонки, останется NULL — интерфейс и
+# очередь это переживают.
+_PART_COLUMNS = (
+    ("envelope", "TEXT"),
+    ("expected_parts", "INTEGER"),
+    # Старым частям остаётся NULL, и это верно: до Recorder RevA диктофон
+    # писал только моно, а NULL и означает «моно».
+    ("bytes_per_second", "INTEGER"),
+    # Части, принятые до появления архива, становятся кандидатами на сжатие:
+    # значение по умолчанию у них такое же, как у новых. datetime('now') в
+    # ALTER TABLE не примут: значение по умолчанию для добавляемой колонки
+    # обязано быть константой.
+    ("archive_status", "TEXT NOT NULL DEFAULT 'pending'"),
+    ("archive_attempts", "INTEGER NOT NULL DEFAULT 0"),
+    ("archive_error", "TEXT"),
+    ("archive_next_try_at", "TEXT NOT NULL DEFAULT '1970-01-01 00:00:00'"),
+)
+
+
+def _columns(conn, table):
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrations_needed(conn):
+    parts, speakers = _columns(conn, "parts"), _columns(conn, "speaker_names")
+    return (any(name not in parts for name, _ in _PART_COLUMNS)
+            or not {"part", "auto", "transcript_at"} <= speakers
+            or "transcript_at" not in _columns(conn, "voice_prints"))
+
+
+def _migrate(conn):
+    """Переделки старой базы. Каждая сама проверяет, нужна ли она: вызывается
+    под блокировкой, а другая служба могла успеть всё сделать раньше."""
+    parts = _columns(conn, "parts")
+    for name, kind in _PART_COLUMNS:
+        if name not in parts:
+            conn.execute(f"ALTER TABLE parts ADD COLUMN {name} {kind}")
+
+    # Имена говорящих переехали с ключа (устройство, сессия, говорящий) на
+    # ключ с частью. Ключ в SQLite не меняется на месте, поэтому таблица
+    # пересобирается. Каждая старая строка размножается на все части своей
+    # сессии: ровно это владелец и видел на странице до переезда, так что
+    # разметка не пропадает и смысла себе не меняет.
+    if "part" not in _columns(conn, "speaker_names"):
+        # Внутри общей транзакции миграции: падение между DROP и RENAME
+        # откатится и не оставит владельца без разметки.
+        conn.execute(
+            "CREATE TABLE speaker_names_new ("
+            " device_id TEXT NOT NULL, session INTEGER NOT NULL,"
+            " part INTEGER NOT NULL, speaker INTEGER NOT NULL,"
+            " name TEXT NOT NULL DEFAULT '', is_me INTEGER NOT NULL DEFAULT 0,"
+            " PRIMARY KEY (device_id, session, part, speaker))"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO speaker_names_new"
+            " (device_id, session, part, speaker, name, is_me)"
+            " SELECT s.device_id, s.session, p.part, s.speaker, s.name, s.is_me"
+            " FROM speaker_names s JOIN parts p"
+            "   ON p.device_id = s.device_id AND p.session = s.session"
+        )
+        conn.execute("DROP TABLE speaker_names")
+        conn.execute("ALTER TABLE speaker_names_new RENAME TO speaker_names")
+    # Имена, которые были до узнавания по голосу, поставил владелец.
+    if "auto" not in _columns(conn, "speaker_names"):
+        conn.execute("ALTER TABLE speaker_names ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
+    # Отпечатки и имена, записанные до появления версии, относятся к текущим
+    # расшифровкам.
+    for table in ("voice_prints", "speaker_names"):
+        if "transcript_at" not in _columns(conn, table):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN transcript_at TEXT")
+            conn.execute(
+                f"UPDATE {table} SET transcript_at = (SELECT t.updated_at FROM transcripts t"
+                f" WHERE t.device_id = {table}.device_id AND t.session = {table}.session"
+                f" AND t.part = {table}.part)")
+
+
 def init_storage():
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     with closing(connect()) as conn:
         conn.executescript(SCHEMA)
-        # Все переделки старой базы — под одной блокировкой и одной транзакцией:
+        # Переделки старой базы — под одной блокировкой и одной транзакцией:
         # сайт и воркер стартуют вместе, и без блокировки второй проверил бы
         # столбцы до того, как первый их добавил, и упал на повторном ALTER.
         # SQLite откатывает DDL, так что падение посреди не оставит полработы.
-        conn.execute("BEGIN IMMEDIATE")
-        # CREATE TABLE IF NOT EXISTS не добавляет колонки в уже существующую
-        # таблицу. У частей, принятых до появления колонки, останется NULL —
-        # интерфейс и очередь это переживают.
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(parts)")}
-        for name, kind in (
-            ("envelope", "TEXT"),
-            ("expected_parts", "INTEGER"),
-            # Старым частям остаётся NULL, и это верно: до Recorder RevA
-            # диктофон писал только моно, а NULL и означает «моно».
-            ("bytes_per_second", "INTEGER"),
-            # Части, принятые до появления архива, становятся кандидатами на
-            # сжатие: значение по умолчанию у них такое же, как у новых.
-            # datetime('now') в ALTER TABLE не примут: значение по умолчанию
-            # для добавляемой колонки обязано быть константой.
-            ("archive_status", "TEXT NOT NULL DEFAULT 'pending'"),
-            ("archive_attempts", "INTEGER NOT NULL DEFAULT 0"),
-            ("archive_error", "TEXT"),
-            ("archive_next_try_at", "TEXT NOT NULL DEFAULT '1970-01-01 00:00:00'"),
-        ):
-            if name not in columns:
-                conn.execute(f"ALTER TABLE parts ADD COLUMN {name} {kind}")
-
-        # Имена говорящих переехали с ключа (устройство, сессия, говорящий) на
-        # ключ с частью. Ключ в SQLite не меняется на месте, поэтому таблица
-        # пересобирается. Каждая старая строка размножается на все части своей
-        # сессии: ровно это владелец и видел на странице до переезда, так что
-        # разметка не пропадает и смысла себе не меняет.
-        speaker_columns = {row["name"]
-                           for row in conn.execute("PRAGMA table_info(speaker_names)")}
-        if speaker_columns and "part" not in speaker_columns:
-            # Внутри общей транзакции миграции: падение между DROP и RENAME
-            # откатится и не оставит владельца без разметки.
-            conn.execute(
-                "CREATE TABLE speaker_names_new ("
-                " device_id TEXT NOT NULL, session INTEGER NOT NULL,"
-                " part INTEGER NOT NULL, speaker INTEGER NOT NULL,"
-                " name TEXT NOT NULL DEFAULT '', is_me INTEGER NOT NULL DEFAULT 0,"
-                " PRIMARY KEY (device_id, session, part, speaker))"
-            )
-            conn.execute(
-                "INSERT OR IGNORE INTO speaker_names_new"
-                " (device_id, session, part, speaker, name, is_me)"
-                " SELECT s.device_id, s.session, p.part, s.speaker, s.name, s.is_me"
-                " FROM speaker_names s JOIN parts p"
-                "   ON p.device_id = s.device_id AND p.session = s.session"
-            )
-            conn.execute("DROP TABLE speaker_names")
-            conn.execute("ALTER TABLE speaker_names_new RENAME TO speaker_names")
-        # Имена, которые были до узнавания по голосу, поставил владелец.
-        speaker_columns = {row["name"]
-                           for row in conn.execute("PRAGMA table_info(speaker_names)")}
-        if "auto" not in speaker_columns:
-            conn.execute("ALTER TABLE speaker_names ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
-        # Отпечатки и имена, записанные до появления версии, относятся к
-        # текущим расшифровкам.
-        for table in ("voice_prints", "speaker_names"):
-            columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
-            if "transcript_at" not in columns:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN transcript_at TEXT")
-                conn.execute(
-                    f"UPDATE {table} SET transcript_at = (SELECT t.updated_at FROM transcripts t"
-                    f" WHERE t.device_id = {table}.device_id AND t.session = {table}.session"
-                    f" AND t.part = {table}.part)")
-        conn.commit()
-
+        # Блокировку берём, только если перестраивать есть что: иначе старт
+        # службы ждал бы, пока другая служба пишет.
+        if _migrations_needed(conn):
+            conn.execute("BEGIN IMMEDIATE")
+            _migrate(conn)
+            conn.commit()
 
 
 def format_abs(seconds):
@@ -565,6 +582,8 @@ def session_speakers(conn):
 _SESSION_ALIVE = "EXISTS (SELECT 1 FROM parts WHERE device_id = ? AND session = ?)"
 # Текущая версия расшифровки части: подставляется в ту же вставку.
 _VERSION = "(SELECT updated_at FROM transcripts WHERE device_id = ? AND session = ? AND part = ?)"
+# Версия, которой нет ни у одной строки: «старых отпечатков не было».
+_NO_VERSION = object()
 
 
 def transcript_version(conn, key):
@@ -619,17 +638,19 @@ def save_voice_prints(conn, key, prints, version=None):
 
 def _move_names(conn, key, moves, old_version, new_version):
     device_id, session, part = key
-    current = new_version if new_version is not None else transcript_version(conn, key)
+    keep = {new_version, transcript_version(conn, key)} - {None} or {None}
     owners = conn.execute(
         "SELECT speaker, name, is_me, transcript_at FROM speaker_names"
         " WHERE device_id=? AND session=? AND part=? AND auto=0", key).fetchall()
-    # Старая версия — переезжает по голосу. Текущая — вписана под новую
+    # Старая версия — переезжает по голосу. Новая (и та, что сейчас в базе, если
+    # её успели сохранить, пока снимали отпечатки) — вписана под новую
     # нумерацию, остаётся. Любая другая — промежуточная расшифровка, с которой
     # отпечатков нет: номер её не перенести, а оставить нельзя — под ним уже
     # другой голос, и он ушёл бы в чужой профиль.
     moving = [row for row in owners if row["transcript_at"] == old_version]
-    for row in owners:
-        if row["transcript_at"] != current or row["transcript_at"] == old_version:
+    dropped = [row for row in owners
+               if row["transcript_at"] == old_version or row["transcript_at"] not in keep]
+    for row in dropped:
             conn.execute("DELETE FROM speaker_names WHERE device_id=? AND session=?"
                          " AND part=? AND speaker=? AND auto=0", (*key, row["speaker"]))
     for row in moving:
@@ -647,8 +668,7 @@ def _move_names(conn, key, moves, old_version, new_version):
             (device_id, session, part, target, row["name"], row["is_me"], new_version,
              *key, device_id, session),
         )
-    if any(row["transcript_at"] != current or row["transcript_at"] == old_version
-           for row in owners):
+    if dropped:
         _summary_stale(conn, device_id, session)
 
 
@@ -677,18 +697,22 @@ def replace_part_prints(conn, key, prints, version, mapper):
     conn.execute("BEGIN IMMEDIATE")
     try:
         current = transcript_version(conn, key)
-        if version is not None and current is not None and version != current:
-            # Пока снимали отпечатки, часть расшифровали снова и воркер уже
-            # записал отпечатки новой версии: старые поверх них не кладём.
-            conn.rollback()
-            return
-        old = part_prints(conn, key)
         old_version = conn.execute(
             "SELECT transcript_at FROM voice_prints WHERE device_id=? AND session=? AND part=?"
             " LIMIT 1", key).fetchone()
+        if (version is not None and current is not None and version != current
+                and old_version is not None and old_version["transcript_at"] == current):
+            # Пока снимали отпечатки, часть расшифровали снова, и воркер уже
+            # записал отпечатки новой версии: старые поверх них не кладём. Если
+            # новых ещё нет — кладём: по ним воркер потом перенесёт имена.
+            conn.rollback()
+            return
+        old = part_prints(conn, key)
         _save_prints(conn, key, prints, version)
-        if old:
-            _move_names(conn, key, mapper(old), old_version["transcript_at"], version)
+        # Без старых отпечатков переносить не по чему, но имена прежней
+        # нумерации всё равно снимаются: под их номерами уже другие голоса.
+        _move_names(conn, key, mapper(old) if old else {},
+                    old_version["transcript_at"] if old_version else _NO_VERSION, version)
         conn.commit()
     except Exception:
         conn.rollback()

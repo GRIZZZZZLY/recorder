@@ -57,7 +57,7 @@ export function SpeakersForm({ deviceId, session, speakers, meName, onSaved }:
   const [names, setNames] = useState(shown);
   const [me, setMe] = useState(shownMe);
   // Строка, куда «это я» само подставило имя вместо догадки (см. pickMe).
-  const [filled, setFilled] = useState("");
+  const [filled, setFilled] = useState<{ key: string; value: string } | null>(null);
   const manyParts = new Set(speakers.map((s) => s.part)).size > 1;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

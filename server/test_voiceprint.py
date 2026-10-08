@@ -705,35 +705,33 @@ def test_names_typed_under_a_skipped_version_are_dropped(env, monkeypatch):
             (1, 1): {"name": "Игорь", "is_me": False, "auto": False}}
 
 
-def test_migration_holds_the_lock_while_it_checks_columns(env, monkeypatch):
-    # Сайт и воркер стартуют вместе: проверка столбцов и их добавление — под
-    # одной блокировкой, иначе второй падает на «duplicate column name».
-    import sqlite3
+def test_two_services_migrating_together_do_not_collide(env, monkeypatch):
+    # Сайт и воркер стартуют вместе. Второй успевает перестроить базу между
+    # проверкой столбцов первым и его блокировкой — первый не должен упасть
+    # на повторном «ADD COLUMN».
     db = env.db
-    blocked = []
-    other = sqlite3.connect(db.DB_PATH, timeout=0)
+    with closing(db.connect()) as conn:
+        conn.execute("ALTER TABLE voice_prints DROP COLUMN transcript_at")
+        conn.commit()
+    real_connect, real_init = db.connect, db.init_storage
+    raced = []
 
-    def try_write(statement):
-        if not blocked and "table_info(voice_prints)" in statement:
-            try:
-                other.execute("UPDATE parts SET bytes = bytes")
-                other.commit()
-                blocked.append(False)
-            except sqlite3.OperationalError:
-                other.rollback()
-                blocked.append(True)
-    real = db.connect
+    def other_service_first(statement):
+        if not raced and statement.strip().upper() == "BEGIN IMMEDIATE":
+            raced.append(True)
+            monkeypatch.setattr(db, "connect", real_connect)
+            real_init()
 
     def traced():
-        conn = real()
-        conn.set_trace_callback(try_write)
+        conn = real_connect()
+        conn.set_trace_callback(other_service_first)
         return conn
     monkeypatch.setattr(db, "connect", traced)
-    try:
-        db.init_storage()
-    finally:
-        other.close()
-    assert blocked == [True]
+    db.init_storage()
+    assert raced == [True]
+    with closing(real_connect()) as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(voice_prints)")}
+    assert "transcript_at" in columns
 
 
 def test_owner_names_on_a_migrated_database_follow_their_voice(env, monkeypatch):
@@ -767,3 +765,72 @@ def test_owner_names_on_a_migrated_database_follow_their_voice(env, monkeypatch)
         vp.remember_part(conn, KEY, "part.flac", [])
         assert db.speaker_names(conn, "xiao-01", 7) == {
             (1, 3): {"name": "Игорь", "is_me": False, "auto": False}}
+
+
+
+def test_startup_does_not_wait_for_the_other_service_when_nothing_to_migrate(env, monkeypatch):
+    import sqlite3
+    db = env.db
+    real = db.connect
+
+    def impatient():
+        conn = real()
+        conn.execute("PRAGMA busy_timeout=0")
+        return conn
+    monkeypatch.setattr(db, "connect", impatient)
+    with closing(sqlite3.connect(db.DB_PATH)) as other:
+        other.execute("BEGIN IMMEDIATE")          # другая служба пишет
+        db.init_storage()                         # перестраивать нечего — ждать незачем
+        other.rollback()
+
+
+def test_first_prints_after_retranscription_drop_names_of_the_old_numbering(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    upload(env)
+    run_all(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        # Отпечатков у части ещё не было; владелец назвал номер 0.
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+        conn.execute("UPDATE transcripts SET updated_at = datetime('now', '+1 minute')")
+        conn.commit()
+    # Новая расшифровка: под номером 0 теперь Мария. Перенести имя не по чему.
+    monkeypatch.setattr(vp, "embed_part", lambda path, utterances: {
+        0: (vp.normalized([0, 1.0, 0]), 9.0)})
+    with closing(db.connect()) as conn:
+        vp.remember_part(conn, KEY, "part.flac", [])
+        assert db.speaker_names(conn, "xiao-01", 7) == {}
+        assert [r["owner_name"] for r in db.voice_prints(conn)] == [None]
+
+
+def test_backfill_racing_the_worker_keeps_names_of_both_versions(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    upload(env)
+    run_all(env)
+    db = env.db
+    igor, petr = [1.0, 0, 0], [0, 0, 1.0]
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, KEY, {0: (vp.pack(igor), 9.0)})
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+        # Вторая расшифровка: снять не вышло, владелец вписал «Пётр».
+        conn.execute("UPDATE transcripts SET updated_at = '2030-01-01 00:00:02'")
+        conn.commit()
+        db.set_speaker(conn, "xiao-01", 7, 1, 2, "Пётр", False)
+        # Третья: воркер уже сохранил текст, а отпечатки ещё снимает.
+        conn.execute("UPDATE transcripts SET updated_at = '2030-01-01 00:00:03'")
+        conn.commit()
+    # --backfill второй версии успевает раньше воркера.
+    monkeypatch.setattr(vp, "embed_part", lambda path, utterances: {
+        2: (vp.normalized(petr), 9.0), 5: (vp.normalized([0.97, 0.05, 0]), 9.0)})
+    with closing(db.connect()) as conn:
+        vp.remember_part(conn, KEY, "part.flac", [], "2030-01-01 00:00:02")
+    # Теперь воркер со своей, третьей версией.
+    monkeypatch.setattr(vp, "embed_part", lambda path, utterances: {
+        7: (vp.normalized([0.05, 0, 0.97]), 9.0), 8: (vp.normalized([0.96, 0.08, 0]), 9.0)})
+    with closing(db.connect()) as conn:
+        vp.remember_part(conn, KEY, "part.flac", [], "2030-01-01 00:00:03")
+        assert db.speaker_names(conn, "xiao-01", 7) == {
+            (1, 7): {"name": "Пётр", "is_me": False, "auto": False},
+            (1, 8): {"name": "Игорь", "is_me": False, "auto": False}}

@@ -30,6 +30,9 @@ export function isGuess(speaker: { part: number; speaker: number; name: string; 
 
 type Row = { part: number; speaker: number; name: string; is_me: boolean; auto: boolean };
 
+/** Строка и имя, которые pickMe подставило само. */
+type Filled = { key: string; value: string } | null;
+
 /**
  * Имена после того, как «это я» перешло со строки prevMe на строку me.
  *
@@ -38,22 +41,26 @@ type Row = { part: number; speaker: number; name: string; is_me: boolean; auto: 
  * Иначе сохранение записало бы чужое имя как ваше: ваш голос ушёл бы в чужой
  * профиль, а задачи того человека стали бы вашими.
  *
- * filled — строка, куда имя подставила сама эта функция. Если «это я»
- * перещёлкнули дальше, только этой строке возвращается её догадка; имя,
- * которое владелец вписал руками, не трогаем, даже если оно совпало с его.
+ * filled — строка и имя, которые подставила сама эта функция. Если «это я»
+ * перещёлкнули дальше, догадка возвращается только туда и только пока там
+ * стоит подставленное: имя, вписанное владельцем руками, не трогаем, даже
+ * если оно совпало с его; а сменившееся между щелчками meName не мешает
+ * узнать своё подставленное.
  */
 export function pickMe(speakers: Row[], shown: Record<string, string>, names: Record<string, string>,
                        prevMe: string, me: string, meName: string,
-                       filled: string): { names: Record<string, string>; filled: string } {
+                       filled: Filled): { names: Record<string, string>; filled: Filled } {
   if (me === prevMe) return { names, filled };
   const mine = speakers.find((s) => s.is_me && !s.auto && s.name)?.name || meName;
   const guessed = (key: string) => speakers.some((s) => `${s.part}:${s.speaker}` === key && s.auto);
   const next = { ...names };
-  if (filled && filled === prevMe && next[prevMe] === mine) next[prevMe] = shown[prevMe] ?? "";
-  let nowFilled = "";
+  if (filled && filled.key === prevMe && next[prevMe] === filled.value) {
+    next[prevMe] = shown[prevMe] ?? "";
+  }
+  let nowFilled: Filled = null;
   if (me && guessed(me) && next[me] === (shown[me] ?? "")) {
     next[me] = mine;
-    nowFilled = me;
+    nowFilled = { key: me, value: mine };
   }
   return { names: next, filled: nowFilled };
 }
