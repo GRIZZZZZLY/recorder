@@ -13,6 +13,7 @@ from fastapi.security import HTTPBasicCredentials
 
 import auth
 import login
+import share
 from auth import security
 
 WEB_DIR = Path(os.environ.get(
@@ -54,23 +55,40 @@ def resolve(path):
     return with_html if with_html.is_file() else None
 
 
+# Без пароля — только то, без чего не откроется страница гостя (/shared/?t=…):
+# сама страница, код и стили сборки, значки. Данных в этих файлах нет: запись
+# страница берёт с /api/share/<ключ>, а тот проверяет ключ сам (share.py).
+PUBLIC_DIRS = {"shared", "_next"}
+PUBLIC_FILES = {"icon.svg", "icon-192.png", "icon-512.png", "apple-touch-icon.png"}
+
+
+def public(hit):
+    """Файл сборки, открытый без пароля. Судим по уже разрешённому пути, а не
+    по строке запроса: `/shared/../records/` разрешится в records/ — пароль."""
+    relative = hit.relative_to(WEB_DIR.resolve()).parts
+    if len(relative) == 1:
+        return relative[0] in PUBLIC_FILES
+    return relative[0] in PUBLIC_DIRS
+
+
 # HEAD тоже: Next.js проверяет ссылки HEAD-запросом, и 405 на них сыпался в консоль.
 @router.api_route("/{path:path}", methods=["GET", "HEAD"])
 def site(request: Request, response: Response, path: str = "",
          credentials: HTTPBasicCredentials = Depends(security)):
+    hit = resolve(path or "index.html") if WEB_DIR.is_dir() else None
+    open_to_all = hit is not None and public(hit)
     # Страница ведёт на форму входа, а не отвечает 401: в режиме «на домашний
     # экран» Safari окно Basic-авторизации не показывает, и владелец видел бы
     # пустоту. В обычной вкладке пароль из браузера по-прежнему принимается —
     # `verify` сначала смотрит метку, потом Basic-заголовок.
-    if auth.verify(request, response, credentials) is None:
+    if not open_to_all and auth.verify(request, response, credentials) is None:
         return login.redirect_to_login(request)
 
     if not WEB_DIR.is_dir():
         raise HTTPException(503, f"фронтенд не собран: нет каталога {WEB_DIR}")
-    hit = resolve(path or "index.html")
     if hit is None:
         fallback = WEB_DIR / "404.html"
         if fallback.is_file():
             return FileResponse(fallback, status_code=404)
         raise HTTPException(404, "нет такой страницы")
-    return FileResponse(hit)
+    return FileResponse(hit, headers=share.HEADERS if open_to_all else None)

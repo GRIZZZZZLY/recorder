@@ -4,12 +4,14 @@
 своим чистым клиентом. Метка владельца, оставшаяся в общем клиенте, открыла
 бы «гостю» всё, и проверки перестали бы что-то значить.
 """
+import os
 from contextlib import closing
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from test_api_ui import prepared  # noqa: F401
+from test_api_ui import prepared, site  # noqa: F401
 from test_pipeline import AUTH, env, upload  # noqa: F401
 
 
@@ -163,3 +165,42 @@ def test_unclosed_server_shares_nothing(env, monkeypatch):
     monkeypatch.setattr(auth, "OWNER_PASSWORD", "")
     assert as_guest(env, f"/api/share/{token}").status_code == 503
     assert as_guest(env, f"/share/{token}/audio/1").status_code == 503
+
+
+@pytest.fixture
+def guest_site(site):
+    """Сборка из фикстуры `site` плюс страница гостя, раздел владельца и значок."""
+    out = Path(os.environ["RECORDER_WEB_DIR"])
+    for page in ("shared", "records"):
+        (out / page).mkdir(exist_ok=True)
+        (out / page / "index.html").write_text(f"<!doctype html><title>{page}</title>",
+                                               encoding="utf-8")
+    (out / "icon.svg").write_text("<svg/>", encoding="utf-8")
+    return site
+
+
+def test_only_the_guest_page_opens_without_password(guest_site):
+    for path in ("/shared/", "/shared/?t=abc", "/_next/app.js", "/icon.svg"):
+        assert as_guest(guest_site, path).status_code == 200, path
+    assert as_guest(guest_site, "/shared/").headers["referrer-policy"] == "no-referrer"
+
+    for path in ("/", "/records/", "/session/", "/shared/%2e%2e/records/",
+                 "/_next/%2e%2e/index.html", "/nothing-here.txt"):
+        answer = as_guest(guest_site, path)
+        assert answer.status_code == 303, path
+        assert answer.headers["location"].startswith("/login"), path
+        assert "<title>" not in answer.text, path
+
+    for path in ("/api/ui/sessions", "/audio/xiao-01/7/1", "/api/v1/sessions"):
+        assert as_guest(guest_site, path).status_code == 401, path
+
+
+def test_public_is_judged_by_the_resolved_path(guest_site):
+    """Решает путь после разрешения, а не строка запроса: клиент может и не
+    свернуть `..` сам, а `/shared/../records/` — это раздел владельца."""
+    import static_site
+    assert static_site.public(static_site.resolve("shared/index.html"))
+    assert static_site.public(static_site.resolve("_next/app.js"))
+    assert not static_site.public(static_site.resolve("shared/../records/index.html"))
+    assert not static_site.public(static_site.resolve("_next/../index.html"))
+    assert not static_site.public(static_site.resolve("index.html"))

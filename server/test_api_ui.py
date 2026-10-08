@@ -55,14 +55,15 @@ def test_site_answers_head_requests(site):
 
 
 def test_site_is_closed_by_the_same_password(site):
-    """Ни страница, ни файлы сборки не отдаются без пароля: содержимого в
-    ответе нет, вместо него переход на форму входа."""
+    """Ни одна страница владельца не отдаётся без пароля: содержимого в ответе
+    нет, вместо него переход на форму входа. Файлы сборки (_next) открыты ради
+    страницы гостя — в них код, а не данные (test_share.py)."""
     with TestClient(site.app) as client:
-        for path, attempt in (("/", {"auth": ("owner", "wrong")}), ("/_next/app.js", {})):
+        for path, attempt in (("/", {"auth": ("owner", "wrong")}), ("/session/", {})):
             answer = client.get(path, follow_redirects=False, **attempt)
             assert answer.status_code == 303
             assert answer.headers["location"].startswith("/login")
-            assert "Сводка" not in answer.text and "console.log" not in answer.text
+            assert "Сводка" not in answer.text and "Сессия" not in answer.text
         # JSON-API остаётся при отказе 401: странице нужна форма, фоновому
         # запросу — честная ошибка, а не HTML формы вместо данных.
         assert client.get("/api/ui/digest").status_code == 401
