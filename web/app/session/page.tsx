@@ -14,6 +14,7 @@ import { Empty, EmptyNote, Failed, Loading } from "@/components/recorder/states"
 import { Button, Dot, EvidenceTime, Retry, SourceNote, Tag } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import { revealUtterance } from "@/lib/reveal";
+import { nameCounts } from "@/lib/speakers";
 import { statusTone } from "@/lib/session-status";
 import { minutesSince, useNow } from "@/lib/use-now";
 import { ApiError, apiDelete, apiPost } from "@/lib/api";
@@ -503,7 +504,11 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
   const doneParts = data.parts.filter((part) => part.transcript_status === "done").length;
   // Части, которые ещё ждут расшифровки. Упавшая — не ждёт: о ней карточка ошибок.
   const queued = data.parts.filter((part) => !part.transcript_status || part.transcript_status === "pending").length;
-  const unnamed = data.speakers.filter((speaker) => !speaker.name).length;
+  const { unnamed, guessed } = nameCounts(data.speakers);
+  const namesNote = [
+    unnamed > 0 ? count(unnamed, "голос без имени", "голоса без имени", "голосов без имени") : "",
+    guessed > 0 ? count(guessed, "имя угадано по голосу", "имени угаданы по голосу", "имён угаданы по голосу") : "",
+  ].filter(Boolean).join(" · ");
 
   return (
     <>
@@ -702,10 +707,8 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
             <summary className="press-row flex cursor-pointer list-none items-center justify-between gap-3 rounded-card bg-surface px-4 py-3.5 shadow-plate hover:bg-surface-elevated [&::-webkit-details-marker]:hidden">
               <span>
                 Имена и дата
-                {unnamed > 0 ? (
-                  <span className="block text-note text-text-secondary">
-                    {count(unnamed, "голос без имени", "голоса без имени", "голосов без имени")}
-                  </span>
+                {namesNote ? (
+                  <span className="block text-note text-text-secondary">{namesNote}</span>
                 ) : null}
               </span>
               <CaretDown size={16} aria-hidden className="shrink-0 text-text-tertiary transition-transform group-open:rotate-180" />

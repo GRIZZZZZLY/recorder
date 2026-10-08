@@ -20,3 +20,12 @@ test("смена «это я» отправляет прежнюю и новую
                    { "1:0": "Игорь", "1:1": "Мария" });
   assert.deepEqual(changedNames(shown, { ...shown }, "1:0", ""), { "1:0": "Игорь" });
 });
+
+test("угаданные по голосу имена считаются отдельно от безымянных", async () => {
+  const { nameCounts } = await import("./speakers.ts");
+  const speakers = [
+    { name: "Игорь", auto: false }, { name: "Мария", auto: true },
+    { name: "Мария", auto: true }, { name: "", auto: false },
+  ];
+  assert.deepEqual(nameCounts(speakers), { unnamed: 1, guessed: 2 });
+});

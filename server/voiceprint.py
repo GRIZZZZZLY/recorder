@@ -77,6 +77,26 @@ def best_name(vector, profiles):
     return scores[0][1]
 
 
+def carry_over(old, new):
+    """После повторной расшифровки: {старый номер: новый номер того же голоса
+    или None}. Порог и разрыв те же, что у узнавания. Каждый новый номер
+    достаётся одному старому — самому похожему: Gemini иногда делит одного
+    человека на два номера, а имя должно оказаться в одном месте."""
+    found = []
+    for before, voice in old.items():
+        scores = sorted(((similarity(voice, other), after) for after, other in new.items()),
+                        reverse=True)
+        if scores and scores[0][0] >= THRESHOLD and (
+                len(scores) == 1 or scores[0][0] - scores[1][0] >= MARGIN):
+            found.append((scores[0][0], before, scores[0][1]))
+    moves, taken = dict.fromkeys(old), set()
+    for _, before, after in sorted(found, reverse=True):
+        if after not in taken:
+            moves[before] = after
+            taken.add(after)
+    return moves
+
+
 def pack(vector):
     return array.array("f", vector).tobytes()
 
@@ -200,8 +220,17 @@ def remember_part(conn, key, audio_path, utterances):
         # под чужими словами.
         log.exception("Отпечатки голоса не сняты, %s", audio_path)
         prints = {}
+    old = {row["speaker"]: unpack(row["vec"]) for row in db.voice_prints(conn)
+           if (row["device_id"], row["session"], row["part"]) == tuple(key)}
     db.save_voice_prints(conn, key, {speaker: (pack(vector), seconds)
                                      for speaker, (vector, seconds) in prints.items()})
+    if old and prints:
+        # Повторная расшифровка: номера другие. Имена владельца переезжают за
+        # своим голосом; не найденные по голосу снимаются — под старым номером
+        # теперь другой человек, и его голос ушёл бы в чужой профиль. Без новых
+        # отпечатков (модель упала) сравнить не с чем — имена не трогаем.
+        db.move_owner_names(conn, key, carry_over(
+            old, {speaker: vector for speaker, (vector, _) in prints.items()}))
     return refresh_session(conn, key[0], key[1])
 
 

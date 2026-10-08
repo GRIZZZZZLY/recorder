@@ -300,3 +300,43 @@ def test_failed_model_on_retranscription_drops_old_guesses(env, monkeypatch):
         vp.remember_part(conn, KEY, "part.flac", [])
         assert db.voice_prints(conn) == []
         assert db.speaker_names(conn, "xiao-01", 7) == {}
+
+
+def test_old_voices_find_their_new_numbers_one_to_one():
+    a, b, c = vp.normalized([1, 0, 0]), vp.normalized([0, 1, 0]), vp.normalized([0, 0, 1])
+    near_a = vp.normalized([0.95, 0.1, 0])
+    # Номера поменялись местами; третий старый голос из новой расшифровки пропал.
+    assert vp.carry_over({0: a, 1: b, 2: c}, {0: b, 1: near_a}) == {0: 1, 1: 0, 2: None}
+    # Два старых номера одного голоса — новый номер достаётся более похожему.
+    assert vp.carry_over({0: a, 5: near_a}, {3: a}) == {0: 3, 5: None}
+
+
+def test_owner_names_follow_their_voice_after_retranscription(env, monkeypatch):
+    upload(env)
+    db = env.db
+    igor, maria, stranger = [1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, KEY, {0: (vp.pack(igor), 9.0), 1: (vp.pack(maria), 9.0)})
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", True)
+        db.set_speaker(conn, "xiao-01", 7, 1, 1, "Мария", False)
+    # Новая расшифровка: Игорь стал номером 2, Марии больше нет, под номером 1
+    # теперь чужой голос — имя «Мария» ему достаться не должно.
+    monkeypatch.setattr(vp, "embed_part", lambda path, utterances: {
+        1: (vp.normalized(stranger), 9.0), 2: (vp.normalized([0.97, 0.05, 0]), 9.0)})
+    with closing(db.connect()) as conn:
+        vp.remember_part(conn, KEY, "part.flac", [])
+        assert db.speaker_names(conn, "xiao-01", 7) == {
+            (1, 2): {"name": "Игорь", "is_me": True, "auto": False}}
+
+
+def test_first_prints_of_a_part_leave_owner_names_alone(env, monkeypatch):
+    # Часть расшифрована до появления отпечатков: сравнить не с чем, имена не трогаем.
+    upload(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+    monkeypatch.setattr(vp, "embed_part",
+                        lambda path, utterances: {1: (vp.normalized([0, 1.0, 0]), 9.0)})
+    with closing(db.connect()) as conn:
+        vp.remember_part(conn, KEY, "part.flac", [])
+        assert db.speaker_names(conn, "xiao-01", 7)[(1, 0)]["name"] == "Игорь"

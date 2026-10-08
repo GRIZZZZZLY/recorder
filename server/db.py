@@ -553,6 +553,34 @@ def save_voice_prints(conn, key, prints):
     conn.commit()
 
 
+def move_owner_names(conn, key, moves):
+    """Имена владельца части после повторной расшифровки. moves: {старый
+    номер: новый номер или None}; номер без пары по голосу теряет имя. Вызывать
+    после save_voice_prints: подписи по голосу этой части к тому времени уже
+    сняты и с переехавшими именами не столкнутся."""
+    device_id, session, part = key
+    rows = conn.execute(
+        "SELECT speaker, name, is_me FROM speaker_names"
+        " WHERE device_id=? AND session=? AND part=? AND auto=0", key).fetchall()
+    if not rows:
+        return
+    conn.execute("DELETE FROM speaker_names"
+                 " WHERE device_id=? AND session=? AND part=? AND auto=0", key)
+    for row in rows:
+        target = moves.get(row["speaker"])
+        if target is None:
+            continue
+        conn.execute(
+            "INSERT INTO speaker_names (device_id, session, part, speaker, name, is_me, auto)"
+            " VALUES (?,?,?,?,?,?,0)"
+            " ON CONFLICT(device_id, session, part, speaker) DO UPDATE SET"
+            " name=excluded.name, is_me=excluded.is_me, auto=0",
+            (device_id, session, part, target, row["name"], row["is_me"]),
+        )
+    _summary_stale(conn, device_id, session)
+    conn.commit()
+
+
 def voice_prints(conn):
     """Все отпечатки и то, как владелец назвал их номера.
 

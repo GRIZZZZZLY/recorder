@@ -6,6 +6,18 @@
  * подписал номера по голосу: тогда пустое поле ушло бы как «владелец стёр
  * имя», и номер больше никогда не узнавался бы.
  */
+/**
+ * Сколько голосов без имени и сколько имён угадано по голосу. Догадку нельзя
+ * считать именем: иначе надпись «N голосов без имени» пропадёт, и владелец не
+ * откроет список, чтобы проверить угаданное.
+ */
+export function nameCounts(speakers: { name: string; auto: boolean }[]): { unnamed: number; guessed: number } {
+  return {
+    unnamed: speakers.filter((s) => !s.name).length,
+    guessed: speakers.filter((s) => s.name && s.auto).length,
+  };
+}
+
 export function changedNames(shown: Record<string, string>, names: Record<string, string>,
                              shownMe: string, me: string): Record<string, string> {
   const changed: Record<string, string> = {};
