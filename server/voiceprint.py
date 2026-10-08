@@ -13,9 +13,13 @@
 ошибка тянула бы за собой следующие.
 
 Замер 8 октября 2026 на 0016 (CAM++): две половины речи одного номера похожи
-в среднем на 0,90, разные номера одной порции — на 0,32. Порог 0,6: свой
-номер узнаётся в 83% случаев, чужие склеиваются в 9%. Владелец прослушал
-нарезку четырёх найденных голосов: совпадают.
+в среднем на 0,90, разные номера одной порции — на 0,32. Владелец прослушал
+нарезку четырёх найденных голосов: совпадают. Второй замер, когда владелец
+назвал 4 человек (35 номеров — проверочные ответы): при пороге 0,6 нового,
+ещё не названного человека подписывали чужим именем в 46% случаев, при 0,7 —
+ни разу, а своих узнаётся 91% вместо 94%. Кусок в 3 секунды при 0,7 узнаётся
+в 52% случаев и ошибается в 3%; секунда не узнаётся надёжно ни одной из пяти
+проверенных моделей.
 
 Без sherpa-onnx или файла модели сервер работает как раньше: номера без имён.
 """
@@ -37,12 +41,15 @@ log = logging.getLogger("voiceprint")
 ENABLED = os.environ.get("RECORDER_VOICE", "1") != "0"
 MODEL = Path(os.environ.get("RECORDER_VOICE_MODEL",
                             str(db.DATA_DIR / "models" / "campplus.onnx")))
-# Порог и разрыв подобраны на 0016; ручки — чтобы подстроить на новых записях
-# без выкладки кода.
-THRESHOLD = float(os.environ.get("RECORDER_VOICE_THRESHOLD", "0.6"))
+# Порог и разрыв подобраны на 0016 (см. замеры выше); ручки — чтобы
+# подстроить на новых записях без выкладки кода.
+THRESHOLD = float(os.environ.get("RECORDER_VOICE_THRESHOLD", "0.7"))
 MARGIN = float(os.environ.get("RECORDER_VOICE_MARGIN", "0.1"))
-# Меньше 8 секунд речи — отпечаток случаен; такой номер остаётся без имени.
-MIN_SEC = float(os.environ.get("RECORDER_VOICE_MIN_SEC", "8"))
+# Группы в списке «Имена и дата» — мягче, чем подпись: строка списка ничего
+# не утверждает, а одного человека в двух строках владелец замечает сразу.
+GROUP_THRESHOLD = float(os.environ.get("RECORDER_VOICE_GROUP_THRESHOLD", "0.6"))
+# Меньше 3 секунд речи — отпечаток случаен; такой номер остаётся без имени.
+MIN_SEC = float(os.environ.get("RECORDER_VOICE_MIN_SEC", "3"))
 # Память модели растёт с длиной звука и после вызова не отдаётся: замер
 # 8 октября 2026 — 60 с речи 234 МБ, 300 с — 803 МБ, 600 с — 1,5 ГБ. Минуты
 # на отпечаток хватает с запасом.
@@ -84,8 +91,8 @@ def carry_over(old, new):
     или None}. Порог и разрыв те же, что у узнавания, с одним исключением:
     Gemini делит человека на номера по 5-минутным порциям, и старый номер
     похож на свою порцию (0,96) почти так же, как на соседнюю (0,87). Если два
-    ближайших новых номера сами похожи друг на друга — это один человек, и
-    разрыв не нужен; если нет — это два разных человека, и имя не переезжает
+    ближайших новых номера сами похожи друг на друга (как строки списка, от
+    GROUP_THRESHOLD) — это один человек, и разрыв не нужен; если нет — это два разных человека, и имя не переезжает
     ни к одному. Спорный новый номер достаётся самому похожему старому."""
     found = []
     for before, voice in old.items():
@@ -94,7 +101,7 @@ def carry_over(old, new):
         if not scores or scores[0][0] < THRESHOLD:
             continue
         if (len(scores) > 1 and scores[0][0] - scores[1][0] < MARGIN
-                and similarity(new[scores[0][1]], new[scores[1][1]]) < THRESHOLD):
+                and similarity(new[scores[0][1]], new[scores[1][1]]) < GROUP_THRESHOLD):
             continue
         found.append((scores[0][0], before, scores[0][1]))
     moves, taken = dict.fromkeys(old), set()
@@ -259,8 +266,8 @@ def session_groups(conn, device_id, session, keys):
 
     Правила: одно имя (в любом написании) — одна группа, даже если голоса
     непохожи: владелец знает лучше. Разные имена в одну группу не попадают.
-    Остальные номера сливаются по среднему сходству голосов, порог тот же,
-    что у узнавания. Номер без отпечатка, но с именем, идёт в группу этого
+    Остальные номера сливаются по среднему сходству голосов с порогом
+    GROUP_THRESHOLD — мягче, чем у подписи. Номер без отпечатка, но с именем, идёт в группу этого
     имени. Без отпечатков в сессии (или с выключенным узнаванием) — каждый
     номер сам по себе, как раньше."""
     keys = list(keys)
@@ -296,7 +303,7 @@ def session_groups(conn, device_id, session, keys):
              for a in range(len(groups)) for b in range(len(groups)) if a < b}
     alive = set(range(len(groups)))
     while True:
-        best, merge = THRESHOLD, None
+        best, merge = GROUP_THRESHOLD, None
         for (a, b), value in total.items():
             if tags[a] is not None and tags[b] is not None and tags[a] != tags[b]:
                 continue
@@ -389,6 +396,32 @@ def backfill(conn):
             log.exception("Отпечатки %s сессия %04d часть %02d не сняты", *key)
             if conn.in_transaction:
                 conn.rollback()
+    # Номера, которым отпечаток раньше не полагался (минимум речи снизили с 8
+    # до 3 секунд), получают его без пересъёма остальных: та же версия
+    # расшифровки, имена никуда не переезжают.
+    for row in conn.execute(
+            "SELECT t.device_id, t.session, t.part, t.utterances, t.updated_at, p.audio_path"
+            " FROM transcripts t JOIN parts p"
+            "   ON p.device_id = t.device_id AND p.session = t.session AND p.part = t.part"
+            " WHERE t.status = 'done' ORDER BY t.device_id, t.session, t.part").fetchall():
+        key = (row["device_id"], row["session"], row["part"])
+        have = set(db.part_prints(conn, key))
+        if not have:
+            continue
+        utterances = json.loads(row["utterances"] or "[]")
+        missing = {speaker for speaker in label_spans(utterances) if speaker not in have}
+        if not missing:
+            continue
+        try:
+            prints = embed_part(row["audio_path"],
+                                [u for u in utterances if u.get("spk") in missing])
+        except Exception:
+            log.exception("Отпечатки %s сессия %04d часть %02d не дополнены", *key)
+            continue
+        db.add_voice_prints(conn, key, {speaker: (pack(vector), seconds)
+                                        for speaker, (vector, seconds) in prints.items()},
+                            row["updated_at"])
+        log.info("Отпечатки %s сессия %04d часть %02d дополнены: %d", *key, len(prints))
     for device_id, session in conn.execute(
             "SELECT DISTINCT device_id, session FROM voice_prints").fetchall():
         try:

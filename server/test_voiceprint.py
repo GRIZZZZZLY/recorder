@@ -1065,3 +1065,53 @@ def test_session_page_gives_voice_groups_largest_first(env, monkeypatch):
     assert body["voice_groups"] == [{"keys": ["1:0"], "seconds": 6.0},
                                     {"keys": ["1:1"], "seconds": 3.0}]
     assert body["short_keys"] == ["1:2"]
+
+
+def test_a_new_person_is_not_given_a_name_at_moderate_likeness():
+    # Замер 8 окт на 0016: при пороге 0,6 нового человека подписывали чужим
+    # именем в 46% случаев, при 0,7 — ни разу; своих узнаётся 91% вместо 94%.
+    igor = vp.normalized([1, 0, 0])
+    stranger = vp.normalized([0.66, 0.75, 0])          # сходство 0,66
+    assert vp.best_name(stranger, {"Игорь": igor}) is None
+
+
+def test_list_groups_voices_more_loosely_than_it_names_them(env):
+    upload(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, KEY, {0: (vp.pack(vp.normalized([1, 0, 0])), 9.0),
+                                         1: (vp.pack(vp.normalized([0.66, 0.75, 0])), 9.0)})
+        groups, _ = vp.session_groups(conn, "xiao-01", 7, [(1, 0), (1, 1)])
+    # Сходство 0,66: для подписи мало, для одной строки в списке — достаточно.
+    assert sorted(sorted(g) for g in groups) == [[(1, 0), (1, 1)]]
+
+
+def test_three_seconds_of_speech_are_enough_for_a_print():
+    utterances = [{"s": 0, "e": 1.5, "spk": 4, "text": "а"}, {"s": 2, "e": 3.5, "spk": 4, "text": "б"},
+                  {"s": 4, "e": 6.5, "spk": 5, "text": "в"}]
+    assert vp.label_spans(utterances) == {4: [(0.0, 1.5), (2.0, 3.5)]}
+
+
+def test_backfill_tops_up_prints_for_numbers_that_now_qualify(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    upload(env)
+    run_all(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        # Отпечаток номера 0 снят раньше, когда номер 1 (3 с речи) был «коротким».
+        db.save_voice_prints(conn, KEY, {0: (vp.pack(vp.normalized([1, 0, 0])), 9.0)})
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+    seen = []
+
+    def embed(path, utterances):
+        seen.append(sorted({u["spk"] for u in utterances}))
+        return {1: (vp.normalized([0.97, 0.05, 0]), 3.0)}
+    monkeypatch.setattr(vp, "embed_part", embed)
+    with closing(db.connect()) as conn:
+        vp.backfill(conn)
+        assert seen == [[1]]                         # снимается только недостающий
+        assert sorted(r["speaker"] for r in db.voice_prints(conn)) == [0, 1]
+        assert db.speaker_names(conn, "xiao-01", 7)[(1, 1)] == {
+            "name": "Игорь", "is_me": False, "auto": True}
+        assert db.speaker_names(conn, "xiao-01", 7)[(1, 0)]["auto"] is False

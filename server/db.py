@@ -636,6 +636,23 @@ def save_voice_prints(conn, key, prints, version=None):
     conn.commit()
 
 
+def add_voice_prints(conn, key, prints, version):
+    """Дописать отпечатки номерам части, у которых их не было, — к уже снятым
+    той же версии расшифровки. Ни старые отпечатки, ни имена не трогаются.
+    Если часть успели расшифровать заново, ничего не пишется: версия не та."""
+    device_id, session, part = key
+    conn.executemany(
+        "INSERT OR IGNORE INTO voice_prints"
+        " (device_id, session, part, speaker, seconds, vec, transcript_at)"
+        " SELECT ?, ?, ?, ?, ?, ?, ? WHERE " + _SESSION_ALIVE +
+        " AND " + _VERSION + " IS ?",
+        [(device_id, session, part, speaker, round(float(seconds), 1), blob, version,
+          device_id, session, *key, version)
+         for speaker, (blob, seconds) in prints.items()],
+    )
+    conn.commit()
+
+
 def _move_names(conn, key, moves, old_version, new_version):
     device_id, session, part = key
     keep = {new_version, transcript_version(conn, key)} - {None} or {None}
