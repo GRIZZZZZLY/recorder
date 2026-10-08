@@ -989,3 +989,79 @@ def test_late_backfill_blocked_by_a_current_name_loses_names_of_its_own_version(
         assert db.speaker_names(conn, "xiao-01", 7) == {
             (1, 1): {"name": "Пётр", "is_me": False, "auto": False},
             (1, 2): {"name": "Игорь", "is_me": False, "auto": False}}
+
+
+def prints_for(db, conn, table):
+    for (part, speaker), vector in table.items():
+        db.save_voice_prints(conn, ("xiao-01", 7, part),
+                             {speaker: (vp.pack(vp.normalized(vector)), 9.0)})
+
+
+def test_voice_groups_join_numbers_of_one_voice_and_keep_names_apart(env):
+    upload(env)
+    upload(env, part=2, marker=2)
+    db = env.db
+    with closing(db.connect()) as conn:
+        # Части сохраняются по одной: вторая save_voice_prints не трогает первую.
+        db.save_voice_prints(conn, ("xiao-01", 7, 1), {
+            0: (vp.pack(vp.normalized([1, 0, 0])), 9.0),
+            10: (vp.pack(vp.normalized([0.95, 0.2, 0])), 9.0),      # тот же человек, другая порция
+            1: (vp.pack(vp.normalized([0, 1, 0])), 9.0)})
+        db.save_voice_prints(conn, ("xiao-01", 7, 2), {
+            0: (vp.pack(vp.normalized([0.97, 0.1, 0])), 9.0),
+            3: (vp.pack(vp.normalized([0.1, 0.97, 0])), 9.0)})
+        # Похожие голоса под разными именами владельца не сливаются.
+        db.set_speaker(conn, "xiao-01", 7, 1, 1, "Мария", False)
+        db.set_speaker(conn, "xiao-01", 7, 2, 3, "Анна", False)
+        keys = [(1, 0), (1, 10), (1, 1), (2, 0), (2, 3)]
+        groups, short = vp.session_groups(conn, "xiao-01", 7, keys)
+    assert sorted(sorted(g) for g in groups) == [[(1, 0), (1, 10), (2, 0)], [(1, 1)], [(2, 3)]]
+    assert short == []
+
+
+def test_one_name_on_two_numbers_makes_one_group(env):
+    upload(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, KEY, {0: (vp.pack(vp.normalized([1, 0, 0])), 9.0),
+                                         1: (vp.pack(vp.normalized([0, 1, 0])), 9.0)})
+        # Владелец сам решил, что это один человек, — его слово важнее отпечатков.
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+        db.set_speaker(conn, "xiao-01", 7, 1, 1, "игорь", False)
+        groups, _ = vp.session_groups(conn, "xiao-01", 7, [(1, 0), (1, 1)])
+    assert sorted(sorted(g) for g in groups) == [[(1, 0), (1, 1)]]
+
+
+def test_numbers_without_a_print_are_short_unless_named(env):
+    upload(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, KEY, {0: (vp.pack(vp.normalized([1, 0, 0])), 9.0)})
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+        db.set_speaker(conn, "xiao-01", 7, 1, 5, "Игорь", False)   # «ага» Игоря, отпечатка нет
+        db.set_speaker(conn, "xiao-01", 7, 1, 6, "Пётр", False)    # имя есть, голоса нет
+        groups, short = vp.session_groups(conn, "xiao-01", 7, [(1, 0), (1, 5), (1, 6), (1, 7)])
+    assert sorted(sorted(g) for g in groups) == [[(1, 0), (1, 5)], [(1, 6)]]
+    assert short == [(1, 7)]
+
+
+def test_session_without_prints_lists_every_number_on_its_own(env):
+    upload(env)
+    with closing(env.db.connect()) as conn:
+        groups, short = vp.session_groups(conn, "xiao-01", 7, [(1, 0), (1, 1)])
+    assert sorted(groups) == [[(1, 0)], [(1, 1)]] and short == []
+
+
+def test_session_page_gives_voice_groups_largest_first(env, monkeypatch):
+    texts = {1: [(0.5, 0, "раз"), (4.0, 1, "два"), (7.5, 0, "три"), (11.0, 2, "ага")]}
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, texts))
+    summary_stub(env, monkeypatch)
+    voices(monkeypatch, {(7, 1): {0: [1, 0, 0], 1: [0, 1, 0]}})
+    upload(env)
+    run_all(env)
+    with TestClient(env.app) as client:
+        body = client.get("/api/ui/sessions/xiao-01/7", auth=AUTH).json()
+    # Говорящий 0 — две реплики по 3 с, говорящий 1 — одна; у 2 отпечатка нет.
+    assert body["voice_groups"] == [{"keys": ["1:0"], "seconds": 6.0},
+                                    {"keys": ["1:1"], "seconds": 3.0}]
+    assert body["short_keys"] == ["1:2"]

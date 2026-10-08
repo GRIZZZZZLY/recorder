@@ -97,3 +97,47 @@ test("ваше имя стало известно между щелчками �
   const second = pickMe(speakers, shown, first.names, "2:0", "2:1", "Игорь", first.filled);
   assert.deepEqual(second.names, { "2:0": "Мария", "2:1": "Игорь" });
 });
+
+test("номера одного голоса — одна строка с общим именем", async () => {
+  const { groupRows } = await import("./speakers.ts");
+  const speakers = [
+    { part: 1, speaker: 0, name: "Игорь", is_me: true, auto: false },
+    { part: 1, speaker: 10, name: "Игорь", is_me: false, auto: true },
+    { part: 2, speaker: 0, name: "", is_me: false, auto: false },
+    { part: 2, speaker: 3, name: "Мария", is_me: false, auto: true },
+    { part: 2, speaker: 4, name: "", is_me: false, auto: false },
+  ];
+  const rows = groupRows(speakers, [
+    { keys: ["1:0", "1:10", "2:0"], seconds: 1500 },
+    { keys: ["2:3"], seconds: 40 },
+  ], ["2:4"]);
+  assert.deepEqual(rows.map((r) => [r.key, r.keys.length, r.name, r.auto, r.is_me, r.short]), [
+    ["1:0", 3, "Игорь", false, true, false],
+    ["2:3", 1, "Мария", true, false, false],
+    ["2:4", 1, "", false, false, true],
+  ]);
+});
+
+test("имя группы уходит на все её номера", async () => {
+  const { expandNames } = await import("./speakers.ts");
+  const rows = [{ key: "1:0", keys: ["1:0", "1:10", "2:0"] }, { key: "2:3", keys: ["2:3"] }];
+  assert.deepEqual(expandNames(rows, { "1:0": "Пётр" }),
+                   { "1:0": "Пётр", "1:10": "Пётр", "2:0": "Пётр" });
+});
+
+test("короткие реплики не считаются голосами без имени", async () => {
+  const { nameCounts } = await import("./speakers.ts");
+  assert.deepEqual(nameCounts([{ name: "", auto: false, short: false },
+                               { name: "", auto: false, short: true },
+                               { name: "Мария", auto: true, short: false }]),
+                   { unnamed: 1, guessed: 1 });
+});
+
+test("«это я» и пометка «по голосу» работают и для строки-группы", async () => {
+  const { isGuess, pickMe } = await import("./speakers.ts");
+  const group = { key: "1:0", keys: ["1:0", "1:10"], name: "Мария", is_me: false, auto: true };
+  assert.equal(isGuess(group, "Мария", ""), true);
+  assert.equal(isGuess(group, "Мария", "1:0"), false);
+  assert.deepEqual(pickMe([group], { "1:0": "Мария" }, { "1:0": "Мария" }, "", "1:0", "Игорь", null).names,
+                   { "1:0": "Игорь" });
+});

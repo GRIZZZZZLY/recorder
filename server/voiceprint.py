@@ -248,6 +248,86 @@ def refresh_session(conn, device_id, session):
         raise
 
 
+def session_groups(conn, device_id, session, keys):
+    """Номера сессии, собранные по голосу, — для списка «Имена и дата».
+
+    Gemini нумерует говорящих заново в каждой 5-минутной порции и дробит
+    людей: на 0016 вышло 77 номеров на 4 основных голоса. Показывать владельцу
+    77 строк бессмысленно. Возвращает (группы, короткие): группы — списки
+    (часть, номер) одного голоса, короткие — номера без отпечатка (меньше 8 с
+    речи) и без имени.
+
+    Правила: одно имя (в любом написании) — одна группа, даже если голоса
+    непохожи: владелец знает лучше. Разные имена в одну группу не попадают.
+    Остальные номера сливаются по среднему сходству голосов, порог тот же,
+    что у узнавания. Номер без отпечатка, но с именем, идёт в группу этого
+    имени. Без отпечатков в сессии (или с выключенным узнаванием) — каждый
+    номер сам по себе, как раньше."""
+    keys = list(keys)
+    names = db.speaker_names(conn, device_id, session)
+
+    def tag(key):
+        name = (names.get(key) or {}).get("name", "").strip()
+        return (textnorm.normalize(name) or name) if name else None
+
+    rows = [row for row in db.voice_prints(conn, device_id, session)
+            if (row["device_id"], row["session"]) == (device_id, session)
+            and (row["part"], row["speaker"]) in set(keys)] if ENABLED else []
+    if not rows:
+        return [[key] for key in keys], []
+
+    printed = [(row["part"], row["speaker"]) for row in rows]
+    vectors = [unpack(row["vec"]) for row in rows]
+    # Сначала одинаковые имена вместе, остальные — по одному.
+    groups, tags, by_tag = [], [], {}
+    for index, key in enumerate(printed):
+        label = tag(key)
+        if label is not None and label in by_tag:
+            groups[by_tag[label]].append(index)
+            continue
+        if label is not None:
+            by_tag[label] = len(groups)
+        groups.append([index])
+        tags.append(label)
+    # Среднее сходство между группами; при слиянии суммы складываются, а не
+    # пересчитываются: на 80 номерах это доли секунды.
+    pair = [[similarity(a, b) for b in vectors] for a in vectors]
+    total = {(a, b): sum(pair[i][j] for i in groups[a] for j in groups[b])
+             for a in range(len(groups)) for b in range(len(groups)) if a < b}
+    alive = set(range(len(groups)))
+    while True:
+        best, merge = THRESHOLD, None
+        for (a, b), value in total.items():
+            if tags[a] is not None and tags[b] is not None and tags[a] != tags[b]:
+                continue
+            mean = value / (len(groups[a]) * len(groups[b]))
+            if mean >= best:
+                best, merge = mean, (a, b)
+        if merge is None:
+            break
+        a, b = merge
+        groups[a] += groups[b]
+        tags[a] = tags[a] if tags[a] is not None else tags[b]
+        alive.discard(b)
+        for c in alive - {a}:
+            ab = total.pop((min(a, c), max(a, c)), 0.0)
+            bc = total.pop((min(b, c), max(b, c)), 0.0)
+            total[(min(a, c), max(a, c))] = ab + bc
+        total.pop((a, b), None)
+    result = {tags[g] if tags[g] is not None else ("voice", g): [printed[i] for i in groups[g]]
+              for g in sorted(alive)}
+    short = []
+    for key in keys:
+        if key in set(printed):
+            continue
+        label = tag(key)
+        if label is None:
+            short.append(key)
+        else:
+            result.setdefault(label, []).append(key)
+    return list(result.values()), short
+
+
 def remember_part(conn, key, audio_path, utterances, version=None):
     """После расшифровки части: снять отпечатки и подписать знакомые голоса.
     version — версия расшифровки, с реплик которой снимаем (по умолчанию

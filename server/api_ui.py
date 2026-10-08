@@ -104,6 +104,14 @@ def session_detail(device_id: str, session: int, _=Depends(owner)):
         # «Это я» на угаданной строке ставит это имя: в новой записи своей
         # строки «это я» ещё нет, а пустое поле стёрло бы верную догадку.
         me_name = db.owner_display_name(conn)
+        # Список «Имена и дата» — по голосам, а не по номерам: Gemini дробит
+        # людей по 5-минутным порциям, и номеров в часовой записи бывает 77.
+        spoken = {}
+        for u in timeline:
+            if u["speaker"] is not None:
+                key = (u["part"], u["speaker"])
+                spoken[key] = spoken.get(key, 0.0) + max(0.0, u["end"] - u["start"])
+        groups, short = voiceprint.session_groups(conn, device_id, session, sorted(spoken))
         # Номер говорящего живёт внутри своей части: части уходят в Deepgram
         # поодиночке, и нумерация в каждой своя.
         speakers = sorted({(u["part"], u["speaker"]) for u in timeline
@@ -142,6 +150,11 @@ def session_detail(device_id: str, session: int, _=Depends(owner)):
                       "auto": bool(names.get((part, speaker), {}).get("auto"))}
                      for part, speaker in speakers],
         "me_name": me_name,
+        "voice_groups": sorted(
+            ({"keys": [f"{part}:{speaker}" for part, speaker in group],
+              "seconds": round(sum(spoken[key] for key in group), 1)} for group in groups),
+            key=lambda group: -group["seconds"]),
+        "short_keys": [f"{part}:{speaker}" for part, speaker in short],
         "tasks": tasks,
         "questions": questions,
     }

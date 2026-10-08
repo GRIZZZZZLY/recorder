@@ -14,7 +14,7 @@ import { Empty, EmptyNote, Failed, Loading } from "@/components/recorder/states"
 import { Button, Dot, EvidenceTime, Retry, SourceNote, Tag } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import { revealUtterance } from "@/lib/reveal";
-import { nameCounts } from "@/lib/speakers";
+import { groupRows, nameCounts } from "@/lib/speakers";
 import { statusTone } from "@/lib/session-status";
 import { minutesSince, useNow } from "@/lib/use-now";
 import { ApiError, apiDelete, apiPost } from "@/lib/api";
@@ -50,6 +50,10 @@ type Detail = {
   speakers: { part: number; speaker: number; name: string; is_me: boolean; auto: boolean }[];
   /** Как владелец пишет своё имя (по строкам «это я» во всём архиве); пусто — не отмечал. */
   me_name: string;
+  /** Номера («часть:номер»), собранные по голосу, крупные первыми. */
+  voice_groups: { keys: string[]; seconds: number }[];
+  /** Номера без отпечатка голоса и без имени: меньше 8 секунд речи. */
+  short_keys: string[];
   tasks: Task[];
   questions: Question[];
 };
@@ -506,7 +510,7 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
   const doneParts = data.parts.filter((part) => part.transcript_status === "done").length;
   // Части, которые ещё ждут расшифровки. Упавшая — не ждёт: о ней карточка ошибок.
   const queued = data.parts.filter((part) => !part.transcript_status || part.transcript_status === "pending").length;
-  const { unnamed, guessed } = nameCounts(data.speakers);
+  const { unnamed, guessed } = nameCounts(groupRows(data.speakers, data.voice_groups, data.short_keys));
   const namesNote = [
     unnamed > 0 ? count(unnamed, "голос без имени", "голоса без имени", "голосов без имени") : "",
     guessed > 0 ? count(guessed, "имя угадано по голосу", "имени угаданы по голосу", "имён угаданы по голосу") : "",
@@ -717,8 +721,9 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
             </summary>
             <div className="mt-6 flex flex-col gap-6">
               <SpeechShare timeline={data.timeline} />
-              <SpeakersForm key={JSON.stringify(data.speakers)} deviceId={data.device_id}
-                            session={data.session} speakers={data.speakers} meName={data.me_name}
+              <SpeakersForm key={JSON.stringify([data.speakers, data.voice_groups, data.short_keys])}
+                            deviceId={data.device_id} session={data.session} speakers={data.speakers}
+                            groups={data.voice_groups} shortKeys={data.short_keys} meName={data.me_name}
                             onSaved={reload} />
               <RecordedOn key={data.day} deviceId={data.device_id} session={data.session} day={data.day.slice(0, 10)}
                           onSaved={reload} />
