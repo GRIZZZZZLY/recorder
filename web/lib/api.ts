@@ -47,6 +47,28 @@ export function apiDelete<T>(path: string): Promise<T> {
   return request<T>(path, { method: "DELETE" });
 }
 
+/** Ссылка гостя, как её видит владелец. Время — UTC из SQLite. */
+export type Share = { token: string; created_at: string; expires_at: string };
+
+/** Запись по ссылке гостя: только то, что сервер разрешил показать (server/share.py). */
+export type SharedDetail = {
+  day: string;
+  first_at: string | null;
+  parts: { part: number; offset: number; seconds: number; envelope: number[] }[];
+  summary: Summary | null;
+  timeline: Utterance[];
+  speakers: { part: number; speaker: number; name: string; auto: boolean }[];
+  voice_groups: { keys: string[]; seconds: number }[];
+  short_keys: string[];
+};
+
+/** Запись по ключу из ссылки. Мимо /api/ui: там всё под паролем владельца. */
+export async function sharedGet(token: string): Promise<SharedDetail> {
+  const response = await fetch(`/api/share/${encodeURIComponent(token)}`);
+  if (!response.ok) throw new ApiError(response.status, "ссылка не работает");
+  return (await response.json()) as SharedDetail;
+}
+
 export type Task = {
   device_id: string;
   session: number;

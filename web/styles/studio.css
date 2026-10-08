@@ -1237,3 +1237,21 @@ input:not([type="checkbox"]):not([type="radio"]):not(.recorder-bare) {
     transform: none;
   }
 }
+
+/* ----- Страница гостя (/shared/): ни боковой, ни нижней панели разделов -----
+ * Плеер и подложка под ним встают от края до края окна, а на телефоне плеер
+ * садится к нижнему краю: висеть на 80 px выше пустоты ему незачем. */
+.recorder-guest .recorder-player {
+  left: 40px;
+}
+
+.recorder-guest .recorder-player-veil {
+  left: 0;
+}
+
+@media (max-width: 1023px) {
+  .recorder-guest .recorder-player {
+    left: 13px;
+    bottom: max(13px, env(safe-area-inset-bottom, 0px));
+  }
+}

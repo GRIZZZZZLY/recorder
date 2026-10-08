@@ -52,11 +52,18 @@ function NavGlyph({ icon: Glyph, size, active, pop }: {
   );
 }
 
+/** Колонка содержимого. Отступ снизу на телефоне — под плавающую панель
+ * разделов и жестовую полосу iPhone. */
+const MAIN = "page-in mx-auto flex w-full max-w-[1250px] flex-col gap-[23px] px-[15px] pt-[23px] pb-[calc(8rem+env(safe-area-inset-bottom))] min-[361px]:px-[21px] sm:px-8 lg:gap-[30px] lg:px-12 lg:pt-[30px] lg:pb-14";
+
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/";
+  // Страница гостя по ссылке: ни меню разделов, ни запроса /digest — тот под
+  // паролем владельца, и гость получил бы отказ со ссылкой на вход.
+  const guest = pathname.startsWith("/shared");
   // Для «назад» в шапке страницы: знать, из какого раздела пришли.
   useEffect(() => visited(pathname), [pathname]);
-  const { data } = useApi<DigestBody>("/digest");
+  const { data } = useApi<DigestBody>(guest ? null : "/digest");
   const now = useNow();
   const sheet = useRef<HTMLDialogElement>(null);
 
@@ -119,6 +126,10 @@ export function Shell({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  if (guest) {
+    return <main id="content" className={cx(MAIN, "recorder-guest")}>{children}</main>;
+  }
+
   return (
     <div className="flex min-h-dvh">
       {/* Первая цель Tab: иначе с клавиатуры каждый раз приходится проходить
@@ -170,10 +181,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         {/* Отступ снизу на телефоне — под плавающую панель разделов и жестовую
             полосу iPhone: последняя строка длинной страницы должна доезжать
             до глаз, а не прятаться под панелью. */}
-        <main
-          id="content"
-          className="page-in mx-auto flex w-full max-w-[1250px] flex-col gap-[23px] px-[15px] pt-[23px] pb-[calc(8rem+env(safe-area-inset-bottom))] min-[361px]:px-[21px] sm:px-8 lg:gap-[30px] lg:px-12 lg:pt-[30px] lg:pb-14"
-        >
+        <main id="content" className={MAIN}>
           {/* Шильдик прибора: имя, модель и состояние диктофона словами. Виден
               с любой страницы и на телефоне тоже — десктопный aside не считается. */}
           <div className="studio-brandline">
