@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import os
+import secrets
 import sqlite3
 from contextlib import closing
 from datetime import date
@@ -238,6 +239,17 @@ CREATE TABLE IF NOT EXISTS recording_days (
 CREATE TABLE IF NOT EXISTS project_aliases (
     alias     TEXT PRIMARY KEY,
     canonical TEXT NOT NULL
+);
+
+-- Ссылки на одну запись для другого человека (share.py). Закрыть доступ —
+-- удалить строку. Истёкшие отсекает сравнение с datetime('now') в каждом
+-- запросе, фоновой уборки нет: строка на выданную ссылку — не тот мусор.
+CREATE TABLE IF NOT EXISTS shares (
+    token      TEXT PRIMARY KEY,
+    device_id  TEXT NOT NULL,
+    session    INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL
 );
 
 -- Одна строка на реплику. Ищем по леммам: встроенный стеммер FTS5 знает
@@ -844,7 +856,8 @@ def retry_part(conn, device_id, session, part):
 
 
 SESSION_TABLES = ("transcripts", "summaries", "speaker_names", "voice_prints", "tasks",
-                  "question_states", "marks", "recording_days", "transcript_fts", "parts")
+                  "question_states", "marks", "recording_days", "transcript_fts", "shares",
+                  "parts")
 
 
 def delete_session(conn, device_id, session):
@@ -873,6 +886,42 @@ def delete_session(conn, device_id, session):
 def session_exists(conn, device_id, session):
     return conn.execute("SELECT 1 FROM parts WHERE device_id=? AND session=?",
                         (device_id, session)).fetchone() is not None
+
+
+# Сколько живёт ссылка для гостя. Забытая ссылка не должна открывать запись вечно.
+SHARE_DAYS = 7
+
+
+def create_share(conn, device_id, session):
+    """Новая ссылка на запись. Ключ — 128 случайных бит, подобрать нельзя.
+    Хранится как есть: владелец копирует живую ссылку ещё раз, а утечка базы
+    и без того раскрыла бы сами разговоры."""
+    token = secrets.token_urlsafe(16)
+    conn.execute(
+        "INSERT INTO shares (token, device_id, session, expires_at)"
+        " VALUES (?, ?, ?, datetime('now', ?))",
+        (token, device_id, session, f"+{SHARE_DAYS} days"),
+    )
+    conn.commit()
+    return dict(conn.execute(
+        "SELECT token, created_at, expires_at FROM shares WHERE token=?", (token,)).fetchone())
+
+
+def session_shares(conn, device_id, session):
+    """Живые ссылки записи, новые первыми. Истёкшие не показываем: они уже
+    ничего не открывают."""
+    rows = conn.execute(
+        "SELECT token, created_at, expires_at FROM shares"
+        " WHERE device_id=? AND session=? AND expires_at > datetime('now')"
+        " ORDER BY rowid DESC",
+        (device_id, session),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def revoke_share(conn, token):
+    conn.execute("DELETE FROM shares WHERE token=?", (token,))
+    conn.commit()
 
 
 def retry_summary(conn, device_id, session):

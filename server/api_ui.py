@@ -180,6 +180,30 @@ def delete_session(device_id: str, session: int, _=Depends(owner)):
     return {"ok": True}
 
 
+@router.post("/sessions/{device_id}/{session}/shares")
+def create_share(device_id: str, session: int, _=Depends(owner)):
+    """Ссылка для другого человека: слушать и читать эту запись, db.SHARE_DAYS дней."""
+    with closing(db.connect()) as conn:
+        if not db.session_exists(conn, device_id, session):
+            raise HTTPException(404, "нет такой сессии")
+        return db.create_share(conn, device_id, session)
+
+
+@router.get("/sessions/{device_id}/{session}/shares")
+def list_shares(device_id: str, session: int, _=Depends(owner)):
+    with closing(db.connect()) as conn:
+        return db.session_shares(conn, device_id, session)
+
+
+@router.delete("/shares/{token}")
+def close_share(token: str, _=Depends(owner)):
+    """Закрыть доступ. Уже закрытая ссылка — тоже успех: итог тот же.
+    Ответ — JSON, а не пустой 204: apiDelete на сайте читает тело."""
+    with closing(db.connect()) as conn:
+        db.revoke_share(conn, token)
+    return {"ok": True}
+
+
 @router.post("/sessions/{device_id}/{session}/speakers")
 def save_speakers(device_id: str, session: int, body: Speakers, _=Depends(owner)):
     me = _speaker_key(body.me) if body.me else None
