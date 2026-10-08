@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { ArrowUp, Pause, Play } from "@phosphor-icons/react/dist/ssr";
 import { Waveform } from "@/components/recorder/waveform";
 import type { Mark } from "@/lib/api";
-import { audioSrc, loadedPart, sharedAudio, takeLabel } from "@/lib/audio";
+import { loadedPart, sharedAudio, takeLabel } from "@/lib/audio";
 import { formatClock } from "@/lib/format";
 import { onReveal } from "@/lib/reveal";
 import { cx } from "@/utils/cx";
@@ -71,7 +71,7 @@ export type PlayerPart = {
  * звучащую реплику и едет за ней. Контекстов два, а не один: `useSeek` меняется
  * редко, а положение — четыре раза в секунду, и подписчикам нужно разное.
  */
-export function PlayerProvider({ deviceId, session, title, parts, marks = [], children }: {
+export function PlayerProvider({ deviceId, session, title, parts, marks = [], audioBase, children }: {
   deviceId: string;
   session: number;
   /** Имя записи — подпись плеера, когда звук идёт не от конкретного пункта. */
@@ -80,8 +80,12 @@ export function PlayerProvider({ deviceId, session, title, parts, marks = [], ch
   parts: PlayerPart[];
   /** Метки кнопкой: засечки на волне. */
   marks?: Mark[];
+  /** Откуда брать звук частей, без номера части. По умолчанию — адрес
+   * владельца; у гостя — /share/<ключ>/audio. */
+  audioBase?: string;
   children: React.ReactNode;
 }) {
+  const base = audioBase ?? `/audio/${encodeURIComponent(deviceId)}/${session}`;
   // Play без выбранной реплики играет с начала первой принятой части — не
   // «части 1», которой могло не дойти, а той, что действительно лежит на сервере.
   const first = parts.length ? parts[0].part : null;
@@ -150,7 +154,7 @@ export function PlayerProvider({ deviceId, session, title, parts, marks = [], ch
     const element = attached(audio);
     pending.current?.abort();
     if (nextLabel !== undefined) setLabel(nextLabel);
-    const src = audioSrc(deviceId, session, nextPart);
+    const src = `${base}/${nextPart}`;
     const switching = !element.src.endsWith(src);
     if (switching) element.src = src;
     // Часть и место — сразу, не дожидаясь загрузки: иначе показание на
@@ -173,7 +177,7 @@ export function PlayerProvider({ deviceId, session, title, parts, marks = [], ch
       pending.current = controller;
       element.addEventListener("loadedmetadata", start, { once: true, signal: controller.signal });
     }
-  }, [deviceId, session]);
+  }, [base]);
 
   // Где владелец остановился в этой записи: Play из покоя продолжает оттуда.
   // Хранилище браузера, не сервер: это привычка одного телефона, а не данные.
