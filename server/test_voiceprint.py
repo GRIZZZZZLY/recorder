@@ -887,14 +887,28 @@ def test_late_backfill_does_not_push_a_name_onto_one_typed_under_the_current_ver
 
 
 def test_late_backfill_keeps_names_typed_under_the_current_version(env, monkeypatch):
-    db = renumbered_twice(env, monkeypatch)
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    upload(env)
+    run_all(env)
+    db = env.db
     with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, KEY, {0: (vp.pack([1.0, 0, 0]), 9.0)})
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+        conn.execute("UPDATE transcripts SET updated_at = ?", (V2,))
+        conn.commit()
+        db.set_speaker(conn, "xiao-01", 7, 1, 4, "Борис", False)     # вписано под вторую
+        conn.execute("UPDATE transcripts SET updated_at = ?", (V3,))
+        conn.commit()
         db.set_speaker(conn, "xiao-01", 7, 1, 5, "Анна", False)      # вписано под третью
+    # Запоздалому --backfill второй версии есть что переносить (Борис) и не на
+    # что наткнуться — он пишет, и имя под третью версию остаётся.
     monkeypatch.setattr(vp, "embed_part", lambda path, utterances: {
-        1: (vp.normalized([0.97, 0.05, 0]), 9.0)})
+        1: (vp.normalized([0.97, 0.05, 0]), 9.0), 4: (vp.normalized([0, 0, 1.0]), 9.0)})
     with closing(db.connect()) as conn:
         vp.remember_part(conn, KEY, "part.flac", [], V2)
-        assert db.speaker_names(conn, "xiao-01", 7)[(1, 5)]["name"] == "Анна"
+        names = db.speaker_names(conn, "xiao-01", 7)
+    assert names[(1, 5)]["name"] == "Анна" and names[(1, 4)]["name"] == "Борис"
 
 
 def test_second_pass_of_the_same_version_keeps_names_without_a_print(env, monkeypatch):
@@ -914,3 +928,64 @@ def test_second_pass_of_the_same_version_keeps_names_without_a_print(env, monkey
         vp.remember_part(conn, KEY, "part.flac", [], version)
         vp.remember_part(conn, KEY, "part.flac", [], version)
         assert db.speaker_names(conn, "xiao-01", 7)[(1, 3)]["name"] == "Мария"
+
+
+
+def test_late_backfill_with_nothing_to_carry_leaves_the_move_to_the_worker(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    upload(env)
+    run_all(env)
+    db = env.db
+    igor, maria = [1.0, 0, 0], [0, 1.0, 0]
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, KEY, {0: (vp.pack(igor), 9.0), 1: (vp.pack(maria), 9.0)})
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+        db.set_speaker(conn, "xiao-01", 7, 1, 1, "Мария", False)
+        conn.execute("UPDATE transcripts SET updated_at = ?", (V3,))
+        conn.commit()
+    # Во второй версии Мария говорила мало — отпечатка нет; под вторую версию
+    # никто ничего не вписывал, переносить запоздалому проходу нечего.
+    monkeypatch.setattr(vp, "embed_part", lambda path, utterances: {
+        3: (vp.normalized([0.97, 0.05, 0]), 9.0)})
+    with closing(db.connect()) as conn:
+        vp.remember_part(conn, KEY, "part.flac", [], V2)
+    # Воркер третьей версии переносит обоих прямо со старых отпечатков.
+    monkeypatch.setattr(vp, "embed_part", lambda path, utterances: {
+        6: (vp.normalized([0.96, 0.08, 0]), 9.0), 7: (vp.normalized([0.05, 0.97, 0]), 9.0)})
+    with closing(db.connect()) as conn:
+        vp.remember_part(conn, KEY, "part.flac", [], V3)
+        assert db.speaker_names(conn, "xiao-01", 7) == {
+            (1, 6): {"name": "Игорь", "is_me": False, "auto": False},
+            (1, 7): {"name": "Мария", "is_me": False, "auto": False}}
+
+
+def test_late_backfill_blocked_by_a_current_name_loses_names_of_its_own_version(
+        env, monkeypatch):
+    # Один набор отпечатков на часть: здесь одно имя теряется при любом
+    # порядке. Закреплено, какое: вписанное под промежуточную версию.
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    upload(env)
+    run_all(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, KEY, {0: (vp.pack([1.0, 0, 0]), 9.0)})
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+        conn.execute("UPDATE transcripts SET updated_at = ?", (V2,))
+        conn.commit()
+        db.set_speaker(conn, "xiao-01", 7, 1, 4, "Мария", False)     # вписано под вторую
+        conn.execute("UPDATE transcripts SET updated_at = ?", (V3,))
+        conn.commit()
+        db.set_speaker(conn, "xiao-01", 7, 1, 1, "Пётр", False)      # вписано под третью
+    monkeypatch.setattr(vp, "embed_part", lambda path, utterances: {
+        1: (vp.normalized([0.97, 0.05, 0]), 9.0), 4: (vp.normalized([0, 1.0, 0]), 9.0)})
+    with closing(db.connect()) as conn:
+        vp.remember_part(conn, KEY, "part.flac", [], V2)
+    monkeypatch.setattr(vp, "embed_part", lambda path, utterances: {
+        1: (vp.normalized([0, 0, 1.0]), 9.0), 2: (vp.normalized([0.96, 0.08, 0]), 9.0)})
+    with closing(db.connect()) as conn:
+        vp.remember_part(conn, KEY, "part.flac", [], V3)
+        assert db.speaker_names(conn, "xiao-01", 7) == {
+            (1, 1): {"name": "Пётр", "is_me": False, "auto": False},
+            (1, 2): {"name": "Игорь", "is_me": False, "auto": False}}

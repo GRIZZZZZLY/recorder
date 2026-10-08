@@ -715,18 +715,27 @@ def replace_part_prints(conn, key, prints, version, mapper):
             return
         old = part_prints(conn, key)
         moves = mapper(old) if old else {}
-        if old and version is not None and current is not None and version != current:
-            # Запоздалый --backfill прежней версии. Если имя по его переносу
-            # легло бы на номер, который владелец уже назвал под текущей
-            # версией, — имя пропало бы. Не кладём: воркер текущей версии
-            # перенесёт имена сам, прямо со старых отпечатков.
+        if version is not None and current is not None and version != current:
+            # Запоздалый --backfill прежней версии: текущую воркер обработает
+            # сам, прямо со старых отпечатков. Писать стоит, только если есть
+            # имена, вписанные под эту прежнюю версию, — кроме неё их никто не
+            # перенесёт. Иначе запоздалый проход только навредил бы: снял бы
+            # имена людей, у которых в его версии нет отпечатка.
+            owned = conn.execute(
+                "SELECT 1 FROM speaker_names WHERE device_id=? AND session=? AND part=?"
+                " AND auto=0 AND transcript_at IS ? LIMIT 1", (*key, version)).fetchone()
             targets = {moves.get(row["speaker"]) for row in conn.execute(
                 "SELECT speaker FROM speaker_names WHERE device_id=? AND session=? AND part=?"
-                " AND auto=0 AND transcript_at IS ?", (*key, old_version["transcript_at"]))}
+                " AND auto=0 AND transcript_at IS ?",
+                (*key, old_version["transcript_at"] if old_version else None))} if old else set()
             held = {row["speaker"] for row in conn.execute(
                 "SELECT speaker FROM speaker_names WHERE device_id=? AND session=? AND part=?"
                 " AND auto=0 AND transcript_at IS ?", (*key, current))}
-            if (targets - {None}) & held:
+            # Перенос лёг бы на номер, названный владельцем под текущую версию, —
+            # тоже не пишем. Отпечатки на часть одни, поэтому здесь одно имя
+            # теряется при любом порядке: теряются имена промежуточной версии
+            # (воркер их снимет), а старые и текущие остаются.
+            if not owned or (targets - {None}) & held:
                 conn.rollback()
                 return
         _save_prints(conn, key, prints, version)
