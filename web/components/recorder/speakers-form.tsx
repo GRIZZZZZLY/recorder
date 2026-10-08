@@ -5,7 +5,7 @@ import { Card, Row, Section } from "@/components/recorder/list";
 import { Button } from "@/components/recorder/ui";
 import { apiPost } from "@/lib/api";
 
-type Speaker = { part: number; speaker: number; name: string; is_me: boolean };
+type Speaker = { part: number; speaker: number; name: string; is_me: boolean; auto: boolean };
 
 /** Ключ разметки. Номер говорящего принадлежит своей части: части уходят
  *  в распознавание поодиночке, и «первый» во второй части — уже другой голос. */
@@ -97,6 +97,12 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
                   setNames((old) => ({ ...old, [key]: event.target.value }))}
                 className="min-w-0 flex-1 rounded-inner bg-transparent px-2 py-1 text-row text-text-primary transition-colors placeholder:text-text-tertiary hover:bg-hairline max-md:min-h-11"
               />
+              {speaker.auto && name === speaker.name && (
+                <span className="shrink-0 text-micro text-text-tertiary"
+                      title="Имя поставлено по сходству голоса с теми, кого вы уже называли. Неверно — исправьте или сотрите.">
+                  по голосу
+                </span>
+              )}
               <MeSwitch value={key} current={me} onChange={setMe} />
             </Row>
           );
@@ -108,6 +114,7 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
           {manyParts
             ? "Номера — метки диаризации внутри своей части, между частями не совпадают."
             : "Номера — метки диаризации, транскрипт не меняется."}
+          {speakers.some((s) => s.auto) && " «По голосу» — догадка: сохраните исправление, и она станет вашим именем."}
         </span>
       </div>
       {error ? <p className="rise-in px-1 text-note text-accent-text">{error}</p> : null}

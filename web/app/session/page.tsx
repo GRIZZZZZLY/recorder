@@ -46,7 +46,7 @@ type Detail = {
   summary_error: string | null;
   timeline: Utterance[];
   marks: Mark[];
-  speakers: { part: number; speaker: number; name: string; is_me: boolean }[];
+  speakers: { part: number; speaker: number; name: string; is_me: boolean; auto: boolean }[];
   tasks: Task[];
   questions: Question[];
 };

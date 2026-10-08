@@ -194,3 +194,47 @@ def test_backfill_prints_old_parts_and_names_known_voices(env, monkeypatch):
         assert vp.backfill(conn) == 2
         assert vp.backfill(conn) == 0                # повтор ничего не делает
         assert env.db.speaker_names(conn, "xiao-01", 8)[(1, 1)]["name"] == "Игорь"
+
+
+def test_untouched_fields_stay_guesses_and_edits_become_the_owners(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    upload(env)
+    run_all(env)
+    with closing(env.db.connect()) as conn:
+        env.db.set_auto_names(conn, "xiao-01", 7, {(1, 0): "Игорь", (1, 1): "Мария"})
+    url = "/api/ui/sessions/xiao-01/7/speakers"
+    with TestClient(env.app) as client:
+        body = client.get("/api/ui/sessions/xiao-01/7", auth=AUTH).json()
+        assert body["speakers"][0] == {"part": 1, "speaker": 0, "name": "Игорь",
+                                       "is_me": False, "auto": True}
+        # Форма шлёт все поля как есть — это не подтверждение, и пустое поле
+        # без имени не запрещает узнавание.
+        client.post(url, auth=AUTH, json={"names": {"1:0": "Игорь", "1:1": "Мария",
+                                                    "1:2": ""}, "me": None})
+        with closing(env.db.connect()) as conn:
+            assert env.db.speaker_names(conn, "xiao-01", 7) == {
+                (1, 0): {"name": "Игорь", "is_me": False, "auto": True},
+                (1, 1): {"name": "Мария", "is_me": False, "auto": True}}
+        # Исправленное имя — слово владельца; стёртое — тоже: номер больше не подписываем.
+        client.post(url, auth=AUTH, json={"names": {"1:0": "Пётр", "1:1": ""}, "me": None})
+    with closing(env.db.connect()) as conn:
+        assert env.db.speaker_names(conn, "xiao-01", 7) == {
+            (1, 0): {"name": "Пётр", "is_me": False, "auto": False},
+            (1, 1): {"name": "", "is_me": False, "auto": False}}
+
+
+def test_naming_one_label_names_the_same_voice_across_the_session(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    voices(monkeypatch, {(7, 1): {0: [1, 0, 0], 1: [0, 1, 0]}, (7, 2): {0: [0.97, 0.05, 0]}})
+    upload(env, part=1)
+    upload(env, part=2, marker=2)
+    run_all(env)
+    with TestClient(env.app) as client:
+        client.post("/api/ui/sessions/xiao-01/7/speakers", auth=AUTH,
+                    json={"names": {"1:0": "Игорь"}, "me": "1:0"})
+        body = client.get("/api/ui/sessions/xiao-01/7", auth=AUTH).json()
+    by_key = {(s["part"], s["speaker"]): s for s in body["speakers"]}
+    assert by_key[(2, 0)]["name"] == "Игорь" and by_key[(2, 0)]["auto"] is True
+    assert by_key[(1, 1)]["name"] == ""

@@ -216,8 +216,9 @@ def test_session_detail_carries_timeline_summary_and_tasks(env, monkeypatch):
     assert body["tasks"][0]["text"] == "Выслать смету"
     # Номер говорящего идёт вместе со своей частью: в другой части тот же
     # номер — другой человек.
-    assert body["speakers"] == [{"part": 1, "speaker": 0, "name": "", "is_me": False},
-                                {"part": 1, "speaker": 1, "name": "", "is_me": False}]
+    assert body["speakers"] == [
+        {"part": 1, "speaker": 0, "name": "", "is_me": False, "auto": False},
+        {"part": 1, "speaker": 1, "name": "", "is_me": False, "auto": False}]
 
 
 def test_session_detail_places_each_part_on_the_session_scale(env, monkeypatch):

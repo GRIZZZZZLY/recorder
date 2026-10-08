@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import db
+import voiceprint
 from auth import owner
 
 router = APIRouter(prefix="/api/ui")
@@ -134,7 +135,8 @@ def session_detail(device_id: str, session: int, _=Depends(owner)):
         "marks": marks,
         "speakers": [{"part": part, "speaker": speaker,
                       "name": names.get((part, speaker), {}).get("name", ""),
-                      "is_me": bool(names.get((part, speaker), {}).get("is_me"))}
+                      "is_me": bool(names.get((part, speaker), {}).get("is_me")),
+                      "auto": bool(names.get((part, speaker), {}).get("auto"))}
                      for part, speaker in speakers],
         "tasks": tasks,
         "questions": questions,
@@ -165,10 +167,22 @@ def delete_session(device_id: str, session: int, _=Depends(owner)):
 def save_speakers(device_id: str, session: int, body: Speakers, _=Depends(owner)):
     me = _speaker_key(body.me) if body.me else None
     with closing(db.connect()) as conn:
+        shown = db.speaker_names(conn, device_id, session)
         for key, name in body.names.items():
             part, speaker = _speaker_key(key)
-            db.set_speaker(conn, device_id, session, part, speaker, name[:60],
-                           me == (part, speaker))
+            current = shown.get((part, speaker))
+            is_me = me == (part, speaker)
+            # Форма шлёт все поля. Поле, которое владелец не трогал, — не
+            # подтверждение: имя по голосу ушло бы в профиль человека, даже
+            # если оно ошибочное, а пустое поле навсегда запретило бы узнавать
+            # этот номер.
+            if ((current is None or current["auto"]) and not is_me
+                    and name[:60].strip() == (current["name"] if current else "")):
+                continue
+            db.set_speaker(conn, device_id, session, part, speaker, name[:60], is_me)
+        # Новое имя владельца — новый образец голоса: подписываем остальные
+        # номера сессии сразу, не дожидаясь следующей записи.
+        voiceprint.refresh_session(conn, device_id, session)
     return {"ok": True}
 
 
