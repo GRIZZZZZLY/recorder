@@ -50,6 +50,28 @@ export function groupRows(speakers: { part: number; speaker: number; name: strin
           ...shortKeys.map((k) => row([k], 0, true))];
 }
 
+/**
+ * Реплики с подписью голоса вместо номера порции. Сервер подписывает реплику
+ * «Говорящий N» по номеру внутри её части, и «Говорящий 1» в разных частях —
+ * разные люди: доли речи складывались бы не по людям. Здесь подпись та же, что
+ * в списке имён: имя, «Голос N» по порядку голосов или «Без имени» для коротких
+ * реплик. Реплика без номера остаётся как была.
+ */
+export function withVoiceLabels<T extends { part: number; speaker: number | null; label: string }>(
+  timeline: T[], rows: GroupRow[]): T[] {
+  const labels = new Map<string, string>();
+  rows.filter((r) => !r.short).forEach((row, index) => {
+    for (const key of row.keys) labels.set(key, row.name || `Голос ${index + 1}`);
+  });
+  for (const row of rows.filter((r) => r.short)) {
+    for (const key of row.keys) labels.set(key, row.name || "Без имени");
+  }
+  return timeline.map((u) => {
+    const label = u.speaker === null ? undefined : labels.get(`${u.part}:${u.speaker}`);
+    return label && label !== u.label ? { ...u, label } : u;
+  });
+}
+
 /** Имена строк-групп — на все номера группы: назвали голос, подписаны все его номера. */
 export function expandNames(rows: { key: string; keys: string[] }[],
                             names: Record<string, string>): Record<string, string> {

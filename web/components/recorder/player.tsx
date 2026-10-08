@@ -435,6 +435,10 @@ export function PlayerProvider({ deviceId, session, title, parts, marks = [], ch
         {/* В DOM плеер стоит перед содержимым: с клавиатуры до него несколько
             нажатий Tab, а не сотни реплик часового разговора. На экране он
             по-прежнему внизу. */}
+        {/* Подложка под плеер: размытие до низа окна, чтобы текст страницы не
+            проезжал в щели под плеером. Только на десктопе — на телефоне плеер
+            стоит вплотную к панели разделов. */}
+        <div aria-hidden className="recorder-player-veil" />
         <div className={cx("recorder-player player-in fixed z-20 flex items-center", compact && scrub === null && "is-compact")}>
           {/* «↑ к пункту» — над плеером, пока пункт, с которого ушли к
               реплике-основанию, вне экрана. */}

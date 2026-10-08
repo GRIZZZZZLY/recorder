@@ -850,6 +850,45 @@ input:not([type="checkbox"]):not([type="radio"]):not(.recorder-bare) {
   box-shadow: 0 0 0 3px rgb(17 20 22 / 0.73), inset 0 1px rgb(233 222 196 / 0.19), inset 0 -1px rgb(0 0 0 / 0.67), 0 15px 38px rgb(0 0 0 / 0.53);
 }
 
+@media (min-width: 1024px) {
+  /* Плеер висит над низом окна (корпус и щель — около 130 px): без этого
+   * отступа конец любой страницы с плеером уходил под него. */
+  html:has(.recorder-player) #content {
+    padding-bottom: 10rem;
+  }
+
+  /* Раскрытый список имён длиннее окна: прилипшая колонка не давала бы
+   * докрутить до его низа. Пока он раскрыт, колонка едет со страницей. */
+  .session-aside:has(> details[open]) {
+    position: static;
+  }
+}
+
+/* Подложка под плеером: от края боковой панели до края окна и до низа.
+ * Высота — щель под плеером (25 px) с запасом на сам корпус и плавный край
+ * сверху: размытие нарастает за 48 px, а не обрывается линией. */
+.recorder-player-veil {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .recorder-player-veil {
+    display: block;
+    position: fixed;
+    z-index: 19;
+    left: 235px;
+    right: 0;
+    bottom: 0;
+    height: 172px;
+    pointer-events: none;
+    background: linear-gradient(to bottom, rgb(21 22 23 / 0) 0, rgb(21 22 23 / 0.72) 48px);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 48px);
+    mask-image: linear-gradient(to bottom, transparent 0, #000 48px);
+  }
+}
+
 /* Решётка динамика слева от клавиши. */
 .recorder-player::before {
   content: "";

@@ -14,7 +14,7 @@ import { Empty, EmptyNote, Failed, Loading } from "@/components/recorder/states"
 import { Button, Dot, EvidenceTime, Retry, SourceNote, Tag } from "@/components/recorder/ui";
 import { useApi } from "@/lib/use-api";
 import { revealUtterance } from "@/lib/reveal";
-import { groupRows, nameCounts } from "@/lib/speakers";
+import { groupRows, nameCounts, withVoiceLabels } from "@/lib/speakers";
 import { statusTone } from "@/lib/session-status";
 import { minutesSince, useNow } from "@/lib/use-now";
 import { ApiError, apiDelete, apiPost } from "@/lib/api";
@@ -706,7 +706,10 @@ function Content({ data, reload }: { data: Detail; reload: () => void }) {
 
         {/* Боковая колонка на десктопе; на телефоне она идёт до транскрипта:
             «это я» и имена говорящих не должны прятаться за сотней реплик. */}
-        <div className="flex min-w-0 flex-col gap-6 lg:sticky lg:top-6 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-start">
+        {/* Свёрнутая колонка прилипает к экрану; раскрытый список имён длиннее
+            окна, поэтому тогда она едет вместе со страницей (session-aside в
+            styles/studio.css) — иначе её низ был недостижим. */}
+        <div className="session-aside flex min-w-0 flex-col gap-6 lg:sticky lg:top-6 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-start">
           {/* Говорящие — не чтение: свёрнуты, но сами говорят, есть ли в них
               дело («1 голос без имени»). Доли речи — там же, к именам. */}
           <details className="group flex flex-col gap-6">
@@ -758,8 +761,14 @@ function Body() {
   const deviceId = params.get("d") ?? "";
   const session = Number(params.get("n") ?? 0);
   const ready = Boolean(deviceId) && Number.isFinite(session) && session > 0;
-  const { data, error, loading, reload } =
+  const { data: raw, error, loading, reload } =
     useApi<Detail>(ready ? `/sessions/${encodeURIComponent(deviceId)}/${session}` : null);
+  // Реплики подписаны голосом, а не номером порции: «Говорящий 1» в разных
+  // частях — разные люди, и доли речи, транскрипт и плеер путали бы их.
+  const data = useMemo(() => raw && {
+    ...raw,
+    timeline: withVoiceLabels(raw.timeline, groupRows(raw.speakers, raw.voice_groups, raw.short_keys)),
+  }, [raw]);
 
   if (!ready) return <Empty title="Сессия не указана" text="Откройте запись из списка." />;
   if (error) {

@@ -141,3 +141,23 @@ test("«это я» и пометка «по голосу» работают и 
   assert.deepEqual(pickMe([group], { "1:0": "Мария" }, { "1:0": "Мария" }, "", "1:0", "Игорь", null).names,
                    { "1:0": "Игорь" });
 });
+
+test("реплики подписаны голосом, а не номером порции", async () => {
+  const { groupRows, withVoiceLabels } = await import("./speakers.ts");
+  const speakers = [
+    { part: 1, speaker: 0, name: "", is_me: false, auto: false },
+    { part: 1, speaker: 10, name: "", is_me: false, auto: false },
+    { part: 2, speaker: 0, name: "Мария", is_me: false, auto: false },
+    { part: 2, speaker: 4, name: "", is_me: false, auto: false },
+  ];
+  const rows = groupRows(speakers, [{ keys: ["1:0", "1:10"], seconds: 600 },
+                                    { keys: ["2:0"], seconds: 60 }], ["2:4"]);
+  const timeline = [
+    { part: 1, speaker: 0, label: "Говорящий 1" }, { part: 1, speaker: 10, label: "Говорящий 11" },
+    { part: 2, speaker: 0, label: "Мария" }, { part: 2, speaker: 4, label: "Говорящий 5" },
+    { part: 2, speaker: null, label: "Говорящий ?" },
+  ];
+  // «Говорящий 1» части 1 и части 2 — разные люди; один человек — один голос.
+  assert.deepEqual(withVoiceLabels(timeline, rows).map((u) => u.label),
+                   ["Голос 1", "Голос 1", "Мария", "Без имени", "Говорящий ?"]);
+});
