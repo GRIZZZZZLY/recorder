@@ -267,6 +267,11 @@ def init_storage():
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     with closing(connect()) as conn:
         conn.executescript(SCHEMA)
+        # Все переделки старой базы — под одной блокировкой и одной транзакцией:
+        # сайт и воркер стартуют вместе, и без блокировки второй проверил бы
+        # столбцы до того, как первый их добавил, и упал на повторном ALTER.
+        # SQLite откатывает DDL, так что падение посреди не оставит полработы.
+        conn.execute("BEGIN IMMEDIATE")
         # CREATE TABLE IF NOT EXISTS не добавляет колонки в уже существующую
         # таблицу. У частей, принятых до появления колонки, останется NULL —
         # интерфейс и очередь это переживают.
@@ -297,9 +302,8 @@ def init_storage():
         speaker_columns = {row["name"]
                            for row in conn.execute("PRAGMA table_info(speaker_names)")}
         if speaker_columns and "part" not in speaker_columns:
-            # Явная транзакция: SQLite умеет откатывать DDL, а без неё падение
-            # между DROP и RENAME оставило бы владельца без разметки.
-            conn.execute("BEGIN IMMEDIATE")
+            # Внутри общей транзакции миграции: падение между DROP и RENAME
+            # откатится и не оставит владельца без разметки.
             conn.execute(
                 "CREATE TABLE speaker_names_new ("
                 " device_id TEXT NOT NULL, session INTEGER NOT NULL,"
@@ -322,13 +326,10 @@ def init_storage():
         if "auto" not in speaker_columns:
             conn.execute("ALTER TABLE speaker_names ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
         # Отпечатки и имена, записанные до появления версии, относятся к
-        # текущим расшифровкам. Столбец и его заполнение — одной транзакцией:
-        # падение между ними оставило бы пустые версии.
+        # текущим расшифровкам.
         for table in ("voice_prints", "speaker_names"):
             columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             if "transcript_at" not in columns:
-                if not conn.in_transaction:
-                    conn.execute("BEGIN IMMEDIATE")
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN transcript_at TEXT")
                 conn.execute(
                     f"UPDATE {table} SET transcript_at = (SELECT t.updated_at FROM transcripts t"
@@ -618,12 +619,19 @@ def save_voice_prints(conn, key, prints, version=None):
 
 def _move_names(conn, key, moves, old_version, new_version):
     device_id, session, part = key
-    moving = conn.execute(
-        "SELECT speaker, name, is_me FROM speaker_names WHERE device_id=? AND session=?"
-        " AND part=? AND auto=0 AND transcript_at IS ?", (*key, old_version)).fetchall()
-    for row in moving:
-        conn.execute("DELETE FROM speaker_names WHERE device_id=? AND session=?"
-                     " AND part=? AND speaker=? AND auto=0", (*key, row["speaker"]))
+    current = new_version if new_version is not None else transcript_version(conn, key)
+    owners = conn.execute(
+        "SELECT speaker, name, is_me, transcript_at FROM speaker_names"
+        " WHERE device_id=? AND session=? AND part=? AND auto=0", key).fetchall()
+    # Старая версия — переезжает по голосу. Текущая — вписана под новую
+    # нумерацию, остаётся. Любая другая — промежуточная расшифровка, с которой
+    # отпечатков нет: номер её не перенести, а оставить нельзя — под ним уже
+    # другой голос, и он ушёл бы в чужой профиль.
+    moving = [row for row in owners if row["transcript_at"] == old_version]
+    for row in owners:
+        if row["transcript_at"] != current or row["transcript_at"] == old_version:
+            conn.execute("DELETE FROM speaker_names WHERE device_id=? AND session=?"
+                         " AND part=? AND speaker=? AND auto=0", (*key, row["speaker"]))
     for row in moving:
         target = moves.get(row["speaker"])
         if target is None:
@@ -639,7 +647,8 @@ def _move_names(conn, key, moves, old_version, new_version):
             (device_id, session, part, target, row["name"], row["is_me"], new_version,
              *key, device_id, session),
         )
-    if moving:
+    if any(row["transcript_at"] != current or row["transcript_at"] == old_version
+           for row in owners):
         _summary_stale(conn, device_id, session)
 
 
@@ -667,6 +676,12 @@ def replace_part_prints(conn, key, prints, version, mapper):
     старые отпечатки {номер: vec} и возвращает переезды {старый: новый}."""
     conn.execute("BEGIN IMMEDIATE")
     try:
+        current = transcript_version(conn, key)
+        if version is not None and current is not None and version != current:
+            # Пока снимали отпечатки, часть расшифровали снова и воркер уже
+            # записал отпечатки новой версии: старые поверх них не кладём.
+            conn.rollback()
+            return
         old = part_prints(conn, key)
         old_version = conn.execute(
             "SELECT transcript_at FROM voice_prints WHERE device_id=? AND session=? AND part=?"

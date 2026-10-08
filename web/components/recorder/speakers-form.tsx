@@ -56,6 +56,8 @@ export function SpeakersForm({ deviceId, session, speakers, meName, onSaved }:
   });
   const [names, setNames] = useState(shown);
   const [me, setMe] = useState(shownMe);
+  // Строка, куда «это я» само подставило имя вместо догадки (см. pickMe).
+  const [filled, setFilled] = useState("");
   const manyParts = new Set(speakers.map((s) => s.part)).size > 1;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -117,7 +119,9 @@ export function SpeakersForm({ deviceId, session, speakers, meName, onSaved }:
                 )}
               </div>
               <MeSwitch value={key} current={me} onChange={(value) => {
-                setNames((old) => pickMe(speakers, shown, old, me, value, meName));
+                const picked = pickMe(speakers, shown, names, me, value, meName, filled);
+                setNames(picked.names);
+                setFilled(picked.filled);
                 setMe(value);
               }} />
             </Row>

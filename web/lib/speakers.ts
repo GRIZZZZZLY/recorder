@@ -36,20 +36,26 @@ type Row = { part: number; speaker: number; name: string; is_me: boolean; auto: 
  * На угаданной строке догадку заменяет ваше имя — из этой записи или, если
  * здесь вы ещё не отмечены, из других (meName); не известно — пустое поле.
  * Иначе сохранение записало бы чужое имя как ваше: ваш голос ушёл бы в чужой
- * профиль, а задачи того человека стали бы вашими. Если «это я» перещёлкнули
- * на другую строку, прежней строке возвращается её догадка — пока владелец
- * сам не вписал туда что-то другое.
+ * профиль, а задачи того человека стали бы вашими.
+ *
+ * filled — строка, куда имя подставила сама эта функция. Если «это я»
+ * перещёлкнули дальше, только этой строке возвращается её догадка; имя,
+ * которое владелец вписал руками, не трогаем, даже если оно совпало с его.
  */
 export function pickMe(speakers: Row[], shown: Record<string, string>, names: Record<string, string>,
-                       prevMe: string, me: string, meName: string): Record<string, string> {
+                       prevMe: string, me: string, meName: string,
+                       filled: string): { names: Record<string, string>; filled: string } {
+  if (me === prevMe) return { names, filled };
   const mine = speakers.find((s) => s.is_me && !s.auto && s.name)?.name || meName;
   const guessed = (key: string) => speakers.some((s) => `${s.part}:${s.speaker}` === key && s.auto);
   const next = { ...names };
-  if (prevMe && prevMe !== me && guessed(prevMe) && next[prevMe] === mine && shown[prevMe] !== mine) {
-    next[prevMe] = shown[prevMe] ?? "";
+  if (filled && filled === prevMe && next[prevMe] === mine) next[prevMe] = shown[prevMe] ?? "";
+  let nowFilled = "";
+  if (me && guessed(me) && next[me] === (shown[me] ?? "")) {
+    next[me] = mine;
+    nowFilled = me;
   }
-  if (me && guessed(me) && next[me] === (shown[me] ?? "")) next[me] = mine;
-  return next;
+  return { names: next, filled: nowFilled };
 }
 
 export function changedNames(shown: Record<string, string>, names: Record<string, string>,

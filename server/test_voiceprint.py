@@ -661,3 +661,109 @@ def test_page_knows_the_owners_name_from_other_recordings(env, monkeypatch):
         body = client.get("/api/ui/sessions/xiao-01/8", auth=AUTH).json()
     # «Это я» в новой записи ставит это имя, а не пустое поле.
     assert body["me_name"] == "Игорь"
+
+
+
+def test_late_backfill_does_not_overwrite_newer_prints(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    upload(env)
+    run_all(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, KEY, {5: (vp.pack([1.0, 0, 0]), 9.0)})
+        # Медленный --backfill принёс отпечатки прежней версии уже после воркера.
+        db.replace_part_prints(conn, KEY, {0: (vp.pack([0, 1.0, 0]), 9.0)},
+                               "прежняя версия", lambda old: {})
+        assert [r["speaker"] for r in db.voice_prints(conn)] == [5]
+
+
+def test_names_typed_under_a_skipped_version_are_dropped(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    upload(env)
+    run_all(env)
+    db = env.db
+    igor, maria = [1.0, 0, 0], [0, 1.0, 0]
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, KEY, {0: (vp.pack(igor), 9.0), 1: (vp.pack(maria), 9.0)})
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+        # Вторая расшифровка: отпечатки снять не вышло, владелец вписал «Пётр».
+        conn.execute("UPDATE transcripts SET updated_at = datetime('now', '+1 minute')")
+        conn.commit()
+        db.set_speaker(conn, "xiao-01", 7, 1, 2, "Пётр", False)
+        # Третья расшифровка: под номером 2 теперь голос Марии.
+        conn.execute("UPDATE transcripts SET updated_at = datetime('now', '+2 minutes')")
+        conn.commit()
+    monkeypatch.setattr(vp, "embed_part", lambda path, utterances: {
+        1: (vp.normalized([0.97, 0.05, 0]), 9.0), 2: (vp.normalized([0.05, 0.97, 0]), 9.0)})
+    with closing(db.connect()) as conn:
+        vp.remember_part(conn, KEY, "part.flac", [])
+        # Игорь переехал за голосом; «Пётр» стоял на номере версии, от которой
+        # нет отпечатков, — снят, иначе голос Марии ушёл бы в профиль Петра.
+        assert db.speaker_names(conn, "xiao-01", 7) == {
+            (1, 1): {"name": "Игорь", "is_me": False, "auto": False}}
+
+
+def test_migration_holds_the_lock_while_it_checks_columns(env, monkeypatch):
+    # Сайт и воркер стартуют вместе: проверка столбцов и их добавление — под
+    # одной блокировкой, иначе второй падает на «duplicate column name».
+    import sqlite3
+    db = env.db
+    blocked = []
+    other = sqlite3.connect(db.DB_PATH, timeout=0)
+
+    def try_write(statement):
+        if not blocked and "table_info(voice_prints)" in statement:
+            try:
+                other.execute("UPDATE parts SET bytes = bytes")
+                other.commit()
+                blocked.append(False)
+            except sqlite3.OperationalError:
+                other.rollback()
+                blocked.append(True)
+    real = db.connect
+
+    def traced():
+        conn = real()
+        conn.set_trace_callback(try_write)
+        return conn
+    monkeypatch.setattr(db, "connect", traced)
+    try:
+        db.init_storage()
+    finally:
+        other.close()
+    assert blocked == [True]
+
+
+def test_owner_names_on_a_migrated_database_follow_their_voice(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, TWO_VOICES))
+    summary_stub(env, monkeypatch)
+    upload(env)
+    run_all(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        # Живая база: обе таблицы без версии расшифровки.
+        conn.execute("DROP TABLE voice_prints")
+        conn.execute("CREATE TABLE voice_prints (device_id TEXT NOT NULL, session INTEGER NOT NULL,"
+                     " part INTEGER NOT NULL, speaker INTEGER NOT NULL, seconds REAL NOT NULL,"
+                     " vec BLOB NOT NULL, PRIMARY KEY (device_id, session, part, speaker))")
+        conn.execute("INSERT INTO voice_prints VALUES ('xiao-01', 7, 1, 0, 9.0, ?)",
+                     (vp.pack([1.0, 0, 0]),))
+        conn.execute("DROP TABLE speaker_names")
+        conn.execute("CREATE TABLE speaker_names (device_id TEXT NOT NULL, session INTEGER NOT NULL,"
+                     " part INTEGER NOT NULL, speaker INTEGER NOT NULL, name TEXT NOT NULL DEFAULT '',"
+                     " is_me INTEGER NOT NULL DEFAULT 0, auto INTEGER NOT NULL DEFAULT 0,"
+                     " PRIMARY KEY (device_id, session, part, speaker))")
+        conn.execute("INSERT INTO speaker_names VALUES ('xiao-01', 7, 1, 0, 'Игорь', 0, 0)")
+        conn.commit()
+    db.init_storage()
+    with closing(db.connect()) as conn:
+        conn.execute("UPDATE transcripts SET updated_at = datetime('now', '+1 minute')")
+        conn.commit()
+    monkeypatch.setattr(vp, "embed_part", lambda path, utterances: {
+        3: (vp.normalized([0.97, 0.05, 0]), 9.0)})
+    with closing(db.connect()) as conn:
+        vp.remember_part(conn, KEY, "part.flac", [])
+        assert db.speaker_names(conn, "xiao-01", 7) == {
+            (1, 3): {"name": "Игорь", "is_me": False, "auto": False}}
