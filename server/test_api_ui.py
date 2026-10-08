@@ -274,10 +274,12 @@ def test_speakers_are_saved_as_json(env, monkeypatch):
         assert response.status_code == 200
         body = client.get("/api/ui/sessions/xiao-01/7", auth=AUTH).json()
     assert body["timeline"][0]["label"] == "Игорь"
-    assert body["speakers"][0] == {"part": 1, "speaker": 0, "name": "Игорь", "is_me": True}
+    assert body["speakers"][0] == {"part": 1, "speaker": 0, "name": "Игорь", "is_me": True,
+                                   "auto": False}
     with closing(env.db.connect()) as conn:
         assert env.db.speaker_names(conn, "xiao-01", 7)[(1, 0)] == {"name": "Игорь",
-                                                                    "is_me": True}
+                                                                    "is_me": True,
+                                                                    "auto": False}
 
 
 def test_recording_day_is_fixed_by_the_owner_and_validated(env, monkeypatch):

@@ -127,6 +127,10 @@ CREATE TABLE IF NOT EXISTS summaries (
 -- запросом, поэтому «говорящий 0» в части 1 и «говорящий 0» в части 2 — это
 -- два разных номера, а не один человек. Считать их одним человеком значит
 -- приписать слова тому, кто их не говорил.
+--
+-- auto=1 — имя поставил сервер по сходству голоса (voiceprint.py), а не
+-- владелец. Такую строку сервер переписывает и удаляет сам; строку владельца
+-- (auto=0) — никогда.
 CREATE TABLE IF NOT EXISTS speaker_names (
     device_id TEXT    NOT NULL,
     session   INTEGER NOT NULL,
@@ -134,6 +138,19 @@ CREATE TABLE IF NOT EXISTS speaker_names (
     speaker   INTEGER NOT NULL,
     name      TEXT    NOT NULL DEFAULT '',
     is_me     INTEGER NOT NULL DEFAULT 0,
+    auto      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (device_id, session, part, speaker)
+);
+
+-- Отпечаток голоса номера говорящего: 192 числа float32 от модели CAM++.
+-- Биометрия: удаляется вместе с сессией (SESSION_TABLES).
+CREATE TABLE IF NOT EXISTS voice_prints (
+    device_id TEXT    NOT NULL,
+    session   INTEGER NOT NULL,
+    part      INTEGER NOT NULL,
+    speaker   INTEGER NOT NULL,
+    seconds   REAL    NOT NULL,
+    vec       BLOB    NOT NULL,
     PRIMARY KEY (device_id, session, part, speaker)
 );
 
@@ -288,6 +305,11 @@ def init_storage():
             )
             conn.execute("DROP TABLE speaker_names")
             conn.execute("ALTER TABLE speaker_names_new RENAME TO speaker_names")
+        # Имена, которые были до узнавания по голосу, поставил владелец.
+        speaker_columns = {row["name"]
+                           for row in conn.execute("PRAGMA table_info(speaker_names)")}
+        if "auto" not in speaker_columns:
+            conn.execute("ALTER TABLE speaker_names ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
         conn.commit()
 
 
@@ -484,11 +506,12 @@ def speaker_names(conn, device_id, session):
     Номер говорящего принадлежит своей части: Deepgram нумерует голоса внутри
     одного запроса, а части уходят к нему поодиночке."""
     rows = conn.execute(
-        "SELECT part, speaker, name, is_me FROM speaker_names"
+        "SELECT part, speaker, name, is_me, auto FROM speaker_names"
         " WHERE device_id=? AND session=?",
         (device_id, session),
     ).fetchall()
-    return {(r["part"], r["speaker"]): {"name": r["name"], "is_me": bool(r["is_me"])}
+    return {(r["part"], r["speaker"]): {"name": r["name"], "is_me": bool(r["is_me"]),
+                                        "auto": bool(r["auto"])}
             for r in rows}
 
 
@@ -510,6 +533,70 @@ def session_speakers(conn):
     return found
 
 
+def save_voice_prints(conn, key, prints):
+    """Отпечатки части заменяются целиком: после повторной расшифровки номера
+    говорящих другие, и подписи по голосу этой части уходят вместе со старыми
+    отпечатками. Имена владельца остаются. prints: {номер: (vec, секунд)}."""
+    device_id, session, part = key
+    if not session_exists(conn, device_id, session):
+        # Сессию удалили, пока часть расшифровывалась: биометрию не сохраняем.
+        return
+    conn.execute("DELETE FROM voice_prints WHERE device_id=? AND session=? AND part=?", key)
+    conn.execute("DELETE FROM speaker_names"
+                 " WHERE device_id=? AND session=? AND part=? AND auto=1", key)
+    conn.executemany(
+        "INSERT INTO voice_prints (device_id, session, part, speaker, seconds, vec)"
+        " VALUES (?,?,?,?,?,?)",
+        [(device_id, session, part, speaker, round(float(seconds), 1), blob)
+         for speaker, (blob, seconds) in prints.items()],
+    )
+    conn.commit()
+
+
+def voice_prints(conn):
+    """Все отпечатки и то, как владелец назвал их номера.
+
+    owner_name — имя от владельца ('' — стёр, NULL — не называл или имя
+    поставил сервер). has_owner_row — владелец трогал номер, в том числе стёр
+    имя: такой номер сервер не подписывает."""
+    return conn.execute(
+        "SELECT v.device_id, v.session, v.part, v.speaker, v.vec,"
+        " CASE WHEN s.auto = 0 THEN TRIM(s.name) END AS owner_name,"
+        " COALESCE(s.auto = 0, 0) AS has_owner_row"
+        " FROM voice_prints v LEFT JOIN speaker_names s"
+        "   ON s.device_id = v.device_id AND s.session = v.session"
+        "  AND s.part = v.part AND s.speaker = v.speaker"
+        " ORDER BY v.device_id, v.session, v.part, v.speaker"
+    ).fetchall()
+
+
+def set_auto_names(conn, device_id, session, names):
+    """Имена по голосу. names: {(часть, номер): имя или None — снять подпись}.
+    Строки владельца не трогаются. Возвращает число изменённых строк; если
+    что-то поменялось, саммари сессии уходит на пересборку."""
+    changed = 0
+    for (part, speaker), name in names.items():
+        key = (device_id, session, part, speaker)
+        if name:
+            cursor = conn.execute(
+                "INSERT INTO speaker_names (device_id, session, part, speaker, name, is_me, auto)"
+                " VALUES (?,?,?,?,?,0,1)"
+                " ON CONFLICT(device_id, session, part, speaker) DO UPDATE SET"
+                " name=excluded.name"
+                " WHERE speaker_names.auto = 1 AND speaker_names.name != excluded.name",
+                (*key, name),
+            )
+        else:
+            cursor = conn.execute(
+                "DELETE FROM speaker_names"
+                " WHERE device_id=? AND session=? AND part=? AND speaker=? AND auto=1", key)
+        changed += cursor.rowcount
+    if changed:
+        _summary_stale(conn, device_id, session)
+    conn.commit()
+    return changed
+
+
 def retry_part(conn, device_id, session, part):
     """Вернуть часть в очередь расшифровки. Успешную не трогаем."""
     cursor = conn.execute(
@@ -521,8 +608,8 @@ def retry_part(conn, device_id, session, part):
     return cursor.rowcount > 0
 
 
-SESSION_TABLES = ("transcripts", "summaries", "speaker_names", "tasks", "question_states",
-                  "marks", "recording_days", "transcript_fts", "parts")
+SESSION_TABLES = ("transcripts", "summaries", "speaker_names", "voice_prints", "tasks",
+                  "question_states", "marks", "recording_days", "transcript_fts", "parts")
 
 
 def delete_session(conn, device_id, session):
@@ -586,23 +673,27 @@ def device_states(conn):
         " ORDER BY device_id")]
 
 
-def set_speaker(conn, device_id, session, part, speaker, name, is_me):
-    conn.execute(
-        "INSERT INTO speaker_names (device_id, session, part, speaker, name, is_me)"
-        " VALUES (?,?,?,?,?,?)"
-        " ON CONFLICT(device_id, session, part, speaker) DO UPDATE SET"
-        " name=excluded.name, is_me=excluded.is_me",
-        (device_id, session, part, speaker, name.strip(), 1 if is_me else 0),
-    )
-    # Имя попадает в транскрипт, который читает модель: исполнитель задачи
-    # стоит там именем, а не номером. Значит, переименование делает саммари
-    # устаревшим ровно так же, как поздняя часть. parts_covered=0 возвращает
-    # сессию в очередь, next_try_at снимает паузу после прошлых неудач.
+def _summary_stale(conn, device_id, session):
+    """Имя попадает в транскрипт, который читает модель: исполнитель задачи
+    стоит там именем, а не номером. Значит, смена имени делает саммари
+    устаревшим ровно так же, как поздняя часть. parts_covered=0 возвращает
+    сессию в очередь, next_try_at снимает паузу после прошлых неудач."""
     conn.execute(
         "UPDATE summaries SET parts_covered=0, next_try_at=datetime('now')"
         " WHERE device_id=? AND session=?",
         (device_id, session),
     )
+
+
+def set_speaker(conn, device_id, session, part, speaker, name, is_me):
+    conn.execute(
+        "INSERT INTO speaker_names (device_id, session, part, speaker, name, is_me, auto)"
+        " VALUES (?,?,?,?,?,?,0)"
+        " ON CONFLICT(device_id, session, part, speaker) DO UPDATE SET"
+        " name=excluded.name, is_me=excluded.is_me, auto=0",
+        (device_id, session, part, speaker, name.strip(), 1 if is_me else 0),
+    )
+    _summary_stale(conn, device_id, session)
     conn.commit()
 
 

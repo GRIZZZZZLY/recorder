@@ -100,11 +100,11 @@ def env(tmp_path, monkeypatch):
     # проверка без подмены изложения висела там до таймаута в 900 с.
     monkeypatch.setenv("RECORDER_CLAUDE_BIN", "claude-is-not-called-in-tests")
 
-    import archive, db, duedate, textnorm, stt, transcribe, summarize
+    import archive, db, duedate, textnorm, stt, transcribe, summarize, voiceprint
     import app as app_module
     import worker
 
-    for module in (textnorm, duedate, db, stt, transcribe, archive, summarize,
+    for module in (textnorm, duedate, db, stt, transcribe, voiceprint, archive, summarize,
                    app_module, worker):
         importlib.reload(module)
     db.init_storage()
@@ -958,8 +958,9 @@ def test_old_speaker_names_survive_the_move_to_per_part_keys(env, monkeypatch):
         names = env.db.speaker_names(conn, "xiao-01", 7)
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(speaker_names)")}
     assert "part" in columns
-    assert names[(1, 0)] == {"name": "Мария", "is_me": True}
-    assert names[(2, 0)] == {"name": "Мария", "is_me": True}
+    # Разметка до переезда — слово владельца, а не догадка по голосу.
+    assert names[(1, 0)] == {"name": "Мария", "is_me": True, "auto": False}
+    assert names[(2, 0)] == {"name": "Мария", "is_me": True, "auto": False}
 
 
 def test_question_state_is_manual_and_survives_rebuild(env, monkeypatch):
