@@ -707,11 +707,32 @@ def replace_part_prints(conn, key, prints, version, mapper):
             # новых ещё нет — кладём: по ним воркер потом перенесёт имена.
             conn.rollback()
             return
+        if old_version is not None and old_version["transcript_at"] == version:
+            # Эту версию уже обработали (воркер и --backfill взяли одну часть):
+            # второй проход счёл бы имена «старыми» и снял бы те, у кого нет
+            # отпечатка.
+            conn.rollback()
+            return
         old = part_prints(conn, key)
+        moves = mapper(old) if old else {}
+        if old and version is not None and current is not None and version != current:
+            # Запоздалый --backfill прежней версии. Если имя по его переносу
+            # легло бы на номер, который владелец уже назвал под текущей
+            # версией, — имя пропало бы. Не кладём: воркер текущей версии
+            # перенесёт имена сам, прямо со старых отпечатков.
+            targets = {moves.get(row["speaker"]) for row in conn.execute(
+                "SELECT speaker FROM speaker_names WHERE device_id=? AND session=? AND part=?"
+                " AND auto=0 AND transcript_at IS ?", (*key, old_version["transcript_at"]))}
+            held = {row["speaker"] for row in conn.execute(
+                "SELECT speaker FROM speaker_names WHERE device_id=? AND session=? AND part=?"
+                " AND auto=0 AND transcript_at IS ?", (*key, current))}
+            if (targets - {None}) & held:
+                conn.rollback()
+                return
         _save_prints(conn, key, prints, version)
         # Без старых отпечатков переносить не по чему, но имена прежней
         # нумерации всё равно снимаются: под их номерами уже другие голоса.
-        _move_names(conn, key, mapper(old) if old else {},
+        _move_names(conn, key, moves,
                     old_version["transcript_at"] if old_version else _NO_VERSION, version)
         conn.commit()
     except Exception:
