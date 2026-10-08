@@ -20,6 +20,9 @@ router = APIRouter()
 # Ключ лежит в адресе страницы: без no-referrer он уходил бы чужим сайтам в
 # заголовке Referer, а поисковик, наткнувшись на ссылку, мог бы её запомнить.
 HEADERS = {"Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow"}
+# Ответы JSON не оседают в кэше браузера и прокси: закрытая ссылка не должна
+# открываться из чужой памяти, а 404/503 не должны залипать после починки.
+JSON_HEADERS = {**HEADERS, "Cache-Control": "no-store"}
 
 PART_FIELDS = ("part", "offset", "seconds", "envelope")
 UTTERANCE_FIELDS = ("part", "idx", "start", "end", "start_abs", "speaker", "label", "text")
@@ -50,13 +53,14 @@ def guest_view(view):
 
 def _gone():
     """Один ответ на всё мёртвое: по нему нельзя понять, была ли ссылка вообще."""
-    return HTTPException(404, "ссылка не работает", headers=HEADERS)
+    return HTTPException(404, "ссылка не работает", headers=JSON_HEADERS)
 
 
 def _record(conn, token):
     # Незакрытый сервер не отдаёт разговоров никому, как и владельцу (auth.verify).
     if not auth.OWNER_PASSWORD:
-        raise HTTPException(503, "RECORDER_OWNER_PASSWORD не задан, доступ закрыт")
+        raise HTTPException(503, "RECORDER_OWNER_PASSWORD не задан, доступ закрыт",
+                            headers=JSON_HEADERS)
     found = db.shared_session(conn, token)
     if found is None:
         raise _gone()
@@ -69,7 +73,7 @@ def shared_record(token: str):
         view = api_ui.session_view(conn, *_record(conn, token))
     if view is None:
         raise _gone()
-    return JSONResponse(guest_view(view), headers={**HEADERS, "Cache-Control": "no-store"})
+    return JSONResponse(guest_view(view), headers=JSON_HEADERS)
 
 
 @router.get("/share/{token}/audio/{part}")

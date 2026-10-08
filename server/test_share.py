@@ -132,6 +132,10 @@ def test_dead_links_all_answer_the_same(env, monkeypatch):
     assert len({answer.text for answer in answers}) == 1
     sounds = [as_guest(env, f"/share/{token}/audio/1") for token in (expired, closed, deleted)]
     assert [answer.status_code for answer in sounds] == [404] * 3
+    assert len({answer.text for answer in sounds}) == 1
+    for answer in answers + sounds:
+        assert answer.headers["cache-control"] == "no-store"
+        assert answer.headers["referrer-policy"] == "no-referrer"
     # Истёкшая в списке владельца не висит: она уже ничего не открывает.
     assert tokens(env) == []
 
@@ -165,6 +169,11 @@ def test_unclosed_server_shares_nothing(env, monkeypatch):
     monkeypatch.setattr(auth, "OWNER_PASSWORD", "")
     assert as_guest(env, f"/api/share/{token}").status_code == 503
     assert as_guest(env, f"/share/{token}/audio/1").status_code == 503
+    for path in (f"/api/share/{token}", f"/share/{token}/audio/1"):
+        answer = as_guest(env, path)
+        assert answer.headers["cache-control"] == "no-store", path
+        assert answer.headers["referrer-policy"] == "no-referrer", path
+        assert "noindex" in answer.headers["x-robots-tag"], path
 
 
 @pytest.fixture
@@ -181,8 +190,10 @@ def guest_site(site):
 
 def test_only_the_guest_page_opens_without_password(guest_site):
     for path in ("/shared/", "/shared/?t=abc", "/_next/app.js", "/icon.svg"):
-        assert as_guest(guest_site, path).status_code == 200, path
-    assert as_guest(guest_site, "/shared/").headers["referrer-policy"] == "no-referrer"
+        answer = as_guest(guest_site, path)
+        assert answer.status_code == 200, path
+        assert answer.headers["referrer-policy"] == "no-referrer", path
+        assert "noindex" in answer.headers["x-robots-tag"], path
 
     for path in ("/", "/records/", "/session/", "/shared/%2e%2e/records/",
                  "/_next/%2e%2e/index.html", "/nothing-here.txt"):
