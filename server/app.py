@@ -19,6 +19,7 @@ import api_ui
 import audio
 import envelope
 import login
+import share
 import static_site
 import wavfmt
 from auth import owner
@@ -373,6 +374,8 @@ app.include_router(api_ui.router)
 # Форма входа — до catch-all и без пароля: иначе за паролем оказалась бы сама
 # страница ввода пароля.
 app.include_router(login.router)
+# Ссылка гостя — без пароля и до catch-all: иначе её адреса ушли бы на форму входа.
+app.include_router(share.router)
 # Catch-all регистрируется последним из всех: /api/v1/... объявлены декораторами
 # выше в этом же файле, а значит попадают в app.router раньше него — но легко
 # забыть при следующей правке, поэтому регистрация вынесена в самый конец файла.

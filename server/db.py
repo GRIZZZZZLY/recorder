@@ -924,6 +924,16 @@ def revoke_share(conn, token):
     conn.commit()
 
 
+def shared_session(conn, token):
+    """(устройство, сессия) живой ссылки или None. Неизвестная, истёкшая и
+    закрытая ссылка неразличимы: гостю незачем знать, какая из них его."""
+    row = conn.execute(
+        "SELECT device_id, session FROM shares WHERE token=? AND expires_at > datetime('now')",
+        (token,),
+    ).fetchone()
+    return (row["device_id"], row["session"]) if row else None
+
+
 def retry_summary(conn, device_id, session):
     """Вернуть саммари в очередь. Готовое не трогаем."""
     cursor = conn.execute(

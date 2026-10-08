@@ -62,16 +62,22 @@ def loud_copy(path):
         tmp.unlink(missing_ok=True)
 
 
-@router.get("/audio/{device_id}/{session}/{part}")
-def audio(device_id: str, session: int, part: int, _=Depends(owner)):
+def serve(device_id, session, part, headers=None):
+    """Часть записи: громкая копия, если получилась, иначе исходник. Общая для
+    владельца и для ссылки гостя (share.py); `headers` — заголовки гостя."""
     with closing(db.connect()) as conn:
         found = db.audio_file(conn, device_id, session, part)
     if found is None:
-        raise HTTPException(404, "нет такой части")
+        raise HTTPException(404, "нет такой части", headers=headers)
     path, media_type = found
     loud = loud_copy(path)
     if loud is not None:
         path, media_type = loud, "audio/flac"
     # FileResponse отдаёт Range, без него Safari на iPhone не проигрывает аудио.
     # Тип берётся из расширения: часть, уже сжатая в архив, приходит как FLAC.
-    return FileResponse(path, media_type=media_type)
+    return FileResponse(path, media_type=media_type, headers=headers)
+
+
+@router.get("/audio/{device_id}/{session}/{part}")
+def audio(device_id: str, session: int, part: int, _=Depends(owner)):
+    return serve(device_id, session, part)

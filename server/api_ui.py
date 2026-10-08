@@ -81,45 +81,55 @@ def sessions(_=Depends(owner)):
 @router.get("/sessions/{device_id}/{session}")
 def session_detail(device_id: str, session: int, _=Depends(owner)):
     with closing(db.connect()) as conn:
-        parts = conn.execute(
-            "SELECT p.part, p.recovered, p.received_at, p.envelope, p.bytes, p.bytes_per_second,"
-            "       t.status AS transcript_status, t.last_error"
-            " FROM parts p LEFT JOIN transcripts t"
-            "   ON t.device_id=p.device_id AND t.session=p.session AND t.part=p.part"
-            " WHERE p.device_id=? AND p.session=? ORDER BY p.part",
-            (device_id, session),
-        ).fetchall()
-        if not parts:
-            raise HTTPException(404, "нет такой сессии")
+        view = session_view(conn, device_id, session)
+    if view is None:
+        raise HTTPException(404, "нет такой сессии")
+    return view
 
-        summary_row = conn.execute(
-            "SELECT result, status, last_error FROM summaries"
-            " WHERE device_id=? AND session=?", (device_id, session)).fetchone()
-        timeline, failed = db.session_timeline(conn, device_id, session)
-        # Та же шкала, что у реплик: плеер показывает время разговора, а не
-        # части, и сам переходит на следующую часть.
-        offsets = db.part_offsets(conn, device_id, session)
-        marks = db.session_marks(conn, device_id, session)
-        names = db.speaker_names(conn, device_id, session)
-        # «Это я» на угаданной строке ставит это имя: в новой записи своей
-        # строки «это я» ещё нет, а пустое поле стёрло бы верную догадку.
-        me_name = db.owner_display_name(conn)
-        # Список «Имена и дата» — по голосам, а не по номерам: Gemini дробит
-        # людей по 5-минутным порциям, и номеров в часовой записи бывает 77.
-        spoken = {}
-        for u in timeline:
-            if u["speaker"] is not None:
-                key = (u["part"], u["speaker"])
-                spoken[key] = spoken.get(key, 0.0) + max(0.0, u["end"] - u["start"])
-        groups, short = voiceprint.session_groups(conn, device_id, session, sorted(spoken))
-        # Номер говорящего живёт внутри своей части: части уходят в Deepgram
-        # поодиночке, и нумерация в каждой своя.
-        speakers = sorted({(u["part"], u["speaker"]) for u in timeline
-                           if u["speaker"] is not None})
-        tasks = with_source(db.task_rows(conn, only_open=False, session=session))
-        questions = [q for q in db.question_rows(conn, only_open=False)
-                     if q["device_id"] == device_id and q["session"] == session]
-        day = db.session_day(conn, device_id, session)
+
+def session_view(conn, device_id, session):
+    """Всё о записи для её страницы. None — записи нет. Ссылка для гостя
+    (share.py) берёт отсюда же и оставляет только разрешённые поля: владелец
+    и гость видят одни и те же части, реплики и имена, посчитанные одним кодом."""
+    parts = conn.execute(
+        "SELECT p.part, p.recovered, p.received_at, p.envelope, p.bytes, p.bytes_per_second,"
+        "       t.status AS transcript_status, t.last_error"
+        " FROM parts p LEFT JOIN transcripts t"
+        "   ON t.device_id=p.device_id AND t.session=p.session AND t.part=p.part"
+        " WHERE p.device_id=? AND p.session=? ORDER BY p.part",
+        (device_id, session),
+    ).fetchall()
+    if not parts:
+        return None
+
+    summary_row = conn.execute(
+        "SELECT result, status, last_error FROM summaries"
+        " WHERE device_id=? AND session=?", (device_id, session)).fetchone()
+    timeline, failed = db.session_timeline(conn, device_id, session)
+    # Та же шкала, что у реплик: плеер показывает время разговора, а не
+    # части, и сам переходит на следующую часть.
+    offsets = db.part_offsets(conn, device_id, session)
+    marks = db.session_marks(conn, device_id, session)
+    names = db.speaker_names(conn, device_id, session)
+    # «Это я» на угаданной строке ставит это имя: в новой записи своей
+    # строки «это я» ещё нет, а пустое поле стёрло бы верную догадку.
+    me_name = db.owner_display_name(conn)
+    # Список «Имена и дата» — по голосам, а не по номерам: Gemini дробит
+    # людей по 5-минутным порциям, и номеров в часовой записи бывает 77.
+    spoken = {}
+    for u in timeline:
+        if u["speaker"] is not None:
+            key = (u["part"], u["speaker"])
+            spoken[key] = spoken.get(key, 0.0) + max(0.0, u["end"] - u["start"])
+    groups, short = voiceprint.session_groups(conn, device_id, session, sorted(spoken))
+    # Номер говорящего живёт внутри своей части: части уходят в Deepgram
+    # поодиночке, и нумерация в каждой своя.
+    speakers = sorted({(u["part"], u["speaker"]) for u in timeline
+                       if u["speaker"] is not None})
+    tasks = with_source(db.task_rows(conn, only_open=False, session=session))
+    questions = [q for q in db.question_rows(conn, only_open=False)
+                 if q["device_id"] == device_id and q["session"] == session]
+    day = db.session_day(conn, device_id, session)
 
     summary = None
     if summary_row and summary_row["result"]:
