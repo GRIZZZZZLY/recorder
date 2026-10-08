@@ -238,3 +238,65 @@ def test_naming_one_label_names_the_same_voice_across_the_session(env, monkeypat
     by_key = {(s["part"], s["speaker"]): s for s in body["speakers"]}
     assert by_key[(2, 0)]["name"] == "Игорь" and by_key[(2, 0)]["auto"] is True
     assert by_key[(1, 1)]["name"] == ""
+
+
+class FakeModel:
+    """Модель-заглушка: запоминает, сколько звука ей отдали."""
+    def __init__(self):
+        self.lengths = []
+
+    def create_stream(self):
+        model = self
+
+        class Stream:
+            def accept_waveform(self, rate, samples):
+                model.lengths.append(len(samples))
+
+            def input_finished(self):
+                pass
+        return Stream()
+
+    def compute(self, stream):
+        return [1.0, 0.0, 0.0]
+
+
+def fake_model(monkeypatch, audio_seconds):
+    import numpy as np
+    model = FakeModel()
+    monkeypatch.setattr(vp, "extractor", lambda: model)
+    monkeypatch.setattr(vp, "samples",
+                        lambda path: np.zeros(int(audio_seconds * vp.RATE), np.float32))
+    return model
+
+
+def test_long_monologue_is_cut_to_bound_memory(monkeypatch):
+    model = fake_model(monkeypatch, 600)
+    prints = vp.embed_part("part.flac", [{"s": 0, "e": 590, "spk": 0, "text": "лекция"}])
+    # Память модели растёт с длиной звука: 300 с — 0,8 ГБ. Минуты хватает на отпечаток.
+    assert model.lengths == [int(vp.MAX_SEC * vp.RATE)]
+    assert prints[0][1] == vp.MAX_SEC
+
+
+def test_speech_past_the_end_of_the_audio_gives_no_print(monkeypatch):
+    # Пустой отпечаток у названного номера обнулил бы профиль человека.
+    model = fake_model(monkeypatch, 5)
+    assert vp.embed_part("part.flac", [{"s": 10, "e": 30, "spk": 0, "text": "после конца"}]) == {}
+    assert model.lengths == []
+
+
+def test_failed_model_on_retranscription_drops_old_guesses(env, monkeypatch):
+    upload(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.save_voice_prints(conn, KEY, {0: (vp.pack([1.0, 0, 0]), 9.0),
+                                         1: (vp.pack([0, 1.0, 0]), 9.0)})
+        db.set_auto_names(conn, "xiao-01", 7, {(1, 1): "Мария"})
+
+    def broken(path, utterances):
+        raise RuntimeError("модель упала")
+    monkeypatch.setattr(vp, "embed_part", broken)
+    with closing(db.connect()) as conn:
+        # Номера части уже другие: старая догадка стояла бы под чужими словами.
+        vp.remember_part(conn, KEY, "part.flac", [])
+        assert db.voice_prints(conn) == []
+        assert db.speaker_names(conn, "xiao-01", 7) == {}

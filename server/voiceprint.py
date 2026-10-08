@@ -41,6 +41,10 @@ THRESHOLD = float(os.environ.get("RECORDER_VOICE_THRESHOLD", "0.6"))
 MARGIN = float(os.environ.get("RECORDER_VOICE_MARGIN", "0.1"))
 # Меньше 8 секунд речи — отпечаток случаен; такой номер остаётся без имени.
 MIN_SEC = float(os.environ.get("RECORDER_VOICE_MIN_SEC", "8"))
+# Память модели растёт с длиной звука и после вызова не отдаётся: замер
+# 8 октября 2026 — 60 с речи 234 МБ, 300 с — 803 МБ, 600 с — 1,5 ГБ. Минуты
+# на отпечаток хватает с запасом.
+MAX_SEC = float(os.environ.get("RECORDER_VOICE_MAX_SEC", "60"))
 MIN_UTTERANCE_SEC = 0.5
 RATE = 16000
 
@@ -101,7 +105,8 @@ _extractor_failed = False
 
 
 def extractor():
-    """Модель грузится один раз на процесс (~90 МБ памяти). None — узнавание
+    """Модель грузится один раз на процесс (~90 МБ памяти, с минутой звука до
+    ~230 МБ — см. MAX_SEC). None — узнавание
     выключено; причина пишется в лог один раз. Новую модель подхватывает
     только перезапуск воркера."""
     global _extractor, _extractor_failed
@@ -154,7 +159,11 @@ def embed_part(audio_path, utterances):
     prints = {}
     for speaker, found in spans.items():
         speech = np.concatenate([audio[int(start * RATE):int(end * RATE)]
-                                 for start, end in found])
+                                 for start, end in found])[:int(MAX_SEC * RATE)]
+        if len(speech) < MIN_SEC * RATE:
+            # Время реплик вышло за конец звука. Пустой отпечаток у
+            # названного номера обнулил бы весь профиль человека.
+            continue
         stream = model.create_stream()
         stream.accept_waveform(RATE, speech)
         stream.input_finished()
@@ -184,7 +193,14 @@ def refresh_session(conn, device_id, session):
 
 def remember_part(conn, key, audio_path, utterances):
     """После расшифровки части: снять отпечатки и подписать знакомые голоса."""
-    prints = embed_part(audio_path, utterances)
+    try:
+        prints = embed_part(audio_path, utterances)
+    except Exception:
+        # Отпечатки части всё равно заменяются, пусть и пустыми: после
+        # повторной расшифровки номера другие, и старые догадки стояли бы
+        # под чужими словами.
+        log.exception("Отпечатки голоса не сняты, %s", audio_path)
+        prints = {}
     db.save_voice_prints(conn, key, {speaker: (pack(vector), seconds)
                                      for speaker, (vector, seconds) in prints.items()})
     return refresh_session(conn, key[0], key[1])

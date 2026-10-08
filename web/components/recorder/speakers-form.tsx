@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Card, Row, Section } from "@/components/recorder/list";
 import { Button } from "@/components/recorder/ui";
 import { apiPost } from "@/lib/api";
+import { changedNames } from "@/lib/speakers";
 
 type Speaker = { part: number; speaker: number; name: string; is_me: boolean; auto: boolean };
 
@@ -44,12 +45,16 @@ function MeSwitch({ value, current, onChange }: {
 
 export function SpeakersForm({ deviceId, session, speakers, onSaved }:
   { deviceId: string; session: number; speakers: Speaker[]; onSaved: () => void }) {
-  const [names, setNames] = useState(() =>
+  // То, что страница показала при загрузке: сравниваем с ним, а не шлём всё.
+  // Форма пересоздаётся при каждом новом списке говорящих (key в page.tsx).
+  const [shown] = useState(() =>
     Object.fromEntries(speakers.map((s) => [keyOf(s), s.name])));
-  const [me, setMe] = useState(() => {
+  const [shownMe] = useState(() => {
     const found = speakers.find((s) => s.is_me);
     return found ? keyOf(found) : "";
   });
+  const [names, setNames] = useState(shown);
+  const [me, setMe] = useState(shownMe);
   const manyParts = new Set(speakers.map((s) => s.part)).size > 1;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,7 +65,7 @@ export function SpeakersForm({ deviceId, session, speakers, onSaved }:
     setBusy(true);
     try {
       await apiPost(`/sessions/${encodeURIComponent(deviceId)}/${session}/speakers`,
-                    { names, me: me === "" ? null : me });
+                    { names: changedNames(shown, names, shownMe, me), me: me === "" ? null : me });
       setError(null);
       onSaved();
     } catch (err) {
