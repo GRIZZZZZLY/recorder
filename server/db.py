@@ -166,6 +166,23 @@ CREATE TABLE IF NOT EXISTS voice_prints (
     PRIMARY KEY (device_id, session, part, speaker)
 );
 
+-- Отпечаток голоса одной фразы (реплики длиннее 2 с). Gemini иногда кладёт
+-- двух людей под один номер: имя номера тогда стоит и на чужих фразах.
+-- name — человек, чей голос у фразы явно другой, чем у имени её номера;
+-- NULL — фраза подписана как её номер. Версия расшифровки — как у
+-- voice_prints. Биометрия: удаляется вместе с сессией.
+CREATE TABLE IF NOT EXISTS utterance_prints (
+    device_id     TEXT    NOT NULL,
+    session       INTEGER NOT NULL,
+    part          INTEGER NOT NULL,
+    idx           INTEGER NOT NULL,
+    speaker       INTEGER NOT NULL,
+    vec           BLOB    NOT NULL,
+    transcript_at TEXT,
+    name          TEXT,
+    PRIMARY KEY (device_id, session, part, idx)
+);
+
 -- Задачи вынесены из саммари в таблицу: у них есть ручной статус, а саммари
 -- пересобирается после поздней части. task_id считается из текста и цитаты,
 -- поэтому пересборка находит ту же строку и не теряет закрытие владельца.
@@ -665,6 +682,84 @@ def add_voice_prints(conn, key, prints, version):
     conn.commit()
 
 
+_LINE_FRESH = ("EXISTS (SELECT 1 FROM transcripts t WHERE t.device_id = u.device_id"
+               " AND t.session = u.session AND t.part = u.part AND t.status = 'done'"
+               " AND t.updated_at IS u.transcript_at)")
+
+
+def save_line_prints(conn, key, lines, version):
+    """Отпечатки фраз части — целиком, одной транзакцией. lines: {индекс
+    реплики: (номер, vec)}. Пишется, только если version — текущая версия
+    расшифровки: отпечатки снятой заново части уже не про её реплики."""
+    device_id, session, part = key
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if transcript_version(conn, key) != version:
+            conn.rollback()
+            return
+        named = conn.execute(
+            "SELECT 1 FROM utterance_prints WHERE device_id=? AND session=? AND part=?"
+            " AND name IS NOT NULL LIMIT 1", key).fetchone()
+        conn.execute("DELETE FROM utterance_prints WHERE device_id=? AND session=? AND part=?",
+                     key)
+        conn.executemany(
+            "INSERT INTO utterance_prints"
+            " (device_id, session, part, idx, speaker, vec, transcript_at)"
+            " SELECT ?, ?, ?, ?, ?, ?, ? WHERE " + _SESSION_ALIVE,
+            [(device_id, session, part, idx, speaker, blob, version, device_id, session)
+             for idx, (speaker, blob) in lines.items()],
+        )
+        if named:
+            _summary_stale(conn, device_id, session)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def line_prints(conn, device_id, session):
+    """Свежие отпечатки фраз сессии: part, idx, speaker, vec, name."""
+    return conn.execute(
+        "SELECT u.part, u.idx, u.speaker, u.vec, u.name FROM utterance_prints u"
+        " WHERE u.device_id=? AND u.session=? AND " + _LINE_FRESH +
+        " ORDER BY u.part, u.idx", (device_id, session)).fetchall()
+
+
+def parts_without_line_prints(conn):
+    """Расшифрованные части, у которых нет свежих отпечатков фраз."""
+    return conn.execute(
+        "SELECT t.device_id, t.session, t.part, t.utterances, t.updated_at, p.audio_path"
+        " FROM transcripts t JOIN parts p"
+        "   ON p.device_id = t.device_id AND p.session = t.session AND p.part = t.part"
+        " WHERE t.status = 'done' AND NOT EXISTS (SELECT 1 FROM utterance_prints u"
+        "   WHERE u.device_id = t.device_id AND u.session = t.session AND u.part = t.part"
+        "     AND u.transcript_at IS t.updated_at)"
+        " ORDER BY t.device_id, t.session, t.part").fetchall()
+
+
+def set_line_names(conn, device_id, session, names):
+    """Имена фраз по голосу. names: {(часть, индекс): имя или None}. Внутри
+    транзакции вызывающего. Возвращает число изменённых строк; если что-то
+    поменялось, саммари сессии уходит на пересборку."""
+    changed = 0
+    for (part, idx), name in names.items():
+        changed += conn.execute(
+            "UPDATE utterance_prints SET name = ?"
+            " WHERE device_id=? AND session=? AND part=? AND idx=? AND name IS NOT ?",
+            (name, device_id, session, part, idx, name)).rowcount
+    if changed:
+        _summary_stale(conn, device_id, session)
+    return changed
+
+
+def line_names(conn, device_id, session):
+    """{(часть, индекс): имя} — фразы, которые голос подписал иначе, чем номер."""
+    return {(row["part"], row["idx"]): row["name"] for row in conn.execute(
+        "SELECT u.part, u.idx, u.name FROM utterance_prints u"
+        " WHERE u.device_id=? AND u.session=? AND u.name IS NOT NULL AND " + _LINE_FRESH,
+        (device_id, session))}
+
+
 def _move_names(conn, key, moves, old_version, new_version):
     device_id, session, part = key
     keep = {new_version, transcript_version(conn, key)} - {None} or {None}
@@ -855,7 +950,8 @@ def retry_part(conn, device_id, session, part):
     return cursor.rowcount > 0
 
 
-SESSION_TABLES = ("transcripts", "summaries", "speaker_names", "voice_prints", "tasks",
+SESSION_TABLES = ("transcripts", "summaries", "speaker_names", "voice_prints",
+                  "utterance_prints", "tasks",
                   "question_states", "marks", "recording_days", "transcript_fts", "shares",
                   "parts")
 
@@ -1025,11 +1121,14 @@ def session_timeline(conn, device_id, session):
     """Реплики сессии на абсолютной шкале с подставленными именами.
 
     Возвращает (utterances, failed_parts). Каждая реплика: part, idx, start,
-    end, start_abs, speaker, label, text. Нерасшифрованные части перечислены
-    отдельно, чтобы рендер честно показал дыру.
+    end, start_abs, speaker, label, by_voice, text. by_voice — фразу подписал
+    голос, а не номер: Gemini положил её под номер другого человека.
+    Нерасшифрованные части перечислены отдельно, чтобы рендер честно показал
+    дыру.
     """
     offsets = part_offsets(conn, device_id, session)
     names = speaker_names(conn, device_id, session)
+    by_voice = line_names(conn, device_id, session)
     rows = conn.execute(
         "SELECT part, status, utterances FROM transcripts"
         " WHERE device_id=? AND session=? ORDER BY part",
@@ -1047,6 +1146,7 @@ def session_timeline(conn, device_id, session):
         for idx, u in enumerate(json.loads(row["utterances"])):
             if not u.get("text"):
                 continue
+            voice = by_voice.get((row["part"], idx))
             timeline.append({
                 "part": row["part"],
                 "idx": idx,
@@ -1054,7 +1154,8 @@ def session_timeline(conn, device_id, session):
                 "end": float(u.get("e") or 0.0),
                 "start_abs": base + float(u.get("s") or 0.0),
                 "speaker": u.get("spk"),
-                "label": speaker_label(names, row["part"], u.get("spk")),
+                "label": voice or speaker_label(names, row["part"], u.get("spk")),
+                "by_voice": voice is not None,
                 "text": u["text"],
             })
     return timeline, failed

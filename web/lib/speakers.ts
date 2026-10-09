@@ -55,9 +55,12 @@ export function groupRows(speakers: { part: number; speaker: number; name: strin
  * «Говорящий N» по номеру внутри её части, и «Говорящий 1» в разных частях —
  * разные люди: доли речи складывались бы не по людям. Здесь подпись та же, что
  * в списке имён: имя, «Голос N» по порядку голосов или «Без имени» для коротких
- * реплик. Реплика без номера остаётся как была.
+ * реплик. Реплика без номера остаётся как была, и фраза, которую сервер
+ * подписал по её собственному голосу (by_voice), — тоже: Gemini положил её
+ * под номер другого человека, и имя группы номера здесь было бы неверным.
  */
-export function withVoiceLabels<T extends { part: number; speaker: number | null; label: string }>(
+export function withVoiceLabels<T extends { part: number; speaker: number | null; label: string;
+                                            by_voice?: boolean }>(
   timeline: T[], rows: GroupRow[]): T[] {
   const labels = new Map<string, string>();
   rows.filter((r) => !r.short).forEach((row, index) => {
@@ -67,7 +70,7 @@ export function withVoiceLabels<T extends { part: number; speaker: number | null
     for (const key of row.keys) labels.set(key, row.name || "Без имени");
   }
   return timeline.map((u) => {
-    const label = u.speaker === null ? undefined : labels.get(`${u.part}:${u.speaker}`);
+    const label = u.speaker === null || u.by_voice ? undefined : labels.get(`${u.part}:${u.speaker}`);
     return label && label !== u.label ? { ...u, label } : u;
   });
 }

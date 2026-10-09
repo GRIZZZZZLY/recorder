@@ -25,7 +25,10 @@ HEADERS = {"Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow"
 JSON_HEADERS = {**HEADERS, "Cache-Control": "no-store"}
 
 PART_FIELDS = ("part", "offset", "seconds", "envelope")
-UTTERANCE_FIELDS = ("part", "idx", "start", "end", "start_abs", "speaker", "label", "text")
+# by_voice: фразу подписал голос, а не номер — сайт не переименует её по
+# группе номера (withVoiceLabels в web/lib/speakers.ts).
+UTTERANCE_FIELDS = ("part", "idx", "start", "end", "start_abs", "speaker", "label", "by_voice",
+                    "text")
 # `auto` нужен сайту: имя, вписанное владельцем, побеждает догадку по голосу
 # (groupRows в web/lib/speakers.ts).
 SPEAKER_FIELDS = ("part", "speaker", "name", "auto")

@@ -1115,3 +1115,125 @@ def test_backfill_tops_up_prints_for_numbers_that_now_qualify(env, monkeypatch):
         assert db.speaker_names(conn, "xiao-01", 7)[(1, 1)] == {
             "name": "Игорь", "is_me": False, "auto": True}
         assert db.speaker_names(conn, "xiao-01", 7)[(1, 0)]["auto"] is False
+
+
+# --- фразы: голос внутри номера ---------------------------------------------
+
+THREE_LINES = {1: [(0.5, 0, "раз"), (4.0, 0, "два"), (7.5, 1, "три")]}
+
+
+def lines(monkeypatch, table):
+    """Подмена отпечатков фраз: {(сессия, часть): {индекс: (номер, вектор)}}."""
+    def embed(path, utterances):
+        name = Path(path).name
+        key = (int(name.split("_S")[1][:4]), int(name.split("_P")[1][:2]))
+        return {idx: (speaker, vp.normalized(vector))
+                for idx, (speaker, vector) in table.get(key, {}).items()}
+    monkeypatch.setattr(vp, "embed_lines", embed)
+
+
+def test_line_of_another_person_is_given_their_name():
+    igor, maria = vp.normalized([1, 0, 0]), vp.normalized([0, 1, 0])
+    profiles = {"Игорь": igor, "Мария": maria}
+    # Номер подписан «Игорь», а голос фразы явно Марии.
+    assert vp.line_voice(vp.normalized([0.05, 0.99, 0]), "Игорь", profiles) == "Мария"
+    # Голос свой — подпись не трогаем.
+    assert vp.line_voice(vp.normalized([0.98, 0.1, 0]), "Игорь", profiles) is None
+    # Почти поровну — не уверены, оставляем как у распознавания.
+    assert vp.line_voice(vp.normalized([0.7, 0.71, 0]), "Игорь", profiles) is None
+    # Ни на кого не похоже — тоже оставляем.
+    assert vp.line_voice(vp.normalized([0, 0, 1]), "Игорь", profiles) is None
+
+
+def test_line_of_an_unnamed_number_is_left_alone():
+    profiles = {"Мария": vp.normalized([0, 1, 0])}
+    assert vp.line_voice(vp.normalized([0, 1, 0]), None, profiles) is None
+    # Имени номера нет среди профилей (например, у человека нет отпечатка) — сравнивать не с чем.
+    assert vp.line_voice(vp.normalized([0, 1, 0]), "Пётр", profiles) is None
+
+
+def test_lines_are_corrected_in_the_transcript_and_the_summary_is_rebuilt(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, THREE_LINES))
+    summary_stub(env, monkeypatch)
+    voices(monkeypatch, {(7, 1): {0: [1, 0, 0], 1: [0, 1, 0]}})
+    lines(monkeypatch, {(7, 1): {0: (0, [0.98, 0.1, 0]), 1: (0, [0.05, 0.99, 0]),
+                                 2: (1, [0, 1, 0])}})
+    upload(env)
+    run_all(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+        db.set_speaker(conn, "xiao-01", 7, 1, 1, "Мария", False)
+        conn.execute("UPDATE summaries SET parts_covered = 1")
+        conn.commit()
+        assert vp.refresh_session(conn, "xiao-01", 7) >= 1
+        timeline, _ = db.session_timeline(conn, "xiao-01", 7)
+        covered = conn.execute("SELECT parts_covered FROM summaries WHERE session=7").fetchone()[0]
+    assert [(u["idx"], u["label"], u["by_voice"]) for u in timeline] == [
+        (0, "Игорь", False), (1, "Мария", True), (2, "Мария", False)]
+    assert covered == 0                       # в тексте для модели теперь верное имя
+
+
+def test_a_mixed_number_does_not_shield_its_own_lines(env, monkeypatch):
+    # Номер (1, 1) подписан «Игорь», но в нём в основном говорит Мария. Его
+    # отпечаток в профиле Игоря перетянул бы профиль на Марию, и чужие фразы
+    # этого же номера не нашлись бы. Профиль для фраз номера — без него самого.
+    texts = {1: [(0.5, 0, "раз"), (4.0, 1, "два"), (7.5, 2, "три")]}
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, texts))
+    summary_stub(env, monkeypatch)
+    voices(monkeypatch, {(7, 1): {0: [1, 0, 0], 1: [0.2, 0.98, 0], 2: [0, 1, 0]}})
+    lines(monkeypatch, {(7, 1): {1: (1, [0.5, 0.866, 0])}})
+    upload(env)
+    run_all(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+        db.set_speaker(conn, "xiao-01", 7, 1, 1, "Игорь", False)
+        db.set_speaker(conn, "xiao-01", 7, 1, 2, "Мария", False)
+        vp.refresh_session(conn, "xiao-01", 7)
+        timeline, _ = db.session_timeline(conn, "xiao-01", 7)
+    assert {u["idx"]: u["label"] for u in timeline}[1] == "Мария"
+
+
+def test_line_prints_follow_the_transcript_version(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, THREE_LINES))
+    summary_stub(env, monkeypatch)
+    upload(env)
+    run_all(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        version = db.transcript_version(conn, KEY)
+        db.save_line_prints(conn, KEY, {0: (0, vp.pack([1.0, 0, 0])), 1: (0, vp.pack([0, 1.0, 0]))},
+                            version)
+        assert sorted(r["idx"] for r in db.line_prints(conn, "xiao-01", 7)) == [0, 1]
+        # Отпечатки другой версии не пишутся, а после новой расшифровки старые не видны.
+        db.save_line_prints(conn, KEY, {2: (1, vp.pack([0, 0, 1.0]))}, "старая версия")
+        assert sorted(r["idx"] for r in db.line_prints(conn, "xiao-01", 7)) == [0, 1]
+        conn.execute("UPDATE transcripts SET updated_at = datetime('now', '+1 minute')")
+        conn.commit()
+        assert db.line_prints(conn, "xiao-01", 7) == []
+        # Сессию удалили — отпечатков фраз не остаётся.
+        assert db.delete_session(conn, "xiao-01", 7)
+        assert conn.execute("SELECT COUNT(*) FROM utterance_prints").fetchone()[0] == 0
+
+
+def test_backfill_takes_line_prints_for_old_parts(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, THREE_LINES))
+    summary_stub(env, monkeypatch)
+    voices(monkeypatch, {(7, 1): {0: [1, 0, 0], 1: [0, 1, 0]}})
+    upload(env)
+    run_all(env)                                   # отпечатки фраз ещё не снимались
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", False)
+        db.set_speaker(conn, "xiao-01", 7, 1, 1, "Мария", False)
+    lines(monkeypatch, {(7, 1): {1: (0, [0.05, 0.99, 0])}})
+    with closing(db.connect()) as conn:
+        vp.backfill(conn)
+        timeline, _ = db.session_timeline(conn, "xiao-01", 7)
+    assert {u["idx"]: u["label"] for u in timeline}[1] == "Мария"
+
+
+def test_guest_sees_which_lines_were_corrected_by_voice():
+    import share
+    assert "by_voice" in share.UTTERANCE_FIELDS

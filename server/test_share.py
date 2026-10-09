@@ -96,7 +96,7 @@ def test_guest_sees_the_record_and_nothing_else(env, monkeypatch):
     assert set(body["parts"][0]) == {"part", "offset", "seconds", "envelope"}
     assert set(body["speakers"][0]) == {"part", "speaker", "name", "auto"}
     assert set(body["timeline"][0]) <= {"part", "idx", "start", "end", "start_abs",
-                                         "speaker", "label", "text"}
+                                         "speaker", "label", "by_voice", "text"}
     assert set(body["summary"]) <= {"summary", "topics", "decisions", "facts", "tasks",
                                      "open_questions"}
     assert body["summary"]["topics"] == ["смета для заказчика"]

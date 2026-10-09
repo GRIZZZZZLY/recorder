@@ -55,6 +55,14 @@ MIN_SEC = float(os.environ.get("RECORDER_VOICE_MIN_SEC", "3"))
 # на отпечаток хватает с запасом.
 MAX_SEC = float(os.environ.get("RECORDER_VOICE_MAX_SEC", "60"))
 MIN_UTTERANCE_SEC = 0.5
+# Фразы. Gemini иногда кладёт двух людей под один номер, и имя номера стоит на
+# чужих фразах. Замер 9 октября 2026 на 0016: 53 из 492 фраз длиннее 2 с
+# (11%) голосом явно другого названного человека; владелец прослушал 8 самых
+# явных — проверка права во всех. Правило того замера: лучший человек не тот,
+# что у номера, сходство с ним от 0,6 и на 0,15 больше, чем с именем номера.
+LINE_MIN_SEC = float(os.environ.get("RECORDER_VOICE_LINE_MIN_SEC", "2"))
+LINE_THRESHOLD = float(os.environ.get("RECORDER_VOICE_LINE_THRESHOLD", "0.6"))
+LINE_MARGIN = float(os.environ.get("RECORDER_VOICE_LINE_MARGIN", "0.15"))
 RATE = 16000
 
 
@@ -110,6 +118,19 @@ def carry_over(old, new):
             moves[before] = after
             taken.add(after)
     return moves
+
+
+def line_voice(vector, own, profiles):
+    """Чей голос у фразы, если не того, кем подписан её номер; иначе None.
+    own — имя номера (None — номер без имени: такие фразы не трогаем)."""
+    if own is None or own not in profiles:
+        return None
+    scores = sorted(((similarity(vector, centre), name) for name, centre in profiles.items()),
+                    reverse=True)
+    best_score, best = scores[0]
+    if best == own or best_score < LINE_THRESHOLD:
+        return None
+    return best if best_score - similarity(vector, profiles[own]) >= LINE_MARGIN else None
 
 
 def pack(vector):
@@ -213,6 +234,96 @@ def embed_part(audio_path, utterances):
     return prints
 
 
+def embed_lines(audio_path, utterances):
+    """{индекс реплики: (номер, отпечаток)} для реплик длиннее LINE_MIN_SEC.
+    {} — снимать нечего, узнавание выключено или звук не прочитался: фразы
+    тогда просто подписаны своим номером."""
+    wanted = [(idx, u) for idx, u in enumerate(utterances)
+              if u.get("spk") is not None
+              and float(u.get("e") or 0) - float(u.get("s") or 0) >= LINE_MIN_SEC]
+    if not wanted:
+        return {}
+    model = extractor()
+    audio = samples(audio_path) if model is not None else None
+    if audio is None:
+        return {}
+    prints = {}
+    for idx, u in wanted:
+        speech = audio[int(float(u["s"]) * RATE):int(float(u["e"]) * RATE)][:int(MAX_SEC * RATE)]
+        if len(speech) < LINE_MIN_SEC * RATE:
+            continue
+        stream = model.create_stream()
+        stream.accept_waveform(RATE, speech)
+        stream.input_finished()
+        prints[idx] = (u["spk"], normalized(model.compute(stream)))
+    return prints
+
+
+def _profiles(rows):
+    """Профили людей по номерам, названным владельцем: {группа: (имя для
+    подписи, сумма векторов, сколько номеров, {номер: вектор})}. «Игорь» и
+    «игорь» — одна группа, имя — самое частое написание."""
+    groups = {}
+    for row in rows:
+        if row["owner_name"]:
+            group = textnorm.normalize(row["owner_name"]) or row["owner_name"]
+            spellings, members = groups.setdefault(group, (Counter(), {}))
+            spellings[row["owner_name"]] += 1
+            members[(row["device_id"], row["session"], row["part"], row["speaker"])] = \
+                unpack(row["vec"])
+    return {group: (spellings.most_common(1)[0][0], members)
+            for group, (spellings, members) in groups.items()}
+
+
+def _refresh_lines(conn, device_id, session):
+    """Подписать фразы сессии, чей голос явно другого названного человека.
+
+    Профиль имени номера строится без самого номера: в смешанном номере
+    чужой голос перетянул бы профиль на себя, и его фразы не нашлись бы. Если
+    других номеров у человека нет, профиль — этот номер."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        groups = _profiles(db.voice_prints(conn, device_id, session))
+        full = {group: centroid(list(members.values()))
+                for group, (_, members) in groups.items()}
+        display = {group: name for group, (name, _) in groups.items()}
+        names = db.speaker_names(conn, device_id, session)
+        cache, decided = {}, {}
+        for row in db.line_prints(conn, device_id, session):
+            label = (row["part"], row["speaker"])
+            own_name = (names.get(label) or {}).get("name", "").strip()
+            own = (textnorm.normalize(own_name) or own_name) if own_name else None
+            if label not in cache:
+                profiles = {display[g]: c for g, c in full.items()}
+                member = (device_id, session) + label
+                rest = [v for k, v in groups[own][1].items() if k != member]                     if own in groups and member in groups[own][1] else []
+                # Других номеров у человека нет — образец только этот номер:
+                # лучше проверять по нему, чем не проверять вовсе.
+                if rest:
+                    profiles[display[own]] = centroid(rest)
+                cache[label] = profiles
+            decided[(row["part"], row["idx"])] = line_voice(
+                unpack(row["vec"]), display.get(own), cache[label])
+        changed = db.set_line_names(conn, device_id, session, decided)
+        conn.commit()
+        return changed
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def remember_lines(conn, key, audio_path, utterances, version):
+    """Отпечатки фраз части. Сбой не мешает остальному: фразы останутся
+    подписаны своим номером."""
+    try:
+        lines = embed_lines(audio_path, utterances)
+    except Exception:
+        log.exception("Отпечатки фраз не сняты, %s", audio_path)
+        return
+    db.save_line_prints(conn, key, {idx: (speaker, pack(vector))
+                                    for idx, (speaker, vector) in lines.items()}, version)
+
+
 def refresh_session(conn, device_id, session):
     """Подписать номера сессии, которых владелец не касался. Профили — из всех
     номеров, названных владельцем, во всём архиве. Возвращает число изменений.
@@ -249,10 +360,12 @@ def refresh_session(conn, device_id, session):
                  for row in rows
                  if (row["device_id"], row["session"]) == (device_id, session)
                  and not row["has_owner_row"]}
-        return db.set_auto_names(conn, device_id, session, names)   # он же и фиксирует
+        changed = db.set_auto_names(conn, device_id, session, names)   # он же и фиксирует
     except Exception:
         conn.rollback()
         raise
+    # Фразы — после номеров: имя номера, с которым сравнивается фраза, уже новое.
+    return changed + _refresh_lines(conn, device_id, session)
 
 
 def session_groups(conn, device_id, session, keys):
@@ -365,6 +478,7 @@ def remember_part(conn, key, audio_path, utterances, version=None):
         conn, key, {speaker: (pack(vector), seconds)
                     for speaker, (vector, seconds) in prints.items()}, version,
         lambda old: carry_over({speaker: unpack(blob) for speaker, blob in old.items()}, new))
+    remember_lines(conn, key, audio_path, utterances, version)
     return refresh_session(conn, key[0], key[1])
 
 
@@ -422,6 +536,13 @@ def backfill(conn):
                                         for speaker, (vector, seconds) in prints.items()},
                             row["updated_at"])
         log.info("Отпечатки %s сессия %04d часть %02d дополнены: %d", *key, len(prints))
+    # Отпечатки фраз для частей, где их нет (часть расшифрована до проверки
+    # фраз или заново). ponytail: часть без фраз длиннее 2 с снова попадёт
+    # сюда при следующем --backfill — для разовой команды это дешевле отметки.
+    for row in db.parts_without_line_prints(conn):
+        key = (row["device_id"], row["session"], row["part"])
+        remember_lines(conn, key, row["audio_path"], json.loads(row["utterances"] or "[]"),
+                       row["updated_at"])
     for device_id, session in conn.execute(
             "SELECT DISTINCT device_id, session FROM voice_prints").fetchall():
         try:

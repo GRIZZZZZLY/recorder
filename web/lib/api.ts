@@ -125,6 +125,8 @@ export type Utterance = {
   start_abs: number;
   speaker: number | null;
   label: string;
+  /** Подпись по голосу самой фразы, а не по номеру Gemini. */
+  by_voice?: boolean;
   text: string;
 };
 

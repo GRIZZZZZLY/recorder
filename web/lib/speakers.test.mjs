@@ -161,3 +161,14 @@ test("реплики подписаны голосом, а не номером �
   assert.deepEqual(withVoiceLabels(timeline, rows).map((u) => u.label),
                    ["Голос 1", "Голос 1", "Мария", "Без имени", "Говорящий ?"]);
 });
+
+test("фразу, подписанную голосом, группа номера не переименовывает", async () => {
+  const { groupRows, withVoiceLabels } = await import("./speakers.ts");
+  const speakers = [{ part: 1, speaker: 0, name: "Игорь", is_me: false, auto: false }];
+  const rows = groupRows(speakers, [{ keys: ["1:0"], seconds: 60 }], []);
+  const timeline = [
+    { part: 1, speaker: 0, label: "Игорь", by_voice: false },
+    { part: 1, speaker: 0, label: "Мария", by_voice: true },
+  ];
+  assert.deepEqual(withVoiceLabels(timeline, rows).map((u) => u.label), ["Игорь", "Мария"]);
+});

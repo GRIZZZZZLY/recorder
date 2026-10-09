@@ -69,8 +69,13 @@ const Line = memo(function Line({ utterance, marked, active, level, shade, onPla
         {formatClock(utterance.start_abs)}
         {level !== undefined && level >= 8 ? <LevelMeter level={level} /> : null}
       </Time>
-      <span className={cx("truncate text-note", shade)}>
+      <span className={cx("truncate text-note", shade)}
+            title={utterance.by_voice ? "Распознавание записало фразу на другой номер; имя поставлено по голосу самой фразы." : undefined}>
         {utterance.label}
+        {/* Звёздочка, а не слово: колонка имён узкая, и подпись «по голосу»
+            съела бы имя. Объяснение — в подсказке. */}
+        {utterance.by_voice ? <span aria-hidden className="text-text-tertiary">*</span> : null}
+        {utterance.by_voice ? <span className="sr-only">, по голосу</span> : null}
       </span>
       <span className={cx("col-span-2 text-row leading-relaxed sm:col-span-1",
                           active && "text-text-primary")}>
