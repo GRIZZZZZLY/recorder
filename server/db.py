@@ -586,6 +586,12 @@ def speaker_names(conn, device_id, session):
             for r in rows}
 
 
+# Отпечаток фразы свежий: снят с текущей версии расшифровки своей части.
+_LINE_FRESH = ("EXISTS (SELECT 1 FROM transcripts t WHERE t.device_id = u.device_id"
+               " AND t.session = u.session AND t.part = u.part AND t.status = 'done'"
+               " AND t.updated_at IS u.transcript_at)")
+
+
 def session_speakers(conn):
     """{(устройство, сессия): [имена]} — участники разговора для списков.
 
@@ -594,10 +600,15 @@ def session_speakers(conn):
     отдаются: в списке они не помогают найти разговор.
     """
     found = {}
-    for row in conn.execute(
+    rows = conn.execute(
         "SELECT DISTINCT device_id, session, name, is_me FROM speaker_names"
         " WHERE TRIM(COALESCE(name,'')) != '' ORDER BY is_me DESC, name"
-    ):
+    ).fetchall()
+    # Человек, найденный только по голосу своих фраз, — тоже участник.
+    rows += conn.execute(
+        "SELECT DISTINCT u.device_id, u.session, u.name FROM utterance_prints u"
+        " WHERE u.name IS NOT NULL AND " + _LINE_FRESH + " ORDER BY u.name").fetchall()
+    for row in rows:
         names = found.setdefault((row["device_id"], row["session"]), [])
         if row["name"] not in names:
             names.append(row["name"])
@@ -682,9 +693,10 @@ def add_voice_prints(conn, key, prints, version):
     conn.commit()
 
 
-_LINE_FRESH = ("EXISTS (SELECT 1 FROM transcripts t WHERE t.device_id = u.device_id"
-               " AND t.session = u.session AND t.part = u.part AND t.status = 'done'"
-               " AND t.updated_at IS u.transcript_at)")
+def has_line_prints(conn, key, version):
+    return conn.execute(
+        "SELECT 1 FROM utterance_prints WHERE device_id=? AND session=? AND part=?"
+        " AND transcript_at IS ? LIMIT 1", (*key, version)).fetchone() is not None
 
 
 def save_line_prints(conn, key, lines, version):
@@ -1177,7 +1189,10 @@ def session_transcript(conn, device_id, session):
     # внутри своей части, поэтому голос — это имя от владельца или пара
     # (часть, номер): «Говорящий 1» двух частей может быть двумя людьми.
     names = speaker_names(conn, device_id, session)
-    voices = {(names.get((u["part"], u["speaker"])) or {}).get("name")
+    # Фраза, подписанная голосом, — тоже голос: Gemini дал записи один номер,
+    # а в нём говорит второй человек.
+    voices = {u["label"] if u.get("by_voice")
+              else (names.get((u["part"], u["speaker"])) or {}).get("name")
               or (u["part"], u["speaker"]) for u in timeline}
     if len(voices) == 1 and all(u["speaker"] is not None for u in timeline):
         blocks.append("[во всей записи один голос]")

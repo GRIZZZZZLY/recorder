@@ -1237,3 +1237,143 @@ def test_backfill_takes_line_prints_for_old_parts(env, monkeypatch):
 def test_guest_sees_which_lines_were_corrected_by_voice():
     import share
     assert "by_voice" in share.UTTERANCE_FIELDS
+
+
+def corrected_session(env, monkeypatch, texts=THREE_LINES, owner=(("Игорь", 0), ("Мария", 1))):
+    """Сессия 7: номер 0 — Игорь, но фраза 1 голосом Марии."""
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, texts))
+    summary_stub(env, monkeypatch)
+    present = {speaker for _, speaker, _ in texts[1]}
+    voices(monkeypatch, {(7, 1): {s: v for s, v in {0: [1, 0, 0], 1: [0, 1, 0]}.items()
+                                  if s in present}})
+    lines(monkeypatch, {(7, 1): {0: (0, [0.98, 0.1, 0]), 1: (0, [0.05, 0.99, 0])}})
+    upload(env)
+    run_all(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        for name, speaker in owner:
+            db.set_speaker(conn, "xiao-01", 7, 1, speaker, name, False)
+        vp.refresh_session(conn, "xiao-01", 7)
+    return db
+
+
+def test_a_voice_line_means_the_recording_is_not_one_voice(env, monkeypatch):
+    # Gemini дал всей записи один номер, а голос нашёл в нём второго человека:
+    # это разговор, а не заметка вслух — иначе договорённости с Марией пропадут.
+    texts = {1: [(0.5, 0, "раз"), (4.0, 0, "два")]}
+    db = corrected_session(env, monkeypatch, texts, owner=(("Игорь", 0),))
+    with closing(db.connect()) as conn:
+        # профиль Марии — из другой записи
+        upload(env, session=8)
+        db.save_voice_prints(conn, ("xiao-01", 8, 1), {0: (vp.pack([0, 1.0, 0]), 9.0)})
+        db.set_speaker(conn, "xiao-01", 8, 1, 0, "Мария", False)
+        vp.refresh_session(conn, "xiao-01", 7)
+        text = db.session_transcript(conn, "xiao-01", 7)
+    assert "Мария" in text
+    assert "[во всей записи один голос]" not in text
+
+
+def test_minutes_in_the_names_list_leave_out_lines_of_another_voice(env, monkeypatch):
+    corrected_session(env, monkeypatch)
+    with TestClient(env.app) as client:
+        body = client.get("/api/ui/sessions/xiao-01/7", auth=AUTH).json()
+    by_key = {tuple(g["keys"]): g["seconds"] for g in body["voice_groups"]}
+    assert by_key[("1:0",)] == 3.0          # фраза 1 — Мария, не Игорь
+
+
+def test_voice_names_use_this_recordings_spelling(env, monkeypatch):
+    db = corrected_session(env, monkeypatch, owner=(("Игорь", 0),))
+    with closing(db.connect()) as conn:
+        for session in (8, 9):
+            upload(env, session=session)
+            db.save_voice_prints(conn, ("xiao-01", session, 1), {0: (vp.pack([0, 1.0, 0]), 9.0)})
+            db.set_speaker(conn, "xiao-01", session, 1, 0, "Мария", False)
+        db.set_speaker(conn, "xiao-01", 7, 1, 1, "мария", False)   # здесь владелец пишет так
+        vp.refresh_session(conn, "xiao-01", 7)
+        timeline, _ = db.session_timeline(conn, "xiao-01", 7)
+    assert {u["idx"]: u["label"] for u in timeline}[1] == "мария"
+
+
+def test_session_list_names_people_found_only_by_voice(env, monkeypatch):
+    texts = {1: [(0.5, 0, "раз"), (4.0, 0, "два")]}
+    db = corrected_session(env, monkeypatch, texts, owner=(("Игорь", 0),))
+    with closing(db.connect()) as conn:
+        upload(env, session=8)
+        db.save_voice_prints(conn, ("xiao-01", 8, 1), {0: (vp.pack([0, 1.0, 0]), 9.0)})
+        db.set_speaker(conn, "xiao-01", 8, 1, 0, "Мария", False)
+        vp.refresh_session(conn, "xiao-01", 7)
+        assert "Мария" in db.session_speakers(conn)[("xiao-01", 7)]
+
+
+def test_a_failing_line_save_still_refreshes_names(env, monkeypatch):
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, THREE_LINES))
+    summary_stub(env, monkeypatch)
+    upload(env, session=8)
+    voices(monkeypatch, {(8, 1): {0: [1, 0, 0]}, (7, 1): {0: [0.98, 0.1, 0]}})
+    lines(monkeypatch, {(7, 1): {0: (0, [1, 0, 0])}})
+    run_all(env)
+    db = env.db
+    with closing(db.connect()) as conn:
+        db.set_speaker(conn, "xiao-01", 8, 1, 0, "Игорь", False)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("база занята")
+    monkeypatch.setattr(db, "save_line_prints", broken)
+    upload(env, session=7)
+    run_all(env)
+    with closing(db.connect()) as conn:
+        # Отпечатки фраз не сохранились, а подпись номера по голосу — на месте.
+        assert db.speaker_names(conn, "xiao-01", 7)[(1, 0)]["name"] == "Игорь"
+
+
+def test_saving_names_succeeds_even_if_the_line_check_fails(env, monkeypatch):
+    corrected_session(env, monkeypatch)
+
+    def broken(conn, device_id, session):
+        raise RuntimeError("сбой")
+    monkeypatch.setattr(vp, "_refresh_lines", broken)
+    with TestClient(env.app) as client:
+        response = client.post("/api/ui/sessions/xiao-01/7/speakers", auth=AUTH,
+                               json={"names": {"1:1": "Анна"}, "me": None})
+    assert response.status_code == 200
+    with closing(env.db.connect()) as conn:
+        assert env.db.speaker_names(conn, "xiao-01", 7)[(1, 1)]["name"] == "Анна"
+
+
+def test_second_pass_of_the_same_version_keeps_line_names(env, monkeypatch):
+    db = corrected_session(env, monkeypatch)
+    calls = []
+    lines_before = vp.embed_lines
+
+    def counting(path, utterances):
+        calls.append(path)
+        return lines_before(path, utterances)
+    monkeypatch.setattr(vp, "embed_lines", counting)
+    with closing(db.connect()) as conn:
+        conn.execute("UPDATE summaries SET parts_covered = 1")
+        conn.commit()
+        version = db.transcript_version(conn, KEY)
+        vp.remember_lines(conn, KEY, "xiao-01_S0007_P01.wav", [], version)
+        timeline, _ = db.session_timeline(conn, "xiao-01", 7)
+        covered = conn.execute("SELECT parts_covered FROM summaries WHERE session=7").fetchone()[0]
+    assert calls == []                        # уже сняты с этой версии — не пересъёмка
+    assert {u["idx"]: u["label"] for u in timeline}[1] == "Мария"
+    assert covered == 1
+
+
+def test_a_line_below_the_threshold_is_not_renamed():
+    profiles = {"Игорь": vp.normalized([1, 0, 0]), "Мария": vp.normalized([0, 1, 0])}
+    # Разрыв большой (0,25), но на Марию похоже слабо (0,55) — не уверены.
+    assert vp.line_voice(vp.normalized([0.3, 0.55, 0.78]), "Игорь", profiles) is None
+
+
+def test_replacing_line_prints_that_had_names_rebuilds_the_summary(env, monkeypatch):
+    db = corrected_session(env, monkeypatch)
+    with closing(db.connect()) as conn:
+        conn.execute("UPDATE summaries SET parts_covered = 1")
+        # новая версия расшифровки: прежние фразы с именами заменяются
+        conn.execute("UPDATE transcripts SET updated_at = datetime('now', '+1 minute')")
+        conn.commit()
+        db.save_line_prints(conn, KEY, {}, db.transcript_version(conn, KEY))
+        covered = conn.execute("SELECT parts_covered FROM summaries WHERE session=7").fetchone()[0]
+    assert covered == 0

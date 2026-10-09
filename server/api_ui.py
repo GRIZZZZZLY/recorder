@@ -3,6 +3,7 @@
 Адреса под /api/ui, чтобы не смешивать с /api/v1/upload — контрактом диктофона.
 """
 import json
+import logging
 from contextlib import closing
 from datetime import date
 from typing import Literal
@@ -14,6 +15,7 @@ import db
 import voiceprint
 from auth import owner
 
+log = logging.getLogger("api")
 router = APIRouter(prefix="/api/ui")
 
 
@@ -120,7 +122,10 @@ def session_view(conn, device_id, session):
     for u in timeline:
         if u["speaker"] is not None:
             key = (u["part"], u["speaker"])
-            spoken[key] = spoken.get(key, 0.0) + max(0.0, u["end"] - u["start"])
+            # Фраза другого голоса остаётся у номера в списке, но минуты
+            # идут тому, чей голос: как в «Кто сколько говорил».
+            spoken[key] = spoken.get(key, 0.0) + (
+                0.0 if u.get("by_voice") else max(0.0, u["end"] - u["start"]))
     groups, short = voiceprint.session_groups(conn, device_id, session, sorted(spoken))
     # Номер говорящего живёт внутри своей части: части уходят в Deepgram
     # поодиночке, и нумерация в каждой своя.
@@ -234,8 +239,15 @@ def save_speakers(device_id: str, session: int, body: Speakers, _=Depends(owner)
                 continue
             db.set_speaker(conn, device_id, session, part, speaker, name[:60], is_me)
         # Новое имя владельца — новый образец голоса: подписываем остальные
-        # номера сессии сразу, не дожидаясь следующей записи.
-        voiceprint.refresh_session(conn, device_id, session)
+        # номера сессии сразу, не дожидаясь следующей записи. Имена уже
+        # сохранены: сбой подписи по голосу не повод отвечать владельцу
+        # ошибкой — пересчёт повторится при следующем сохранении.
+        try:
+            voiceprint.refresh_session(conn, device_id, session)
+        except Exception:
+            log.exception("Подпись по голосу не пересчитана, %s сессия %04d", device_id, session)
+            if conn.in_transaction:
+                conn.rollback()
     return {"ok": True}
 
 

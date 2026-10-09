@@ -47,7 +47,7 @@ const Line = memo(function Line({ utterance, marked, active, level, shade, onPla
       id={id}
       type="button"
       data-line
-      aria-label={`${formatClock(utterance.start_abs)}, ${utterance.label}: ${utterance.text}`}
+      aria-label={`${formatClock(utterance.start_abs)}, ${utterance.label}${utterance.by_voice ? " (по голосу)" : ""}: ${utterance.text}`}
       onClick={() => onPlay(utterance)}
       className={cx(
         // scroll-my-24: якорь иначе прижимает реплику к самому
@@ -69,13 +69,13 @@ const Line = memo(function Line({ utterance, marked, active, level, shade, onPla
         {formatClock(utterance.start_abs)}
         {level !== undefined && level >= 8 ? <LevelMeter level={level} /> : null}
       </Time>
-      <span className={cx("truncate text-note", shade)}
+      {/* Звёздочка, а не слово: колонка имён узкая, и подпись «по голосу»
+          съела бы имя. Звёздочка вне обрезки — длинное имя её не скроет;
+          объяснение — строкой над транскриптом (подсказки на телефоне нет). */}
+      <span className={cx("flex min-w-0 text-note", shade)}
             title={utterance.by_voice ? "Распознавание записало фразу на другой номер; имя поставлено по голосу самой фразы." : undefined}>
-        {utterance.label}
-        {/* Звёздочка, а не слово: колонка имён узкая, и подпись «по голосу»
-            съела бы имя. Объяснение — в подсказке. */}
-        {utterance.by_voice ? <span aria-hidden className="text-text-tertiary">*</span> : null}
-        {utterance.by_voice ? <span className="sr-only">, по голосу</span> : null}
+        <span className="truncate">{utterance.label}</span>
+        {utterance.by_voice ? <span aria-hidden className="shrink-0 text-text-tertiary">*</span> : null}
       </span>
       <span className={cx("col-span-2 text-row leading-relaxed sm:col-span-1",
                           active && "text-text-primary")}>
@@ -155,6 +155,11 @@ export function Transcript({ timeline, marked, received }: {
   return (
     <Section id="transcript" note="Транскрипт" aside="нажмите реплику, чтобы послушать">
       <div className="flex flex-col gap-4">
+        {timeline.some((u) => u.by_voice) && (
+          <p className="px-1 text-note text-text-secondary">
+            * — имя поставлено по голосу самой фразы: распознавание записало её на номер другого человека.
+          </p>
+        )}
         {byPart.map((group, index) => (
           <div key={group.part} className="flex flex-col gap-1.5">
             {byPart.length > 1 && (

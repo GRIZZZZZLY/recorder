@@ -259,20 +259,24 @@ def embed_lines(audio_path, utterances):
     return prints
 
 
-def _profiles(rows):
+def _profiles(rows, device_id, session):
     """Профили людей по номерам, названным владельцем: {группа: (имя для
-    подписи, сумма векторов, сколько номеров, {номер: вектор})}. «Игорь» и
-    «игорь» — одна группа, имя — самое частое написание."""
+    подписи, {(устройство, сессия, часть, номер): вектор})}. «Игорь» и «игорь»
+    — одна группа. Имя для подписи — как владелец пишет его в этой записи, а
+    если здесь он его не писал — самое частое написание в архиве: иначе в
+    одном транскрипте стояли бы «Мария» и «мария» как два человека."""
     groups = {}
     for row in rows:
         if row["owner_name"]:
             group = textnorm.normalize(row["owner_name"]) or row["owner_name"]
-            spellings, members = groups.setdefault(group, (Counter(), {}))
-            spellings[row["owner_name"]] += 1
+            here, everywhere, members = groups.setdefault(group, (Counter(), Counter(), {}))
+            everywhere[row["owner_name"]] += 1
+            if (row["device_id"], row["session"]) == (device_id, session):
+                here[row["owner_name"]] += 1
             members[(row["device_id"], row["session"], row["part"], row["speaker"])] = \
                 unpack(row["vec"])
-    return {group: (spellings.most_common(1)[0][0], members)
-            for group, (spellings, members) in groups.items()}
+    return {group: ((here or everywhere).most_common(1)[0][0], members)
+            for group, (here, everywhere, members) in groups.items()}
 
 
 def _refresh_lines(conn, device_id, session):
@@ -283,7 +287,7 @@ def _refresh_lines(conn, device_id, session):
     других номеров у человека нет, профиль — этот номер."""
     conn.execute("BEGIN IMMEDIATE")
     try:
-        groups = _profiles(db.voice_prints(conn, device_id, session))
+        groups = _profiles(db.voice_prints(conn, device_id, session), device_id, session)
         full = {group: centroid(list(members.values()))
                 for group, (_, members) in groups.items()}
         display = {group: name for group, (name, _) in groups.items()}
@@ -313,15 +317,20 @@ def _refresh_lines(conn, device_id, session):
 
 
 def remember_lines(conn, key, audio_path, utterances, version):
-    """Отпечатки фраз части. Сбой не мешает остальному: фразы останутся
-    подписаны своим номером."""
+    """Отпечатки фраз части. Уже снятые с этой версии расшифровки не
+    переснимаются: второй проход (воркер и --backfill разом) только стёр бы
+    имена и пересобрал саммари. Сбой не мешает остальному: фразы останутся
+    подписаны своим номером, а номера — по голосу."""
     try:
+        if db.has_line_prints(conn, key, version):
+            return
         lines = embed_lines(audio_path, utterances)
+        db.save_line_prints(conn, key, {idx: (speaker, pack(vector))
+                                        for idx, (speaker, vector) in lines.items()}, version)
     except Exception:
         log.exception("Отпечатки фраз не сняты, %s", audio_path)
-        return
-    db.save_line_prints(conn, key, {idx: (speaker, pack(vector))
-                                    for idx, (speaker, vector) in lines.items()}, version)
+        if conn.in_transaction:
+            conn.rollback()
 
 
 def refresh_session(conn, device_id, session):
@@ -345,17 +354,9 @@ def refresh_session(conn, device_id, session):
     try:
         rows = db.voice_prints(conn, device_id, session)
         # «Игорь» и «игорь» — один человек, а не два почти одинаковых профиля,
-        # из-за которых правило разрыва не назвало бы никого. Имя для подписи —
-        # самое частое написание владельца.
-        named = {}
-        for row in rows:
-            if row["owner_name"]:
-                group = textnorm.normalize(row["owner_name"]) or row["owner_name"]
-                spellings, vectors = named.setdefault(group, (Counter(), []))
-                spellings[row["owner_name"]] += 1
-                vectors.append(unpack(row["vec"]))
-        profiles = {spellings.most_common(1)[0][0]: centroid(vectors)
-                    for spellings, vectors in named.values()}
+        # из-за которых правило разрыва не назвало бы никого (_profiles).
+        profiles = {name: centroid(list(members.values()))
+                    for name, members in _profiles(rows, device_id, session).values()}
         names = {(row["part"], row["speaker"]): best_name(unpack(row["vec"]), profiles)
                  for row in rows
                  if (row["device_id"], row["session"]) == (device_id, session)
