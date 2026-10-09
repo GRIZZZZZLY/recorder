@@ -63,6 +63,11 @@ MIN_UTTERANCE_SEC = 0.5
 LINE_MIN_SEC = float(os.environ.get("RECORDER_VOICE_LINE_MIN_SEC", "2"))
 LINE_THRESHOLD = float(os.environ.get("RECORDER_VOICE_LINE_THRESHOLD", "0.6"))
 LINE_MARGIN = float(os.environ.get("RECORDER_VOICE_LINE_MARGIN", "0.15"))
+# Подсказка в безымянной строке списка: «похоже на: Гоша». Имя не ставится —
+# решает владелец, поэтому порог ниже, чем у подписи. «Голос 11» в 0016 (одна
+# фраза 3 с, Гоша по словам владельца): 0,54 к Гоше, 0,33 к следующему.
+HINT_THRESHOLD = float(os.environ.get("RECORDER_VOICE_HINT_THRESHOLD", "0.45"))
+HINT_MARGIN = float(os.environ.get("RECORDER_VOICE_HINT_MARGIN", "0.15"))
 RATE = 16000
 
 
@@ -131,6 +136,18 @@ def line_voice(vector, own, profiles):
     if best == own or best_score < LINE_THRESHOLD:
         return None
     return best if best_score - similarity(vector, profiles[own]) >= LINE_MARGIN else None
+
+
+def voice_hint(vector, profiles):
+    """(имя, сходство) того, на кого голос заметно похож сильнее остальных,
+    или None. Только подсказка: имя ставит владелец."""
+    scores = sorted(((similarity(vector, centre), name) for name, centre in profiles.items()),
+                    reverse=True)
+    if not scores or scores[0][0] < HINT_THRESHOLD:
+        return None
+    if len(scores) > 1 and scores[0][0] - scores[1][0] < HINT_MARGIN:
+        return None
+    return scores[0][1], round(scores[0][0], 2)
 
 
 def pack(vector):
@@ -367,6 +384,26 @@ def refresh_session(conn, device_id, session):
         raise
     # Фразы — после номеров: имя номера, с которым сравнивается фраза, уже новое.
     return changed + _refresh_lines(conn, device_id, session)
+
+
+def group_hints(conn, device_id, session, groups):
+    """[подсказка или None] для каждой группы номеров, в которой ни у кого нет
+    имени: голос группы — среднее её отпечатков в этой записи."""
+    if not ENABLED:
+        return [None] * len(groups)
+    names = db.speaker_names(conn, device_id, session)
+    rows = db.voice_prints(conn, device_id, session)
+    profiles = {name: centroid(list(members.values()))
+                for name, members in _profiles(rows, device_id, session).values()}
+    here = {(row["part"], row["speaker"]): unpack(row["vec"]) for row in rows
+            if (row["device_id"], row["session"]) == (device_id, session)}
+    hints = []
+    for group in groups:
+        vectors = [here[key] for key in group if key in here]
+        named = any((names.get(key) or {}).get("name", "").strip() for key in group)
+        hints.append(None if named or not vectors or not profiles
+                     else voice_hint(centroid(vectors), profiles))
+    return hints
 
 
 def session_groups(conn, device_id, session, keys):

@@ -33,6 +33,9 @@ UTTERANCE_FIELDS = ("part", "idx", "start", "end", "start_abs", "speaker", "labe
 # (groupRows в web/lib/speakers.ts).
 SPEAKER_FIELDS = ("part", "speaker", "name", "auto")
 SUMMARY_FIELDS = ("summary", "topics", "decisions", "facts", "tasks", "open_questions")
+# Подсказки «похоже на» — догадка по голосам из других записей владельца;
+# гостю она ни к чему и показывать её нельзя.
+VOICE_GROUP_FIELDS = ("keys", "seconds")
 
 
 def _pick(row, fields):
@@ -49,7 +52,7 @@ def guest_view(view):
         "summary": _pick(summary, SUMMARY_FIELDS) if isinstance(summary, dict) else None,
         "timeline": [_pick(item, UTTERANCE_FIELDS) for item in view["timeline"]],
         "speakers": [_pick(item, SPEAKER_FIELDS) for item in view["speakers"]],
-        "voice_groups": view["voice_groups"],
+        "voice_groups": [_pick(group, VOICE_GROUP_FIELDS) for group in view["voice_groups"]],
         "short_keys": view["short_keys"],
     }
 

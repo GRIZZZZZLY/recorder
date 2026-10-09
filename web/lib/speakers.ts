@@ -17,9 +17,13 @@ export type GroupRow = {
   auto: boolean;
   is_me: boolean;
   seconds: number;
-  /** Номер без отпечатка голоса и без имени: говорил меньше 8 секунд. */
+  /** Номер без отпечатка голоса и без имени: говорил меньше 3 секунд. */
   short: boolean;
+  /** Безымянный голос заметно похож на этого человека — подсказка, не имя. */
+  hint: VoiceHint | null;
 };
+
+export type VoiceHint = { name: string; score: number };
 
 /** Самое частое имя среди строк; пусто, если имён нет. */
 function commonName(rows: Row[]): string {
@@ -36,18 +40,18 @@ function commonName(rows: Row[]): string {
  * кого-то в ней, иначе догадка по голосу.
  */
 export function groupRows(speakers: { part: number; speaker: number; name: string; is_me: boolean; auto: boolean }[],
-                          groups: { keys: string[]; seconds: number }[],
+                          groups: { keys: string[]; seconds: number; hint?: VoiceHint | null }[],
                           shortKeys: string[]): GroupRow[] {
   const byKey = new Map(speakers.map((s) => [keyOf(s), s]));
-  const row = (keys: string[], seconds: number, short: boolean): GroupRow => {
+  const row = (keys: string[], seconds: number, short: boolean, hint: VoiceHint | null): GroupRow => {
     const members = keys.map((k) => byKey.get(k)).filter((m): m is NonNullable<typeof m> => Boolean(m));
     const own = commonName(members.filter((m) => !m.auto));
     const name = own || commonName(members.filter((m) => m.auto));
     return { key: keys[0], keys, name, auto: !own && Boolean(name),
-             is_me: members.some((m) => m.is_me), seconds, short };
+             is_me: members.some((m) => m.is_me), seconds, short, hint: name ? null : hint };
   };
-  return [...groups.map((g) => row(g.keys, g.seconds, false)),
-          ...shortKeys.map((k) => row([k], 0, true))];
+  return [...groups.map((g) => row(g.keys, g.seconds, false, g.hint ?? null)),
+          ...shortKeys.map((k) => row([k], 0, true, null))];
 }
 
 /**
@@ -89,7 +93,7 @@ export function expandNames(rows: { key: string; keys: string[] }[],
  * Сколько голосов без имени и сколько имён угадано по голосу. Догадку нельзя
  * считать именем: иначе надпись о безымянных голосах пропадёт, и владелец не
  * откроет список, чтобы проверить угаданное. Короткие номера (реплики меньше
- * 8 секунд) голосами не считаются.
+ * 3 секунд) голосами не считаются.
  */
 export function nameCounts(rows: { name: string; auto: boolean; short?: boolean }[]): { unnamed: number; guessed: number } {
   const voices = rows.filter((r) => !r.short);

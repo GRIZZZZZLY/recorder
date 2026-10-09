@@ -53,8 +53,8 @@ type Detail = {
   /** Как владелец пишет своё имя (по строкам «это я» во всём архиве); пусто — не отмечал. */
   me_name: string;
   /** Номера («часть:номер»), собранные по голосу, крупные первыми. */
-  voice_groups: { keys: string[]; seconds: number }[];
-  /** Номера без отпечатка голоса и без имени: меньше 8 секунд речи. */
+  voice_groups: { keys: string[]; seconds: number; hint?: { name: string; score: number } | null }[];
+  /** Номера без отпечатка голоса и без имени: меньше 3 секунд речи. */
   short_keys: string[];
   tasks: Task[];
   questions: Question[];

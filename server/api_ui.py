@@ -127,6 +127,9 @@ def session_view(conn, device_id, session):
             spoken[key] = spoken.get(key, 0.0) + (
                 0.0 if u.get("by_voice") else max(0.0, u["end"] - u["start"]))
     groups, short = voiceprint.session_groups(conn, device_id, session, sorted(spoken))
+    # Безымянный голос, заметно похожий на одного из названных: подсказка
+    # «похоже на: Гоша» с кнопкой. Имя ставит владелец, не сервер.
+    hints = voiceprint.group_hints(conn, device_id, session, groups)
     # Номер говорящего живёт внутри своей части: части уходят в Deepgram
     # поодиночке, и нумерация в каждой своя.
     speakers = sorted({(u["part"], u["speaker"]) for u in timeline
@@ -167,7 +170,9 @@ def session_view(conn, device_id, session):
         "me_name": me_name,
         "voice_groups": sorted(
             ({"keys": [f"{part}:{speaker}" for part, speaker in group],
-              "seconds": round(sum(spoken[key] for key in group), 1)} for group in groups),
+              "seconds": round(sum(spoken[key] for key in group), 1),
+              "hint": {"name": hint[0], "score": hint[1]} if hint else None}
+             for group, hint in zip(groups, hints)),
             key=lambda group: -group["seconds"]),
         "short_keys": [f"{part}:{speaker}" for part, speaker in short],
         "tasks": tasks,

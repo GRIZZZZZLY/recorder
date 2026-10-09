@@ -172,3 +172,16 @@ test("фразу, подписанную голосом, группа номер
   ];
   assert.deepEqual(withVoiceLabels(timeline, rows).map((u) => u.label), ["Игорь", "Мария"]);
 });
+
+test("подсказка «похоже на» доходит до строки голоса, но не до названной", async () => {
+  const { groupRows } = await import("./speakers.ts");
+  const speakers = [
+    { part: 4, speaker: 8, name: "", is_me: false, auto: false },
+    { part: 1, speaker: 0, name: "Гоша", is_me: false, auto: false },
+  ];
+  const rows = groupRows(speakers, [
+    { keys: ["1:0"], seconds: 400, hint: null },
+    { keys: ["4:8"], seconds: 3.3, hint: { name: "Гоша", score: 0.54 } },
+  ], []);
+  assert.deepEqual(rows.map((r) => [r.key, r.hint?.name ?? null]), [["1:0", null], ["4:8", "Гоша"]]);
+});

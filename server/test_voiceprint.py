@@ -1062,8 +1062,9 @@ def test_session_page_gives_voice_groups_largest_first(env, monkeypatch):
     with TestClient(env.app) as client:
         body = client.get("/api/ui/sessions/xiao-01/7", auth=AUTH).json()
     # Говорящий 0 — две реплики по 3 с, говорящий 1 — одна; у 2 отпечатка нет.
-    assert body["voice_groups"] == [{"keys": ["1:0"], "seconds": 6.0},
-                                    {"keys": ["1:1"], "seconds": 3.0}]
+    # Названных в записи нет — подсказывать не с кем сравнить.
+    assert body["voice_groups"] == [{"keys": ["1:0"], "seconds": 6.0, "hint": None},
+                                    {"keys": ["1:1"], "seconds": 3.0, "hint": None}]
     assert body["short_keys"] == ["1:2"]
 
 
@@ -1377,3 +1378,40 @@ def test_replacing_line_prints_that_had_names_rebuilds_the_summary(env, monkeypa
         db.save_line_prints(conn, KEY, {}, db.transcript_version(conn, KEY))
         covered = conn.execute("SELECT parts_covered FROM summaries WHERE session=7").fetchone()[0]
     assert covered == 0
+
+
+# --- подсказка для безымянного голоса -------------------------------------------
+
+def test_unnamed_voice_gets_a_hint_when_one_person_is_clearly_ahead():
+    profiles = {"Гоша": vp.normalized([1, 0, 0]), "Игорь": vp.normalized([0, 1, 0])}
+    # Как «Голос 11» в 0016: 0,54 к Гоше, 0,33 к Игорю — подписать нельзя, подсказать можно.
+    hint = vp.voice_hint(vp.normalized([0.54, 0.33, 0.77]), profiles)
+    assert hint[0] == "Гоша" and 0.5 < hint[1] < 0.6
+    assert vp.voice_hint(vp.normalized([0.4, 0.38, 0.83]), profiles) is None   # почти поровну
+    assert vp.voice_hint(vp.normalized([0.3, 0.1, 0.95]), profiles) is None    # ни на кого
+    assert vp.voice_hint(vp.normalized([1, 0, 0]), {}) is None
+
+
+def test_names_list_carries_hints_only_for_unnamed_voices(env, monkeypatch):
+    texts = {1: [(0.5, 0, "раз"), (4.0, 1, "два"), (7.5, 2, "три")]}
+    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env, texts))
+    summary_stub(env, monkeypatch)
+    voices(monkeypatch, {(7, 1): {0: [1, 0, 0], 1: [0, 1, 0], 2: [0.54, 0.33, 0.77]}})
+    upload(env)
+    run_all(env)
+    with closing(env.db.connect()) as conn:
+        env.db.set_speaker(conn, "xiao-01", 7, 1, 0, "Гоша", False)
+        env.db.set_speaker(conn, "xiao-01", 7, 1, 1, "Игорь", False)
+    with TestClient(env.app) as client:
+        body = client.get("/api/ui/sessions/xiao-01/7", auth=AUTH).json()
+    hints = {tuple(g["keys"]): g.get("hint") for g in body["voice_groups"]}
+    assert hints[("1:2",)]["name"] == "Гоша"
+    assert hints[("1:0",)] is None and hints[("1:1",)] is None
+
+
+def test_guest_never_sees_voice_hints():
+    import share
+    view = {"day": "2026-10-09", "first_at": "x", "parts": [], "summary": None, "timeline": [],
+            "speakers": [], "short_keys": [],
+            "voice_groups": [{"keys": ["1:2"], "seconds": 3.0, "hint": {"name": "Гоша", "score": 0.54}}]}
+    assert share.guest_view(view)["voice_groups"] == [{"keys": ["1:2"], "seconds": 3.0}]

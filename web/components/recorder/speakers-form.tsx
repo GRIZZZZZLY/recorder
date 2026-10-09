@@ -116,6 +116,18 @@ export function SpeakersForm({ deviceId, session, speakers, groups, shortKeys, m
             )}
           </div>
           <span className="px-2 font-mono text-micro text-text-tertiary">{meta}</span>
+          {/* Голос заметно похож на кого-то из названных, но уверенности на
+              подпись не хватило — подсказываем, имя ставит владелец. */}
+          {row.hint && !name.trim() && (
+            <span className="flex flex-wrap items-center gap-x-2 px-2 text-micro text-text-secondary">
+              <span>похоже на: {row.hint.name} ({row.hint.score.toFixed(2).replace(".", ",")})</span>
+              <button type="button"
+                      onClick={() => setNames((old) => ({ ...old, [row.key]: row.hint!.name }))}
+                      className="hit rounded-inner px-1.5 py-0.5 text-text-primary underline decoration-hairline-strong underline-offset-2 hover:bg-hairline">
+                Это {row.hint.name}
+              </button>
+            </span>
+          )}
         </div>
         <MeSwitch value={row.key} current={me} onChange={(value) => {
           const picked = pickMe(rows, shown, names, me, value, meName, filled);
@@ -137,7 +149,7 @@ export function SpeakersForm({ deviceId, session, speakers, groups, shortKeys, m
           <summary className="cursor-pointer list-none px-1 text-note text-text-secondary [&::-webkit-details-marker]:hidden">
             {`Короткие реплики · ${count(short.length, "номер", "номера", "номеров")}`}
             <span className="block text-micro text-text-tertiary">
-              меньше 8 секунд речи — голос по ним не узнать; назовите, если важно
+              меньше 3 секунд речи — голос по ним не узнать; назовите, если важно
             </span>
           </summary>
           <Card>
