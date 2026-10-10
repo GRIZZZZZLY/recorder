@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowUpRight, BookmarkSimple, Play } from "@phosphor-icons/react/dist/ssr";
+import { ArrowUpRight, BookmarkSimple, Check, Play } from "@phosphor-icons/react/dist/ssr";
 import type { SessionRow } from "@/lib/api";
 import { startPlayback } from "@/lib/audio";
 import { count, formatDuration, formatTime, recordTitle } from "@/lib/format";
@@ -21,11 +21,17 @@ import { Waveform } from "./waveform";
  * Карточка — не одна большая ссылка: клавиша ▶ на ней настоящая и играет
  * запись сразу, а ссылка — заголовок, растянутый на всю карточку (::after).
  * Кнопка внутри ссылки была бы недопустимой разметкой.
+ *
+ * В режиме выбора (передан `onToggle`) нажатие на карточку отмечает её, а не
+ * открывает запись: заголовок становится кнопкой-переключателем, а на месте ▶
+ * встаёт отметка — звук при выборе не нужен и включался бы случайно.
  */
-export function StudioRecord({ row, compact = false }: {
+export function StudioRecord({ row, compact = false, selected = false, onToggle }: {
   row: SessionRow;
   /** На сводке карточки ниже: волна 30 px вместо 40. */
   compact?: boolean;
+  selected?: boolean;
+  onToggle?: () => void;
 }) {
   const tone = statusTone(row);
   // Отстаёт — только пока части ждут: упавшая не ждёт, о ней говорит статус.
@@ -50,7 +56,7 @@ export function StudioRecord({ row, compact = false }: {
   }
 
   return (
-    <div className="studio-record">
+    <div className={selected ? "studio-record is-selected" : "studio-record"}>
       <div className="studio-record-meta">
         <span className="studio-rec-no">REC / {String(row.session).padStart(4, "0")}</span>
         {/* Без темы имя записи уже содержит час — второй раз не нужен. */}
@@ -63,18 +69,32 @@ export function StudioRecord({ row, compact = false }: {
         )}
       </div>
       <h3>
-        <Link href={href} className="studio-record-link">{title}</Link>
-        <ArrowUpRight size={17} aria-hidden />
+        {onToggle ? (
+          <button type="button" className="studio-record-link" aria-pressed={selected} onClick={onToggle}>
+            {title}
+          </button>
+        ) : (
+          <>
+            <Link href={href} className="studio-record-link">{title}</Link>
+            <ArrowUpRight size={17} aria-hidden />
+          </>
+        )}
       </h3>
       {pending && <div className="studio-record-person">тема появится после саммари</div>}
       {row.speakers.length > 0 && (
         <div className="studio-record-person">{row.speakers.join(" · ")}</div>
       )}
       <div className="studio-record-audio">
-        <button type="button" className="studio-small-play hit" onClick={listen}
-                aria-label={`Слушать: ${title}`}>
-          <Play size={17} weight="fill" aria-hidden />
-        </button>
+        {onToggle ? (
+          <span className="studio-record-check" aria-hidden>
+            {selected ? <Check size={18} weight="bold" /> : null}
+          </span>
+        ) : (
+          <button type="button" className="studio-small-play hit" onClick={listen}
+                  aria-label={`Слушать: ${title}`}>
+            <Play size={17} weight="fill" aria-hidden />
+          </button>
+        )}
         <div className="studio-wave-preview">
           <Waveform values={row.envelope} height={compact ? 30 : 40} className="w-full" />
         </div>
