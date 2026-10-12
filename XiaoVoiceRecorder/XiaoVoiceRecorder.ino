@@ -106,6 +106,7 @@ struct Diag {
   uint32_t upload_bytes = 0;
   uint32_t upload_duration_ms = 0;
   uint32_t upload_preempted = 0;
+  uint32_t loop_gap_max_us = 0;
 };
 Diag g_diag;
 
@@ -660,6 +661,7 @@ void printDiag() {
   Serial.printf("upload_bytes          %lu\n", static_cast<unsigned long>(g_diag.upload_bytes));
   Serial.printf("upload_duration_ms    %lu\n", static_cast<unsigned long>(g_diag.upload_duration_ms));
   Serial.printf("upload_preempted      %lu\n", static_cast<unsigned long>(g_diag.upload_preempted));
+  Serial.printf("loop_gap_max_us      %lu\n", static_cast<unsigned long>(g_diag.loop_gap_max_us));
   Serial.printf("button_lost_edges     %lu\n", static_cast<unsigned long>(g_btnLostEdges));
   Serial.printf("uptime_ms             %lu\n", static_cast<unsigned long>(millis()));
   // Ожидание по часам против фактически захваченного: разница — оценка
@@ -830,6 +832,12 @@ void setup() {
 }
 
 void loop() {
+  static uint32_t previousUs = 0;
+  const uint32_t nowUs = micros();
+  if (previousUs != 0 && nowUs - previousUs > g_diag.loop_gap_max_us) {
+    g_diag.loop_gap_max_us = nowUs - previousUs;
+  }
+  previousUs = nowUs;
   handleSerial();
   handleButton();
   serviceHealth();
@@ -844,3 +852,4 @@ void loop() {
     delay(1);
   }
 }
+

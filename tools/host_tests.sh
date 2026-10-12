@@ -16,7 +16,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="XiaoVoiceRecorder"
 BASE_FLAGS="-std=c++17 -Wall -Wextra -Werror -pthread"
-TESTS="test_core test_session test_faults"
+TESTS="test_core test_session test_faults test_upload_pump"
 
 MODE="${1:-}"
 SANITIZE=""
@@ -49,3 +49,4 @@ for t in $TESTS; do
   g++ $FLAGS -o "$OUT/$t" "$ROOT/$SRC/host_tests/$t.cpp"
   "$OUT/$t"
 done
+
