@@ -808,23 +808,6 @@ def _move_names(conn, key, moves, old_version, new_version):
         _summary_stale(conn, device_id, session)
 
 
-def move_owner_names(conn, key, moves, old_version, new_version=None):
-    """Имена владельца части после повторной расшифровки. moves: {старый
-    номер: новый номер или None}; номер без пары по голосу теряет имя.
-
-    Переезжают только имена, поставленные под старую версию расшифровки
-    (old_version — версия старых отпечатков). Всё, что владелец вписал уже под
-    новую, остаётся на месте, а при столкновении его слово важнее переезжающего
-    имени."""
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        _move_names(conn, key, moves, old_version, new_version)
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-
-
 def replace_part_prints(conn, key, prints, version, mapper):
     """Новые отпечатки части и переезд имён владельца — одной транзакцией:
     иначе сбой между ними оставил бы свежие отпечатки с именами на чужих

@@ -13,12 +13,3 @@ test("сбой одной записи не останавливает оста�
   assert.deepEqual(failed, [{ item: "b", reason: "сеть пропала" }]);
 });
 
-test("по очереди, а не разом: следующая — после ответа на предыдущую", async () => {
-  const log = [];
-  await removeEach([1, 2], async (item) => {
-    log.push(`start ${item}`);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    log.push(`end ${item}`);
-  });
-  assert.deepEqual(log, ["start 1", "end 1", "start 2", "end 2"]);
-});

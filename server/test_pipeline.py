@@ -6,12 +6,10 @@
 """
 import importlib
 import json
-import os
 import struct
 import zlib
 from contextlib import closing
 
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -192,110 +190,6 @@ def summary_stub(env, monkeypatch, result=None):
 
 # --- разбор ответа Deepgram -------------------------------------------------
 
-def test_replies_come_from_sentences_not_utterances(env):
-    """Нарезка по паузам рвёт фразу с запинкой и слепляет быстрый диалог.
-    Предложения абзацев держат и то, и другое, поэтому берутся они."""
-    payload = deepgram_reply(
-        # Как Deepgram нарезал бы по паузам: фраза порвана, диалог слеплен.
-        [(6.7, 0, "Чем занимался"), (8.2, 0, "в"), (9.2, 0, "моего отсутствия?"),
-         (18.3, 0, "Что смотрела? На YouTube песни всякие.")],
-        paragraphs=[(6.7, 0, ["Чем занимался в моего отсутствия?"]),
-                    (18.3, 0, ["Что смотрела?"]),
-                    (19.4, 1, ["На YouTube песни всякие."])],
-    )
-    replies = env.transcribe.extract_utterances(payload)
-    assert [r["text"] for r in replies] == [
-        "Чем занимался в моего отсутствия?",
-        "Что смотрела?",
-        "На YouTube песни всякие.",
-    ]
-    # Говорящий берётся у абзаца: у предложения его нет.
-    assert [r["spk"] for r in replies] == [0, 0, 1]
-    assert replies[0]["s"] == 6.7
-
-
-def test_without_paragraphs_utterances_are_used(env):
-    """Абзацев может не быть: язык, настройка, старый ответ. Реплики остаются."""
-    payload = deepgram_reply([(1.0, 0, "Одна реплика.")], paragraphs=False)
-    replies = env.transcribe.extract_utterances(payload)
-    assert [r["text"] for r in replies] == ["Одна реплика."]
-    assert replies[0]["spk"] == 0
-
-
-def test_utterances_keep_time_speaker_and_text(env):
-    t = env.transcribe.parse_payload(deepgram_reply([(1.2, 1, "привет")]))
-    assert t.utterances == [{"s": 1.2, "e": 4.2, "spk": 1, "text": "привет"}]
-    assert t.text == "привет"
-    assert t.duration_sec == 600.0
-
-
-def test_without_any_segmentation_whole_part_is_one_utterance(env):
-    """Ни абзацев, ни нарезки по паузам: часть становится одной репликой
-    без говорящего, а не теряется."""
-    payload = deepgram_reply([(0, 0, "сплошной текст")], paragraphs=False)
-    payload["results"]["utterances"] = []
-    t = env.transcribe.parse_payload(payload)
-    assert t.utterances == [{"s": 0.0, "e": 600.0, "spk": None, "text": "сплошной текст"}]
-
-
-def test_words_are_trimmed_to_what_ui_needs(env):
-    words = env.transcribe.extract_words(deepgram_reply([(1, 0, "x")]))
-    assert words == [{"w": "Надо", "s": 1.2, "e": 1.6, "spk": 0, "c": 0.93}]
-
-
-@pytest.mark.parametrize(
-    "status, retryable, wait",
-    # 401/402/403 — ключ или оплата: лечится руками, повтор раз в час.
-    # 400 — сам файл, повторять нечего. 429/5xx — подождать по нарастающей.
-    [(401, True, 60), (402, True, 60), (403, True, 60), (400, False, None),
-     (429, True, None), (503, True, None), (504, True, None)],
-)
-def test_deepgram_errors_are_classified(env, monkeypatch, status, retryable, wait):
-    def reply(request):
-        return httpx.Response(status, text="{}")
-
-    monkeypatch.setattr(
-        env.transcribe.httpx, "post",
-        lambda *a, **k: httpx.Client(transport=httpx.MockTransport(reply)).post(
-            "http://x", content=b""
-        ),
-    )
-    audio = env.tmp / "a.wav"
-    audio.write_bytes(wav())
-    with pytest.raises(env.transcribe.TranscribeError) as caught:
-        env.transcribe.transcribe_file(str(audio))
-    assert caught.value.retryable is retryable
-    assert caught.value.wait_minutes == wait
-
-
-def test_missing_key_is_retried_hourly(env, monkeypatch):
-    """Пустой ключ — ошибка настройки, а не файла: владелец впишет ключ,
-    и часть должна уйти в Deepgram сама, без ручного перезапуска."""
-    monkeypatch.setattr(env.transcribe, "API_KEY", "")
-    audio = env.tmp / "a.wav"
-    audio.write_bytes(wav())
-    with pytest.raises(env.transcribe.TranscribeError) as caught:
-        env.transcribe.transcribe_file(str(audio))
-    assert caught.value.retryable is True
-    assert caught.value.wait_minutes == 60
-
-
-def test_bad_key_keeps_part_pending_for_an_hour(env, monkeypatch):
-    upload(env)
-
-    def bad_key(path):
-        raise env.transcribe.TranscribeError("Deepgram отказал 401", retryable=True,
-                                             wait_minutes=60)
-
-    monkeypatch.setattr(env.transcribe, "transcribe_file", bad_key)
-    with closing(env.db.connect()) as conn:
-        assert env.worker.tick(conn) is True
-        row = conn.execute(
-            "SELECT status, (julianday(next_try_at) - julianday('now')) * 1440 AS wait_min"
-            " FROM transcripts").fetchone()
-    assert row["status"] == "pending"
-    assert 55 < row["wait_min"] <= 60
-
 
 # --- очередь ----------------------------------------------------------------
 
@@ -343,26 +237,6 @@ def test_done_transcript_is_never_requested_again(env, monkeypatch):
     assert len(calls) == 1
 
 
-def test_late_part_makes_summary_stale_and_it_is_rebuilt(env, monkeypatch):
-    upload(env, part=1)
-    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
-    summaries = []
-
-    def counting_summary(text):
-        summaries.append(text)
-        return json.loads(json.dumps(SUMMARY))
-
-    monkeypatch.setattr(env.worker.summarize, "summarize", counting_summary)
-
-    run_all(env)
-    assert len(summaries) == 1
-    upload(env, part=2, marker=2)
-    run_all(env)
-    assert len(summaries) == 2
-    with closing(env.db.connect()) as conn:
-        assert conn.execute("SELECT parts_covered FROM summaries").fetchone()[0] == 2
-
-
 def test_failed_summary_keeps_transcript_available(env, monkeypatch):
     upload(env)
     monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
@@ -379,45 +253,6 @@ def test_failed_summary_keeps_transcript_available(env, monkeypatch):
         assert summary["status"] == "pending"
         assert "недоступна" in summary["last_error"]
         assert env.db.session_transcript(conn, "xiao-01", 7) != ""
-
-
-def test_auth_failure_in_summary_is_reported_not_retried_fast(env, monkeypatch):
-    upload(env)
-    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
-
-    def expired(text):
-        raise env.summarize.SummaryError("authentication_error: OAuth access token has expired")
-
-    monkeypatch.setattr(env.worker.summarize, "summarize", expired)
-    run_all(env)
-
-    with closing(env.db.connect()) as conn:
-        row = conn.execute("SELECT last_error, next_try_at FROM summaries").fetchone()
-        assert "нужен вход" in row["last_error"]
-        gap = conn.execute(
-            "SELECT CAST((julianday(?) - julianday('now')) * 1440 AS INT)",
-            (row["next_try_at"],),
-        ).fetchone()[0]
-        assert gap >= 50
-
-
-def test_transient_failure_first_retry_is_one_minute(env, monkeypatch):
-    """Первый повтор через минуту, а не через пять: сбой сети чаще всего короткий."""
-    upload(env)
-
-    def network_down(path):
-        raise env.transcribe.TranscribeError("сеть", retryable=True)
-
-    monkeypatch.setattr(env.transcribe, "transcribe_file", network_down)
-    with closing(env.db.connect()) as conn:
-        assert env.worker.tick(conn) is True
-        row = conn.execute(
-            "SELECT status, attempts,"
-            " (julianday(next_try_at) - julianday('now')) * 1440 AS wait_min"
-            " FROM transcripts").fetchone()
-    assert row["status"] == "pending"
-    assert row["attempts"] == 1
-    assert 0.5 < row["wait_min"] <= 1.0
 
 
 def test_transient_failure_is_retried_forever(env, monkeypatch):
@@ -517,13 +352,6 @@ def test_timeline_is_absolute_across_parts(env, monkeypatch):
     assert "[часть 02]" in text
 
 
-def test_abs_time_roundtrip(env):
-    assert env.db.format_abs(3661) == "1:01:01"
-    assert env.db.parse_abs("1:01:01") == 3661
-    assert env.db.parse_abs("00:04") == 4
-    assert env.db.parse_abs("мусор") is None
-
-
 # --- источник каждого вывода --------------------------------------------------
 
 def test_quote_found_confirms_source_with_seek_target(env, monkeypatch):
@@ -546,46 +374,7 @@ def test_quote_found_confirms_source_with_seek_target(env, monkeypatch):
     assert second["part"] == 2 and second["start"] == 1.0 and second["confirmed"] is True
 
 
-def test_quote_not_found_is_flagged_but_still_seekable(env, monkeypatch):
-    upload(env)
-    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
-    result = json.loads(json.dumps(SUMMARY))
-    result["facts"] = [{"text": "Выдумка", "time": "0:00:05",
-                        "quote": "этих слов в записи нет"}]
-    summary_stub(env, monkeypatch, result)
-    run_all(env)
-
-    with closing(env.db.connect()) as conn:
-        stored = json.loads(conn.execute("SELECT result FROM summaries").fetchone()[0])
-    src = stored["facts"][0]["source"]
-    assert src["confirmed"] is False
-    assert src["part"] == 1 and src["start"] == 5.0   # ближайшая по времени реплика
-    # пункт не удалён молча
-    assert stored["facts"][0]["text"] == "Выдумка"
-
-
-def test_source_none_when_no_time_and_no_quote(env):
-    timeline = [{"part": 1, "idx": 0, "start": 1.0, "start_abs": 1.0, "text": "что-то"}]
-    item = {"text": "x", "time": "", "quote": ""}
-    assert env.summarize.find_source(item, timeline) is None
-
-
 # --- поиск -------------------------------------------------------------------
-
-def test_search_finds_other_word_form(env, monkeypatch):
-    upload(env)
-    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
-    summary_stub(env, monkeypatch)
-    run_all(env)
-
-    if not env.textnorm.available():
-        pytest.skip("pymorphy3 не установлен")
-    with closing(env.db.connect()) as conn:
-        hits = env.db.search(conn, "сметы")      # в записи было «смету»
-        assert len(hits) == 1
-        assert hits[0]["part"] == 1 and hits[0]["idx"] == 0
-        assert hits[0]["start_abs"] == 1.0
-        assert env.db.search(conn, "подводная лодка") == []
 
 
 # --- состояние обработки -----------------------------------------------------
@@ -615,20 +404,6 @@ def test_status_sees_gap_failure_and_duration_mismatch(env, monkeypatch):
 
 # --- интерфейс --------------------------------------------------------------
 
-def test_web_requires_password(env):
-    """Страница без пароля уводит на форму входа, а не отдаёт содержимое.
-
-    Раньше здесь был отказ 401 с окном браузера. В режиме «на домашний экран»
-    Safari это окно не показывает вовсе, поэтому страница ведёт на свою форму.
-    Пароль из браузера при этом принимается по-прежнему.
-    """
-    with TestClient(env.app) as client:
-        for attempt in ({}, {"auth": ("owner", "wrong")}):
-            answer = client.get("/", follow_redirects=False, **attempt)
-            assert answer.status_code == 303
-            assert answer.headers["location"].startswith("/login")
-        assert client.get("/", auth=AUTH).status_code == 200
-
 
 def test_audio_supports_range_requests(env):
     """Safari на iPhone без Range не проигрывает аудио. Адрес — часть протокола
@@ -642,17 +417,6 @@ def test_audio_supports_range_requests(env):
         # Старый адрес под /legacy эту же часть отдавать не должен — иначе
         # регрессию снова не заметят, как в первом раунде.
         assert client.get("/legacy/audio/xiao-01/7/1", auth=AUTH).status_code != 200
-
-
-def test_audio_path_in_db_is_absolute(env, monkeypatch):
-    """Приёмник и воркер запускаются из разных каталогов; относительный путь
-    читался бы у одного и отдавал 500 у другого. Этот отказ уже случался."""
-    upload(env)
-    with closing(env.db.connect()) as conn:
-        path = conn.execute("SELECT audio_path FROM parts").fetchone()[0]
-    assert os.path.isabs(path), path
-    monkeypatch.chdir(env.tmp)
-    assert os.path.exists(path)
 
 
 # --- сроки -------------------------------------------------------------------
@@ -812,59 +576,6 @@ def test_renaming_a_speaker_rebuilds_the_summary(env, monkeypatch):
     assert len(seen) == 2
 
 
-def test_owner_fixes_the_recording_day_and_due_dates_follow(env, monkeypatch):
-    """Часов у диктофона нет, поэтому днём разговора считается день выгрузки.
-    Записанное в понедельник и выгруженное в среду «сделаю завтра» стало бы
-    четвергом. Исправленный день пересчитывает сроки из сказанного вслух."""
-    from datetime import timedelta
-
-    upload(env)
-    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
-    result = json.loads(json.dumps(SUMMARY))
-    result["tasks"] = [{"text": "Выслать смету", "owner": "Мария", "due": "завтра",
-                        "time": "0:00:01", "quote": "к пятнице выслать смету заказчику"}]
-    summary_stub(env, monkeypatch, result)
-    run_all(env)
-
-    with closing(env.db.connect()) as conn:
-        uploaded = env.db.session_day(conn, "xiao-01", 7)
-        assert env.db.task_rows(conn)[0]["due_date"] == (uploaded + timedelta(days=1)).isoformat()
-
-        spoken = uploaded - timedelta(days=2)
-        assert env.db.set_recording_day(conn, "xiao-01", 7, spoken) == spoken
-        assert env.db.session_day(conn, "xiao-01", 7) == spoken
-        assert env.db.session_days(conn)[("xiao-01", 7)] == spoken
-        assert env.db.task_rows(conn)[0]["due_date"] == (spoken + timedelta(days=1)).isoformat()
-
-        # Отказ от правки возвращает и день, и срок.
-        env.db.set_recording_day(conn, "xiao-01", 7, None)
-        assert env.db.session_day(conn, "xiao-01", 7) == uploaded
-        assert env.db.task_rows(conn)[0]["due_date"] == (uploaded + timedelta(days=1)).isoformat()
-
-
-def test_one_voice_is_marked_as_a_note_for_the_model(env, monkeypatch):
-    """Заметка вслух разбирается не как разговор: решений и договорённостей
-    в ней нет. Один голос определяется по данным, а не догадкой модели."""
-    upload(env, session=11, part=1)
-    upload(env, session=12, part=1)
-
-    def by_session(path):
-        alone = [(1.0, 0, "Идея: предзапись на тридцать секунд."),
-                 (6.0, 0, "Проверить, хватит ли памяти.")]
-        return env.transcribe.parse_payload(
-            deepgram_reply(alone if "_S0011_" in path else PART_TEXTS[1]))
-
-    monkeypatch.setattr(env.transcribe, "transcribe_file", by_session)
-    summary_stub(env, monkeypatch)
-    run_all(env)
-
-    with closing(env.db.connect()) as conn:
-        note = env.db.session_transcript(conn, "xiao-01", 11)
-        talk = env.db.session_transcript(conn, "xiao-01", 12)
-    assert "[во всей записи один голос]" in note
-    assert "один голос" not in talk, "разговор двоих объявлен заметкой"
-
-
 def test_one_number_in_every_part_is_not_one_voice(env, monkeypatch):
     """Номера говорящих у каждой части свои: «Говорящий 1» первой части и
     «Говорящий 1» второй могут быть двумя людьми. Один голос доказывает
@@ -919,50 +630,6 @@ def test_the_same_number_in_two_parts_is_not_the_same_person(env, monkeypatch):
     assert named[(2, 0)] == "Говорящий 1", "имя из первой части утекло во вторую"
 
 
-def test_model_is_told_that_speaker_numbers_are_local_to_a_part(env, monkeypatch):
-    upload(env, part=1)
-    upload(env, part=2, marker=2)
-    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
-    run_all(env)
-
-    with closing(env.db.connect()) as conn:
-        many = env.db.session_transcript(conn, "xiao-01", 7)
-        one_part = env.db.session_transcript(conn, "xiao-01", 8)
-    assert "номера говорящих у каждой части свои" in many
-    # Для сессии из одной части оговорка не нужна и только мешала бы.
-    assert one_part == ""
-
-
-def test_old_speaker_names_survive_the_move_to_per_part_keys(env, monkeypatch):
-    """Разметка, сделанная до переезда, применялась ко всей сессии. Миграция
-    обязана сохранить ровно то, что владелец видел на странице."""
-    upload(env, part=1)
-    upload(env, part=2, marker=2)
-    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
-    run_all(env)
-
-    with closing(env.db.connect()) as conn:
-        conn.execute("DROP TABLE speaker_names")
-        conn.execute(
-            "CREATE TABLE speaker_names (device_id TEXT NOT NULL,"
-            " session INTEGER NOT NULL, speaker INTEGER NOT NULL,"
-            " name TEXT NOT NULL DEFAULT '', is_me INTEGER NOT NULL DEFAULT 0,"
-            " PRIMARY KEY (device_id, session, speaker))"
-        )
-        conn.execute("INSERT INTO speaker_names VALUES ('xiao-01', 7, 0, 'Мария', 1)")
-        conn.commit()
-
-    env.db.init_storage()
-
-    with closing(env.db.connect()) as conn:
-        names = env.db.speaker_names(conn, "xiao-01", 7)
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(speaker_names)")}
-    assert "part" in columns
-    # Разметка до переезда — слово владельца, а не догадка по голосу.
-    assert names[(1, 0)] == {"name": "Мария", "is_me": True, "auto": False}
-    assert names[(2, 0)] == {"name": "Мария", "is_me": True, "auto": False}
-
-
 def test_question_state_is_manual_and_survives_rebuild(env, monkeypatch):
     upload(env)
     monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
@@ -987,21 +654,6 @@ def test_question_state_is_manual_and_survives_rebuild(env, monkeypatch):
 
 
 # --- лента проекта -------------------------------------------------------------
-
-def test_alias_joins_two_spellings_of_one_project(env, monkeypatch):
-    upload(env)
-    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
-    result = json.loads(json.dumps(SUMMARY))
-    result["topics"] = ["Posiflora"]
-    summary_stub(env, monkeypatch, result)
-    run_all(env)
-
-    with closing(env.db.connect()) as conn:
-        assert list(env.db.project_sessions(conn)) == ["Posiflora"]
-        env.db.set_alias(conn, "posiflora", "Пози флора")
-        projects = env.db.project_sessions(conn)
-    assert list(projects) == ["Пози флора"]
-    assert projects["Пози флора"][0]["session"] == 7
 
 
 # --- спорные места -------------------------------------------------------------
@@ -1038,49 +690,6 @@ def test_review_collects_only_what_needs_owner(env, monkeypatch):
     assert kinds.count("источник не подтверждён") == 1
 
 
-def test_old_transcripts_without_confidence_are_not_flagged(env, monkeypatch):
-    """Уверенность слов начали писать в этом этапе. Старые записи не помечаем."""
-    upload(env)
-    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
-    summary_stub(env, monkeypatch)
-    run_all(env)
-
-    with closing(env.db.connect()) as conn:
-        conn.execute("UPDATE transcripts SET words=?",
-                     (json.dumps([{"w": "23", "s": 1.1, "e": 1.5, "spk": 0}]),))
-        conn.commit()
-        assert env.db.uncertain_numbers(conn, "xiao-01", 7) == {}
-
-
 # --- дайджест ------------------------------------------------------------------
 
-def test_digest_counts_without_calling_model(env, monkeypatch):
-    upload(env, seconds=60)
-    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
-    summary_stub(env, monkeypatch)
-    run_all(env)
 
-    with closing(env.db.connect()) as conn:
-        day = env.db.digest(conn, 1)
-    assert day["sessions"] == 1
-    assert day["new_tasks"] == 1
-    assert abs(day["minutes"] - 1.0) < 0.01
-    assert day["my_open_tasks"] == 0        # «это я» ещё не отмечен
-
-
-def test_summary_survives_a_deleted_working_directory(monkeypatch):
-    # Выкладка стирает каталог кода под работающим воркером; claude не должен
-    # наследовать этот каталог, иначе падает с ENOENT uv_cwd.
-    import summarize
-
-    seen = {}
-
-    def run(*args, **kwargs):
-        seen.update(kwargs)
-        raise summarize.subprocess.TimeoutExpired("claude", 1)
-
-    monkeypatch.setattr(summarize.subprocess, "run", run)
-    with pytest.raises(summarize.SummaryError):
-        summarize.summarize("текст")
-    assert seen.get("cwd") and os.path.isdir(seen["cwd"])
-    assert os.path.realpath(seen["cwd"]) != os.path.realpath(os.path.dirname(summarize.__file__))

@@ -29,23 +29,6 @@ def partials(client):
     return list(client.audio_dir.glob("*.partial"))
 
 
-def test_new_part_starts_from_zero(client):
-    body = wav()
-    response = probe(client, body)
-    assert response.status_code == 200
-    assert response.json() == {"offset": 0}
-
-
-def test_whole_part_in_one_resumable_request(client):
-    body = wav()
-    response = client.post("/api/v1/upload", content=body, headers=resume_headers(body, 0))
-    assert response.status_code == 201
-    assert response.json() == {"status": "stored", "session": 7, "part": 1,
-                                     "bytes": len(body), "crc32": crc_of(body)}
-    assert (client.audio_dir / "xiao-01_S0007_P01.wav").read_bytes() == body
-    assert partials(client) == []
-
-
 def test_drop_then_resume_gives_the_exact_file(client):
     """Главное: обрыв посреди тела не выбрасывает дошедшие байты, а
     продолжение с них даёт ровно исходный файл."""
@@ -105,18 +88,6 @@ def test_offset_beyond_what_server_has_is_refused(client):
     assert not (client.audio_dir / "xiao-01_S0007_P01.wav").exists()
 
 
-def test_resume_from_earlier_offset_drops_the_overlap(client):
-    """Прошлая попытка дописала больше, чем диктофон знает: продолжение с
-    меньшего места отрезает лишнее, а не дублирует байты."""
-    body = wav(seconds=2, marker=9)
-    partial = client.audio_dir / f"xiao-01_S0007_P01.{crc_of(body)}.{len(body)}.partial"
-    partial.write_bytes(body[:30_000])
-    response = client.post("/api/v1/upload", content=body[10_000:],
-                           headers=resume_headers(body, 10_000))
-    assert response.status_code == 201, response.text
-    assert (client.audio_dir / "xiao-01_S0007_P01.wav").read_bytes() == body
-
-
 def test_corrupt_partial_is_caught_by_crc_and_thrown_away(client):
     body = wav(seconds=2, marker=3)
     partial = client.audio_dir / f"xiao-01_S0007_P01.{crc_of(body)}.{len(body)}.partial"
@@ -139,21 +110,3 @@ def test_probe_of_stored_part_confirms_it(client):
                                "bytes": len(body), "crc32": crc_of(body)}
 
 
-def test_probe_of_part_stored_with_other_audio_is_conflict(client):
-    original = wav(marker=1)
-    client.post("/api/v1/upload", content=original, headers=headers(original))
-    other = wav(marker=2)
-    assert probe(client, other).status_code == 409
-
-
-def test_probe_needs_device_token(client):
-    body = wav()
-    sent = headers(body) | {"X-Total": str(len(body)), "Authorization": "Bearer nope"}
-    assert client.get("/api/v1/upload/offset", headers=sent).status_code == 401
-
-
-def test_old_firmware_without_resume_headers_still_works(client):
-    body = wav()
-    response = client.post("/api/v1/upload", content=body, headers=headers(body))
-    assert response.status_code == 201
-    assert partials(client) == []

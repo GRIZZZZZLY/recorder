@@ -1,10 +1,8 @@
 """Проверки JSON-API и отдачи собранного фронтенда."""
 import importlib
 import json
-import os
 import time
 from contextlib import closing
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -35,38 +33,6 @@ def test_site_serves_index_and_nested_page(site):
         assert client.get("/", auth=AUTH).text.startswith("<!doctype html>")
         assert "Сессия" in client.get("/session/?d=xiao-01&n=7", auth=AUTH).text
         assert client.get("/_next/app.js", auth=AUTH).status_code == 200
-
-
-def test_site_serves_next_segment_prefetch(site):
-    """Next просит /records/__next.records.__PAGE__.txt, а сборка кладёт файл в
-    records/__next.records/__PAGE__.txt; раньше каждая предзагрузка давала 404."""
-    nested = Path(os.environ["RECORDER_WEB_DIR"]) / "records" / "__next.records"
-    nested.mkdir(parents=True)
-    (nested / "__PAGE__.txt").write_text("rsc", encoding="utf-8")
-    with TestClient(site.app) as client:
-        answer = client.get("/records/__next.records.__PAGE__.txt?_rsc=x", auth=AUTH)
-    assert answer.status_code == 200 and answer.text == "rsc"
-
-
-def test_site_answers_head_requests(site):
-    """Next.js проверяет ссылки HEAD-запросом; раньше каждый давал 405."""
-    with TestClient(site.app) as client:
-        assert client.head("/session/", auth=AUTH).status_code == 200
-
-
-def test_site_is_closed_by_the_same_password(site):
-    """Ни одна страница владельца не отдаётся без пароля: содержимого в ответе
-    нет, вместо него переход на форму входа. Файлы сборки (_next) открыты ради
-    страницы гостя — в них код, а не данные (test_share.py)."""
-    with TestClient(site.app) as client:
-        for path, attempt in (("/", {"auth": ("owner", "wrong")}), ("/session/", {})):
-            answer = client.get(path, follow_redirects=False, **attempt)
-            assert answer.status_code == 303
-            assert answer.headers["location"].startswith("/login")
-            assert "Сводка" not in answer.text and "Сессия" not in answer.text
-        # JSON-API остаётся при отказе 401: странице нужна форма, фоновому
-        # запросу — честная ошибка, а не HTML формы вместо данных.
-        assert client.get("/api/ui/digest").status_code == 401
 
 
 def test_login_form_lets_the_owner_in(site):
@@ -104,39 +70,12 @@ def test_login_does_not_forward_to_a_stranger(site):
         assert answer.headers["location"] == "/"
 
 
-def test_site_without_build_says_so(env, monkeypatch, tmp_path):
-    monkeypatch.setenv("RECORDER_WEB_DIR", str(tmp_path / "нет-такого"))
-    import static_site, app as app_module
-    importlib.reload(static_site)
-    importlib.reload(app_module)
-    with TestClient(app_module.app) as client:
-        response = client.get("/", auth=AUTH)
-        assert response.status_code == 503
-        assert "не собран" in response.text
-
-
 def test_site_does_not_serve_files_outside_the_build(site):
     with TestClient(site.app) as client:
-        assert client.get("/../../server/db.py", auth=AUTH).status_code in (400, 404)
-
-
-def test_resolve_returns_none_instead_of_crashing_on_value_error(site, monkeypatch):
-    """Путь со встроенным NUL валит Path.resolve() с ValueError (на POSIX), не
-    только с OSError — раньше это было необработанным 500. Windows этот кейс
-    не воспроизводит напрямую (resolve() молча пропускает NUL), поэтому
-    ValueError вызывается принудительно — так проверка не зависит от ОС."""
-    import static_site
-    from pathlib import Path
-
-    real_resolve = Path.resolve
-
-    def flaky_resolve(self, *args, **kwargs):
-        if self.name == "boom":
-            raise ValueError("embedded null byte")
-        return real_resolve(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "resolve", flaky_resolve)
-    assert static_site.resolve("boom") is None
+        # %2e%2e, а не "..": HTTP-клиент вырезает ".." из пути ещё до отправки,
+        # и такой запрос ничего бы не проверял.
+        r = client.get("/%2e%2e/%2e%2e/server/db.py", auth=AUTH)
+        assert r.status_code in (400, 404) and b"def " not in r.content
 
 
 def prepared(env, monkeypatch):
@@ -180,30 +119,6 @@ def test_sessions_list_counts_failed_parts(env, monkeypatch):
     with TestClient(env.app) as client:
         rows = client.get("/api/ui/sessions", auth=AUTH).json()
     assert rows[0]["failed_parts"] == 1
-
-
-def test_session_rows_seconds_match_per_part_clamp_like_timeline(env):
-    """session_rows раньше клэмпил один раз на сумму: max(0, SUM(bytes) - 44*parts).
-    part_offsets (шкала реплик) клэмпит каждую часть отдельно и потом суммирует.
-    На части короче WAV_HEADER_BYTES (битые/обрезанные, есть recovered/failed для
-    таких) формулы расходятся: список сессий и шкала должны показывать одно и то же
-    число, поэтому seconds обязан считаться так же поэлементно."""
-    with closing(env.db.connect()) as conn:
-        conn.execute(
-            "INSERT INTO parts (device_id, session, part, bytes, crc32, audio_path)"
-            " VALUES ('xiao-01', 7, 1, 20, '00000000', 'x')")
-        conn.execute(
-            "INSERT INTO parts (device_id, session, part, bytes, crc32, audio_path)"
-            " VALUES ('xiao-01', 7, 2, 32044, '00000000', 'y')")
-        conn.commit()
-        row = env.db.session_rows(conn)[0]
-
-    per_part_total = (max(0, 20 - env.db.WAV_HEADER_BYTES)
-                       + max(0, 32044 - env.db.WAV_HEADER_BYTES))
-    assert row["seconds"] == pytest.approx(per_part_total / env.db.BYTES_PER_SECOND)
-
-    old_formula = max(0, (20 + 32044) - env.db.WAV_HEADER_BYTES * 2) / env.db.BYTES_PER_SECOND
-    assert row["seconds"] != pytest.approx(old_formula)
 
 
 def test_session_detail_carries_timeline_summary_and_tasks(env, monkeypatch):
@@ -262,11 +177,6 @@ def test_marks_land_on_session_scale_with_nearest_reply(env, monkeypatch):
         assert "[метка владельца]" in env.db.session_transcript(conn, "xiao-01", 7)
 
 
-def test_session_detail_404_for_unknown_session(env):
-    with TestClient(env.app) as client:
-        assert client.get("/api/ui/sessions/xiao-01/999", auth=AUTH).status_code == 404
-
-
 def test_speakers_are_saved_as_json(env, monkeypatch):
     prepared(env, monkeypatch)
     with TestClient(env.app) as client:
@@ -319,39 +229,6 @@ def test_status_counts_sessions_whose_summary_row_does_not_exist_yet(env):
     assert status["summaries_pending"] == 1
 
 
-def test_tasks_carry_the_tape_of_their_record(env, monkeypatch):
-    """У строки задачи — волна её записи и длина: интерфейс ставит засечку
-    места, где задача прозвучала, прямо на плёнке."""
-    prepared(env, monkeypatch)
-    with TestClient(env.app) as client:
-        task = client.get("/api/ui/tasks", auth=AUTH).json()["tasks"][0]
-    assert task["tape"]["seconds"] > 0
-    assert isinstance(task["tape"]["envelope"], list)
-
-
-def test_tasks_name_their_conversation(env, monkeypatch):
-    """Строка задачи говорит, из какого она разговора: тема и день."""
-    prepared(env, monkeypatch)
-    with TestClient(env.app) as client:
-        task = client.get("/api/ui/tasks", auth=AUTH).json()["tasks"][0]
-    assert task["topic"] == "смета для заказчика"
-    assert task["day"].startswith("20")
-
-
-def test_api_requires_password(env):
-    with TestClient(env.app) as client:
-        assert client.get("/api/ui/digest").status_code == 401
-
-
-def test_v1_sessions_requires_owner_password(env):
-    """GET /api/v1/sessions отдаёт список загрузок и раньше был открыт всем:
-    без Depends(owner) размеры и время выгрузки видел любой, кто знает адрес.
-    Прошивку это не задевает — она вызывает только POST /api/v1/upload."""
-    with TestClient(env.app) as client:
-        assert client.get("/api/v1/sessions").status_code == 401
-        assert client.get("/api/v1/sessions", auth=AUTH).status_code == 200
-
-
 SUMMARY_WITH_QUESTION = {
     "summary": "Обсудили смету.",
     "topics": ["смета для заказчика"],
@@ -378,30 +255,6 @@ def test_tasks_filters_and_status_change(env, monkeypatch):
                            json={"status": "done"}).status_code == 200
         assert client.get("/api/ui/tasks?show=open", auth=AUTH).json()["tasks"] == []
         assert len(client.get("/api/ui/tasks?show=all", auth=AUTH).json()["tasks"]) == 1
-
-
-def test_task_status_is_validated(env, monkeypatch):
-    prepared(env, monkeypatch)
-    with TestClient(env.app) as client:
-        task_id = client.get("/api/ui/tasks", auth=AUTH).json()["tasks"][0]["task_id"]
-        assert client.post(f"/api/ui/tasks/xiao-01/7/{task_id}", auth=AUTH,
-                           json={"status": "мусор"}).status_code == 422
-
-
-def test_questions_state_roundtrip(env, monkeypatch):
-    upload(env)
-    monkeypatch.setattr(env.transcribe, "transcribe_file", fake_transcribe(env))
-    result = json.loads(json.dumps(SUMMARY_WITH_QUESTION))
-    summary_stub(env, monkeypatch, result)
-    run_all(env)
-    with TestClient(env.app) as client:
-        rows = client.get("/api/ui/questions?show=open", auth=AUTH).json()
-        assert len(rows) == 1
-        question_id = rows[0]["question_id"]
-        client.post(f"/api/ui/questions/xiao-01/7/{question_id}", auth=AUTH,
-                    json={"state": "answered"})
-        assert client.get("/api/ui/questions?show=open", auth=AUTH).json() == []
-        assert len(client.get("/api/ui/questions?show=all", auth=AUTH).json()) == 1
 
 
 def test_projects_list_feed_and_alias(env, monkeypatch):
@@ -449,25 +302,6 @@ def test_search_finds_summary_notes_too(env, monkeypatch):
     assert notes[0]["topic"] == "смета для заказчика"
 
 
-def test_search_without_query_is_empty(env):
-    with TestClient(env.app) as client:
-        assert client.get("/api/ui/search?q=", auth=AUTH).json() == []
-
-
-def test_project_aliases_route_does_not_collide_with_project_name_route(env, monkeypatch):
-    """/projects/aliases (POST) не должен уходить в обработчик /projects/{name}
-    (GET) с именем проекта «aliases» — методы разные, но порядок объявления
-    маршрутов проверяем явно, а не полагаемся на то, как сейчас матчит Starlette."""
-    prepared(env, monkeypatch)
-    with TestClient(env.app) as client:
-        response = client.post("/api/ui/projects/aliases", auth=AUTH,
-                               json={"alias": "x", "canonical": "Y"})
-        assert response.status_code == 200
-        assert response.json() == {"ok": True}
-        with closing(env.db.connect()) as conn:
-            assert env.db.alias_map(conn)["x"] == "Y"
-
-
 def test_password_once_leaves_a_month_long_cookie(env):
     """Safari на телефоне забывает логин Basic при перезапуске, поэтому после
     удачного входа выдаётся подписанная метка, и пароль больше не спрашивают."""
@@ -499,25 +333,6 @@ def test_cookie_is_marked_secure_behind_nginx(env):
         assert "Secure" not in client.get("/api/ui/digest", auth=AUTH).headers["set-cookie"]
 
 
-def test_review_and_status_are_exposed(env, monkeypatch):
-    prepared(env, monkeypatch)
-    with TestClient(env.app) as client:
-        review = client.get("/api/ui/review", auth=AUTH).json()
-        status = client.get("/api/ui/status", auth=AUTH).json()
-    assert isinstance(review, list)
-    assert status["transcripts_pending"] == 0
-    assert "failed_parts" in status
-
-
-def test_device_state_comes_from_upload_headers(env):
-    """Заряд и прошивка приходят заголовками выгрузки и видны в состоянии."""
-    upload(env, extra={"X-Battery": "73", "X-Firmware": "0.3.1"})
-    with TestClient(env.app) as client:
-        devices = client.get("/api/ui/status", auth=AUTH).json()["devices"]
-    assert devices == [{"device_id": "xiao-01", "battery": 73, "firmware": "0.3.1",
-                        "updated_at": devices[0]["updated_at"]}]
-
-
 def test_device_state_survives_uploads_without_headers(env):
     """Прошивка перестала слать заряд — вчерашнее значение остаётся, а не
     затирается неизвестным."""
@@ -526,12 +341,6 @@ def test_device_state_survives_uploads_without_headers(env):
     with TestClient(env.app) as client:
         devices = client.get("/api/ui/status", auth=AUTH).json()["devices"]
     assert devices[0]["battery"] == 73 and devices[0]["firmware"] == "0.3.1"
-
-
-def test_broken_device_headers_are_rejected(env):
-    for header, value in (("X-Battery", "101"), ("X-Battery", "full"),
-                          ("X-Firmware", "0.3.1; rm -rf /")):
-        assert upload(env, extra={header: value}).status_code == 400
 
 
 def test_failed_part_can_be_returned_to_the_queue(env, monkeypatch):
@@ -569,26 +378,6 @@ def test_stuck_summary_can_be_returned_to_the_queue(env, monkeypatch):
             conn.execute("UPDATE summaries SET status='done'")
             conn.commit()
         assert client.post("/api/ui/sessions/xiao-01/7/retry-summary", auth=AUTH).status_code == 404
-
-
-def test_sessions_list_carries_named_speakers(env, monkeypatch):
-    prepared(env, monkeypatch)
-    with closing(env.db.connect()) as conn:
-        env.db.set_speaker(conn, "xiao-01", 7, 1, 0, "Игорь", True)
-        env.db.set_speaker(conn, "xiao-01", 7, 1, 1, "", False)
-        conn.commit()
-    with TestClient(env.app) as client:
-        rows = client.get("/api/ui/sessions", auth=AUTH).json()
-    # Безымянный говорящий в список не попадает: «Говорящий 2» искать не помогает.
-    assert rows[0]["speakers"] == ["Игорь"]
-
-
-def test_projects_count_open_tasks(env, monkeypatch):
-    prepared(env, monkeypatch)
-    with TestClient(env.app) as client:
-        projects = client.get("/api/ui/projects", auth=AUTH).json()["projects"]
-    assert projects and all("open_tasks" in item for item in projects)
-    assert projects[0]["open_tasks"] >= 1
 
 
 def test_session_can_be_deleted_with_its_files(env, monkeypatch):

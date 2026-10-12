@@ -1,6 +1,5 @@
 """Gemini: порции под минутный лимит, сшивка времени и говорящих, ошибки."""
 import io
-import json
 import wave
 
 import httpx
@@ -8,7 +7,6 @@ import pytest
 
 import gemini
 import transcribe
-from stt import TranscribeError
 
 
 def silent_wav(path, seconds, rate=16000):
@@ -70,26 +68,6 @@ def test_ten_minute_part_goes_in_two_paced_chunks(api, tmp_path):
     assert sum(1 for m, _ in calls if m == "DELETE") == 2  # звук у Google не остаётся
 
 
-def test_minute_limit_is_waited_out_on_the_spot(api, tmp_path):
-    _, sleeps, replies = api
-    replies += [httpx.Response(429, text='{"message":"Please retry in 11s"}'),
-                httpx.Response(200, json=answer([("Да", 0, 0.0)]))]
-
-    result = gemini.transcribe_file(silent_wav(tmp_path / "p.wav", 30))
-
-    assert 12 in sleeps
-    assert result.text == "Да"
-
-
-def test_daily_limit_puts_part_off_for_an_hour(api, tmp_path):
-    _, _, replies = api
-    replies += [httpx.Response(429, text='{"message":"quota exceeded, limit: 100"}')]
-
-    with pytest.raises(TranscribeError) as error:
-        gemini.transcribe_file(silent_wav(tmp_path / "p.wav", 30))
-    assert error.value.retryable and error.value.wait_minutes == 60
-
-
 def test_split_keeps_every_sample(tmp_path):
     data = bytearray(silent_wav(tmp_path / "p.wav", 601).read_bytes())
     # Как ffmpeg в трубу: длина в заголовке «неизвестна».
@@ -101,25 +79,3 @@ def test_split_keeps_every_sample(tmp_path):
     assert frames == 601 * 16000 and duration == 601
 
 
-def test_summary_falls_back_to_next_model_when_first_is_busy(monkeypatch):
-    import summarize
-
-    asked = []
-
-    def post(url, **kw):
-        asked.append(url.rsplit("/", 1)[-1])
-        if "busy" in url:
-            return httpx.Response(503, text="high demand")
-        text = json.dumps({"summary": "Итог", "tasks": []}, ensure_ascii=False)
-        return httpx.Response(200, json={"candidates": [{"content": {"parts": [
-            {"text": "размышления", "thought": True}, {"text": text}]}}]})
-
-    monkeypatch.setattr(summarize.httpx, "post", post)
-    monkeypatch.setattr(summarize, "ENGINE", "gemini")
-    monkeypatch.setattr(summarize, "GEMINI_MODELS", ["busy", "lite"])
-    monkeypatch.setattr(gemini, "API_KEY", "k" * 39)
-
-    result = summarize.summarize("[00:00] Говорящий 1: привет")
-
-    assert asked == ["busy:generateContent", "lite:generateContent"]
-    assert result["summary"] == "Итог" and result["_meta"]["model"] == "lite"

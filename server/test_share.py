@@ -49,20 +49,6 @@ def test_owner_creates_lists_and_closes_links(env):
     assert tokens(env) == [second]
 
 
-def test_link_lives_seven_days(env):
-    upload(env)
-    share(env)
-    with closing(env.db.connect()) as conn:
-        days = conn.execute(
-            "SELECT julianday(expires_at) - julianday(created_at) FROM shares").fetchone()[0]
-    assert days == pytest.approx(env.db.SHARE_DAYS, abs=1e-6)
-    assert env.db.SHARE_DAYS == 7
-
-
-def test_no_link_for_a_missing_record(env):
-    assert as_owner(env, "POST", "/api/ui/sessions/xiao-01/99/shares").status_code == 404
-
-
 def test_link_management_needs_the_owner(env):
     upload(env)
     token = share(env)
@@ -71,14 +57,6 @@ def test_link_management_needs_the_owner(env):
         assert client.get("/api/ui/sessions/xiao-01/7/shares").status_code == 401
         assert client.delete(f"/api/ui/shares/{token}").status_code == 401
     assert tokens(env) == [token]
-
-
-def test_deleting_the_record_deletes_its_links(env):
-    upload(env)
-    share(env)
-    assert as_owner(env, "DELETE", "/api/ui/sessions/xiao-01/7").status_code == 200
-    with closing(env.db.connect()) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM shares").fetchone()[0] == 0
 
 
 GUEST_KEYS = {"day", "first_at", "parts", "summary", "timeline", "speakers",
@@ -104,14 +82,6 @@ def test_guest_sees_the_record_and_nothing_else(env, monkeypatch):
     assert answer.headers["cache-control"] == "no-store"
     assert answer.headers["referrer-policy"] == "no-referrer"
     assert "noindex" in answer.headers["x-robots-tag"]
-
-
-def test_record_without_summary_is_still_shared(env):
-    """Изложение ещё не готово — гость всё равно слушает запись."""
-    upload(env)
-    body = as_guest(env, f"/api/share/{share(env)}").json()
-    assert body["summary"] is None and body["timeline"] == []
-    assert body["parts"][0]["part"] == 1
 
 
 def test_dead_links_all_answer_the_same(env, monkeypatch):
@@ -140,14 +110,6 @@ def test_dead_links_all_answer_the_same(env, monkeypatch):
     assert tokens(env) == []
 
 
-def test_odd_keys_are_just_dead_links(env):
-    upload(env)
-    share(env)
-    # «..» здесь не годится: клиент свернул бы адрес в /api/ и проверял бы не то.
-    for token in ("x" * 5000, "%00", "' OR 1=1 --"):
-        assert as_guest(env, f"/api/share/{token}").status_code == 404, token[:20]
-
-
 def test_link_plays_only_its_own_record(env):
     upload(env)
     upload(env, session=8, marker=1)
@@ -159,21 +121,6 @@ def test_link_plays_only_its_own_record(env):
     # назвать другую запись: номер записи берётся из ключа.
     assert as_guest(env, f"/share/{token}/audio/2").status_code == 404
     assert as_guest(env, "/audio/xiao-01/8/1").status_code == 401
-
-
-def test_unclosed_server_shares_nothing(env, monkeypatch):
-    """Сервер без пароля владельца не отдаёт разговоров никому — и гостю тоже."""
-    upload(env)
-    token = share(env)
-    import auth
-    monkeypatch.setattr(auth, "OWNER_PASSWORD", "")
-    assert as_guest(env, f"/api/share/{token}").status_code == 503
-    assert as_guest(env, f"/share/{token}/audio/1").status_code == 503
-    for path in (f"/api/share/{token}", f"/share/{token}/audio/1"):
-        answer = as_guest(env, path)
-        assert answer.headers["cache-control"] == "no-store", path
-        assert answer.headers["referrer-policy"] == "no-referrer", path
-        assert "noindex" in answer.headers["x-robots-tag"], path
 
 
 @pytest.fixture

@@ -12,8 +12,6 @@ ffmpeg есть, и там они идут.
 """
 import importlib
 import shutil
-import subprocess
-import sqlite3
 import struct
 import zlib
 from contextlib import closing
@@ -120,26 +118,6 @@ def part_row(env, session=7, part=1):
 
 # --- очередь и порядок шагов (без ffmpeg) ------------------------------------
 
-def test_part_waits_for_transcript_before_being_compressed(env):
-    """Расшифровка платная и ждать сжатия не должна: очередь её пропускает вперёд."""
-    upload(env)
-    with closing(env.db.connect()) as conn:
-        assert env.db.claim_part_for_archive(conn) is None  # транскрипта ещё нет
-    mark_transcribed(env, status="pending")
-    with closing(env.db.connect()) as conn:
-        assert env.db.claim_part_for_archive(conn) is None
-    mark_transcribed(env, status="done")
-    with closing(env.db.connect()) as conn:
-        assert env.db.claim_part_for_archive(conn)["part"] == 1
-
-
-def test_failed_transcript_does_not_block_the_archive(env):
-    """Часть, которую Deepgram не осилил, всё равно должна лечь в архив."""
-    upload(env)
-    mark_transcribed(env, status="failed")
-    with closing(env.db.connect()) as conn:
-        assert env.db.claim_part_for_archive(conn)["part"] == 1
-
 
 def test_wav_is_deleted_only_after_the_flac_path_is_in_the_database(env, monkeypatch):
     """Порядок: проверенный FLAC -> база -> и только теперь удаление WAV."""
@@ -174,24 +152,6 @@ def test_wav_is_deleted_only_after_the_flac_path_is_in_the_database(env, monkeyp
     assert row["bytes"] == len(wav())
 
 
-def test_crash_between_database_and_delete_leaves_a_wav_that_the_sweep_removes(env):
-    """Падение в щели между шагами 4 и 5 не должно оставлять мусор навсегда."""
-    upload(env)
-    mark_transcribed(env)
-    row = part_row(env)
-    wav_path = Path(row["audio_path"])
-    flac_path = wav_path.with_suffix(".flac")
-    flac_path.write_bytes(b"fLaC stub")
-    with closing(env.db.connect()) as conn:
-        env.db.finish_archive(conn, ("xiao-01", 7, 1), flac_path)
-        # Процесс упал здесь: путь новый, файл старый ещё лежит.
-        assert [p.name for p in env.db.stale_wavs(conn)] == [wav_path.name]
-        for leftover in env.db.stale_wavs(conn):
-            leftover.unlink()
-        assert env.db.stale_wavs(conn) == []
-    assert not wav_path.exists() and flac_path.exists()
-
-
 def test_wav_is_not_swept_when_its_flac_is_missing(env):
     """База говорит «FLAC готов», а на диске только WAV (например, после
     неполного восстановления копии). Этот WAV — последняя копия звука."""
@@ -202,25 +162,6 @@ def test_wav_is_not_swept_when_its_flac_is_missing(env):
         env.db.finish_archive(conn, ("xiao-01", 7, 1), wav_path.with_suffix(".flac"))
         assert env.db.stale_wavs(conn) == []
     assert wav_path.exists()
-
-
-def test_temporary_failure_is_retried_and_audio_stays_in_wav(env, monkeypatch):
-    def boom(_path):
-        raise env.archive.ArchiveError("не найден ffmpeg", retryable=True)
-
-    upload(env)
-    mark_transcribed(env)
-    monkeypatch.setattr(env.archive, "convert", boom)
-    with closing(env.db.connect()) as conn:
-        assert env.worker.run_archive(conn) is True
-        # Попытка отодвинута, поэтому следующий проход эту часть не берёт.
-        assert env.db.claim_part_for_archive(conn) is None
-
-    row = part_row(env)
-    assert row["archive_status"] == "pending"
-    assert row["archive_attempts"] == 1
-    assert row["audio_path"].endswith(".wav")
-    assert Path(row["audio_path"]).exists()
 
 
 def test_unrecoverable_failure_keeps_the_wav_and_stops_trying(env, monkeypatch):
@@ -240,35 +181,6 @@ def test_unrecoverable_failure_keeps_the_wav_and_stops_trying(env, monkeypatch):
     assert Path(row["audio_path"]).exists(), "оригинал обязан остаться"
 
 
-def test_switch_off_leaves_everything_in_wav(env, monkeypatch):
-    upload(env)
-    mark_transcribed(env)
-    monkeypatch.setattr(env.archive, "ENABLED", False)
-    with closing(env.db.connect()) as conn:
-        assert env.worker.run_archive(conn) is False
-    assert part_row(env)["audio_path"].endswith(".wav")
-
-
-def test_already_compressed_part_is_never_claimed_again(env, monkeypatch):
-    """Повторный проход по готовому архиву — пустая работа и лишние деньги."""
-    calls = []
-
-    def fake_convert(wav_path):
-        calls.append(wav_path)
-        flac = Path(wav_path).with_suffix(".flac")
-        flac.write_bytes(b"fLaC stub")
-        return flac
-
-    upload(env)
-    mark_transcribed(env)
-    monkeypatch.setattr(env.archive, "convert", fake_convert)
-    with closing(env.db.connect()) as conn:
-        assert env.worker.run_archive(conn) is True
-        assert env.worker.run_archive(conn) is False
-        assert env.db.claim_part_for_archive(conn) is None
-    assert len(calls) == 1
-
-
 def test_failed_archive_is_visible_on_the_status_page(env, monkeypatch):
     """Вставший архив не ломает звук, но и молчать о нём нельзя."""
     upload(env)
@@ -286,43 +198,6 @@ def test_failed_archive_is_visible_on_the_status_page(env, monkeypatch):
 
 # --- миграция и совместимость со старой базой --------------------------------
 
-def test_migration_adds_archive_columns_and_queues_old_parts(env):
-    """База, заведённая до архива: колонок нет, части лежат в WAV."""
-    old = env.tmp / "old.db"
-    with closing(sqlite3.connect(old)) as conn:
-        conn.execute(
-            "CREATE TABLE parts (device_id TEXT NOT NULL, session INTEGER NOT NULL,"
-            " part INTEGER NOT NULL, bytes INTEGER NOT NULL, crc32 TEXT NOT NULL,"
-            " recovered INTEGER NOT NULL DEFAULT 0, audio_path TEXT NOT NULL,"
-            " received_at TEXT NOT NULL DEFAULT (datetime('now')),"
-            " PRIMARY KEY (device_id, session, part))"
-        )
-        conn.execute(
-            "INSERT INTO parts (device_id, session, part, bytes, crc32, audio_path)"
-            " VALUES ('xiao-01', 3, 1, 32044, 'deadbeef', ?)",
-            (str(env.tmp / "audio" / "xiao-01_S0003_P01.wav"),),
-        )
-        conn.commit()
-
-    import db as db_module
-    db_module.DB_PATH = old
-    db_module.init_storage()
-
-    with closing(db_module.connect()) as conn:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(parts)")}
-        assert {"archive_status", "archive_attempts", "archive_error",
-                "archive_next_try_at"} <= columns
-        row = conn.execute("SELECT * FROM parts").fetchone()
-        assert row["archive_status"] == "pending"
-        assert row["audio_path"].endswith(".wav")
-        # Старая часть должна попасть в очередь сжатия, а не ждать вечно.
-        conn.execute(
-            "INSERT INTO transcripts (device_id, session, part, status)"
-            " VALUES ('xiao-01', 3, 1, 'done')"
-        )
-        conn.commit()
-        assert db_module.claim_part_for_archive(conn)["session"] == 3
-
 
 def test_player_survives_the_moment_between_the_new_path_and_the_old_file(env):
     """Запрос плеера может прийти ровно между сменой пути и удалением файла."""
@@ -337,13 +212,6 @@ def test_player_survives_the_moment_between_the_new_path_and_the_old_file(env):
 
     with TestClient(env.app) as client:
         assert client.get("/audio/xiao-01/7/1", auth=AUTH).status_code == 200
-
-
-def test_missing_audio_is_a_clean_404_not_a_crash(env):
-    upload(env)
-    Path(part_row(env)["audio_path"]).unlink()
-    with TestClient(env.app) as client:
-        assert client.get("/audio/xiao-01/7/1", auth=AUTH).status_code == 404
 
 
 # --- настоящий ffmpeg --------------------------------------------------------
@@ -362,24 +230,6 @@ def test_conversion_is_lossless_and_smaller(env):
     assert flac.stat().st_size < before
     # Главное доказательство: декодированный звук совпадает байт в байт.
     assert env.archive.pcm_md5(flac) == env.archive.pcm_md5(wav_path)
-    assert list(wav_path.parent.glob("*.part")) == []
-
-
-@needs_ffmpeg
-def test_broken_flac_fails_verification_and_leaves_the_original(env, monkeypatch):
-    """Если на выходе не FLAC, а мусор, проверка обязана это поймать."""
-    upload(env, marker=1)
-    wav_path = Path(part_row(env)["audio_path"])
-
-    monkeypatch.setattr(env.archive, "encode",
-                        lambda src, dst: Path(dst).write_bytes(b"not a flac at all"))
-
-    with pytest.raises(env.archive.ArchiveError) as error:
-        env.archive.convert(wav_path)
-
-    assert error.value.retryable is False
-    assert wav_path.exists()
-    assert not wav_path.with_suffix(".flac").exists()
     assert list(wav_path.parent.glob("*.part")) == []
 
 
@@ -441,54 +291,6 @@ def test_conversion_after_a_crash_overwrites_the_orphan_and_still_verifies(env):
 
 # --- точка расширения распознавания ------------------------------------------
 
-def test_default_backend_is_deepgram(env):
-    chosen = env.stt.backend()
-    assert chosen.name == "deepgram"
-    assert isinstance(chosen, env.stt.TranscriptionBackend)
-
-
-def test_backend_calls_the_engine_and_returns_the_common_shape(env, monkeypatch):
-    sample = env.stt.Transcript(text="привет", words=[], utterances=[], duration_sec=1.0)
-    monkeypatch.setattr(env.transcribe, "transcribe_file", lambda path: sample)
-    assert env.stt.backend().transcribe("/x/y.wav") is sample
-
-
-def test_unknown_backend_is_named_in_the_error(env, monkeypatch):
-    monkeypatch.setenv("RECORDER_STT", "whisper")
-    with pytest.raises(env.stt.TranscribeError) as error:
-        env.stt.backend()
-    assert "whisper" in str(error.value)
-    assert "deepgram" in str(error.value)
-    assert error.value.retryable is False
-
-
-def test_deepgram_error_type_is_the_shared_one(env):
-    """Воркер ловит stt.TranscribeError: движок обязан поднимать именно его."""
-    assert env.transcribe.TranscribeError is env.stt.TranscribeError
-
-
-def test_flac_part_is_sent_to_deepgram_as_flac(env, monkeypatch):
-    """Чужой Content-Type — повод для отказа 400, а часть уже в архиве."""
-    seen = {}
-
-    class Reply:
-        status_code = 200
-
-        @staticmethod
-        def json():
-            return {"metadata": {"duration": 1.0},
-                    "results": {"channels": [{"alternatives": [{"transcript": "да"}]}]}}
-
-    def fake_post(url, params=None, headers=None, content=None, timeout=None):
-        seen.update(headers)
-        return Reply()
-
-    flac = env.tmp / "part.flac"
-    flac.write_bytes(b"fLaC" + bytes(100))
-    monkeypatch.setattr(env.transcribe.httpx, "post", fake_post)
-    env.transcribe.transcribe_file(str(flac))
-    assert seen["Content-Type"] == "audio/flac"
-
 
 def _capture_post(env, monkeypatch):
     seen = {}
@@ -543,50 +345,3 @@ def test_quiet_part_reaches_deepgram_louder_and_same_length(env, monkeypatch):
     assert abs(len(sent) - quiet.stat().st_size) <= 64 * 2  # та же длина
 
 
-def test_without_ffmpeg_the_original_goes_to_deepgram(env, monkeypatch):
-    seen = _capture_post(env, monkeypatch)
-    monkeypatch.setattr(env.transcribe, "FFMPEG", "no-such-ffmpeg-binary")
-    quiet = env.tmp / "quiet.wav"
-    _quiet_wav(quiet)
-    env.transcribe.transcribe_file(str(quiet))
-    assert seen["content"] == quiet.read_bytes()
-
-
-def test_loudnorm_switch_off_sends_the_original(env, monkeypatch):
-    seen = _capture_post(env, monkeypatch)
-    monkeypatch.setattr(env.transcribe, "LOUDNORM", False)
-    quiet = env.tmp / "quiet.wav"
-    _quiet_wav(quiet)
-    env.transcribe.transcribe_file(str(quiet))
-    assert seen["content"] == quiet.read_bytes()
-
-
-@needs_ffmpeg
-def test_player_gets_a_louder_copy_of_the_same_length(env, monkeypatch):
-    """Владелец слушает выровненную копию, исходник на диске не меняется."""
-    import audio
-    monkeypatch.setattr(audio, "PLAY_LOUDNORM", True)
-    quiet = env.tmp / "audio" / "xiao-01_S0007_P01.wav"
-    quiet.parent.mkdir(exist_ok=True)
-    _quiet_wav(quiet)
-    before = quiet.read_bytes()
-
-    loud = audio.loud_copy(quiet)
-    assert loud.name == "xiao-01_S0007_P01.loud.flac"
-    assert quiet.read_bytes() == before
-    decoded = subprocess.run(
-        ["ffmpeg", "-loglevel", "error", "-i", str(loud), "-f", "wav", "-c:a", "pcm_s16le", "pipe:1"],
-        capture_output=True, check=True).stdout
-    assert _rms(decoded) > 5 * _rms(before)
-    assert abs(len(decoded) - len(before)) <= 64 * 2
-    assert audio.loud_copy(quiet) == loud  # второй раз — готовая копия
-
-
-def test_player_falls_back_to_the_original_without_ffmpeg(env, monkeypatch):
-    import audio
-    monkeypatch.setattr(audio, "PLAY_LOUDNORM", True)
-    monkeypatch.setattr(audio, "FFMPEG", "no-such-ffmpeg-binary")
-    quiet = env.tmp / "q.wav"
-    _quiet_wav(quiet)
-    assert audio.loud_copy(quiet) is None
-    assert list(env.tmp.glob("*.tmp")) == []

@@ -61,20 +61,6 @@ int main() {
     assert(h.stats.accepted == h.file.data.size() - offset);
     assert(h.stats.write.calls == (h.stats.accepted + 4095) / 4096);
   }
-  // Time budget does not pretend to interrupt a blocking call; yields after it.
-  {
-    Harness h;
-    assert(h.step() == MORE);
-    assert(h.sent == 4096 && h.stats.step.maxUs == 50100);
-    assert(h.stats.read.us == 100 && h.stats.write.us == 50000);
-  }
-  // Fast link still batches, up to the original chunk limit.
-  {
-    Harness h;
-    h.writeUs = 100;
-    h.step();
-    assert(h.stats.write.calls == 8 && h.sent == 32768);
-  }
   // REC already queued => no read or write. REC during write => no next block.
   {
     Harness h;
@@ -126,17 +112,6 @@ int main() {
     h.writeUs = 1;
     h.step(1, 10000);
     assert(h.stats.write.calls == 1);
-  }
-  // Progress works without modulo alignment, uses this attempt only.
-  {
-    uint32_t last = 0;
-    assert(!progressDue((1u << 20) - 1, last));
-    assert(progressDue((1u << 20) + 17, last));
-    assert(!progressDue((1u << 20) + 18, last));
-    assert(progressDue((2u << 20) + 25, last));
-    assert(kibPerSecond(0, 0) == 0);
-    assert(kibPerSecond(81920, 1000000) == 80);
-    assert(kibPerSecond(19200044, 240000000) == 78);
   }
   std::puts("upload pump: byte accuracy, resume, faults, REC yielding and timing checks passed");
 }

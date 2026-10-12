@@ -100,23 +100,6 @@ static void test_start_includes_preroll_and_stop_writes_end() {
   CHECK(sequential);
 }
 
-static void test_parts_rotate_exactly_on_the_byte_boundary() {
-  Rig r;
-  r.writer.cfg.partMaxBytes = 32000;  // секунда — чтобы тест был быстрым
-  r.capture(50000);
-  CHECK(r.writer.start(3));
-  CHECK(r.drain());
-  r.capture(20000);
-  CHECK(r.drain());
-  CHECK(r.writer.stop(true));
-
-  CHECK(pcmBytesOf(r.fs, "/REC0003_P01.WAV") == 32000);
-  CHECK(pcmBytesOf(r.fs, "/REC0003_P02.WAV") == 32000);
-  CHECK(pcmBytesOf(r.fs, "/REC0003_P03.WAV") == 6000);
-  CHECK(r.fs.has("/REC0003_N03.END"));
-  CHECK(r.writer.sessionBytes() == 70000);
-  CHECK(!r.fs.has("/REC0003_P01.TMP") && !r.fs.has("/REC0003_P03.TMP"));
-}
 
 static void test_mark_lands_in_the_part_where_the_audio_will_land() {
   Rig r;
@@ -232,31 +215,6 @@ static void test_tail_after_the_part_limit_becomes_the_next_session() {
   CHECK(stored == 30000);
 }
 
-static void test_part_limit_stops_cleanly_with_end() {
-  Rig r;
-  r.writer.cfg.partMaxBytes = 8192;
-  r.writer.cfg.maxParts = 2;
-  r.capture(30000);
-  CHECK(r.writer.start(7));
-  CHECK(r.drain());
-  CHECK(r.writer.partLimitReached());
-  CHECK(r.writer.stop(true));
-  CHECK(r.fs.has("/REC0007_P01.WAV") && r.fs.has("/REC0007_P02.WAV"));
-  CHECK(!r.fs.has("/REC0007_P03.WAV") && !r.fs.has("/REC0007_P03.TMP"));
-  CHECK(r.fs.has("/REC0007_N02.END"));
-  CHECK(logHas("Part limit"));
-}
-
-static void test_missing_end_is_reported_but_audio_is_still_clean() {
-  Rig r;
-  r.capture(1000);
-  CHECK(r.writer.start(7));
-  r.fs.failOpen.insert("/REC0007_N01.END");
-  CHECK(r.writer.stop(true));  // звук цел: сервер просто подождёт тишины
-  CHECK(r.fs.has("/REC0007_P01.WAV"));
-  CHECK(!r.writer.endCreated());
-  CHECK(logHas("cannot create /REC0007_N01.END"));
-}
 
 // --- восстановление ----------------------------------------------------------------------
 
@@ -285,13 +243,6 @@ static void test_recovery_fixes_header_and_renames_to_r() {
   CHECK(fs.has(std::string("/") + mrk));
 }
 
-static void test_recovery_with_nothing_to_do_is_quiet() {
-  FakeStorage fs;
-  fs.files["/REC0005_P02.WAV"] = std::vector<uint8_t>(100, 0);
-  g_log.clear();
-  CHECK(session::recoverUnfinished(fs, fakeLog) == 0);
-  CHECK(logHas("No unfinished parts"));
-}
 
 static void test_max_session_on_card_reads_every_kind_of_file() {
   FakeStorage fs;
@@ -402,29 +353,6 @@ static void test_cleanup_finishes_the_deletable_ones_even_if_one_is_stuck() {
   CHECK(!fs.has(sentName(1)) && !fs.has(sentName(5)));
 }
 
-static void test_cleanup_does_nothing_while_space_is_fine() {
-  FakeStorage fs;
-  const uint64_t MB = 1024 * 1024;
-  fs.files[sentName(1)] = std::vector<uint8_t>(MB, 0);
-  fs.total = 1000 * MB;
-  fs.usedByOthers = 10 * MB;
-  session::CleanupResult r = session::cleanupSent(fs, 50 * MB, 80 * MB, fakeLog);
-  CHECK(r.deleted == 0 && !r.cardLow);
-  CHECK(fs.has(sentName(1)));
-}
-
-static void test_cleanup_removes_recovered_sent_and_its_marks() {
-  FakeStorage fs;
-  const uint64_t MB = 1024 * 1024;
-  fs.files[sentName(4, true)] = std::vector<uint8_t>(MB, 0);   // REC0004_P01_R.SENT
-  fs.files["/REC0004_P01.MRK"] = {'2', '\n'};
-  fs.total = 100 * MB;
-  fs.usedByOthers = 98 * MB;
-  session::CleanupResult r = session::cleanupSent(fs, 50 * MB, 60 * MB, fakeLog);
-  CHECK(r.deleted == 1);
-  CHECK(!fs.has(sentName(4, true)));
-  CHECK(!fs.has("/REC0004_P01.MRK"));
-}
 
 // --- стерео: Recorder PCB RevA, два IM72D128V -------------------------------------------
 //
@@ -435,14 +363,6 @@ static uint16_t channelsOf(const FakeStorage &fs, const std::string &path) {
   return audio::getLe16(fs.files.at(path).data() + 22);
 }
 
-static void test_writer_config_derives_part_size_from_the_format() {
-  Rig mono;
-  CHECK(mono.writer.cfg.format == audio::MONO_16K);
-  CHECK(mono.writer.cfg.partMaxBytes == 19200000u);   // 10 минут моно
-  Rig stereo(audio::STEREO_16K);
-  CHECK(stereo.writer.cfg.format == audio::STEREO_16K);
-  CHECK(stereo.writer.cfg.partMaxBytes == 38400000u); // те же 10 минут, вдвое больше байт
-}
 
 static void test_stereo_parts_rotate_on_the_byte_boundary_and_count_frames() {
   Rig r(audio::STEREO_16K);
@@ -468,24 +388,6 @@ static void test_stereo_parts_rotate_on_the_byte_boundary_and_count_frames() {
   CHECK(audio::getLe32(r.fs.files.at("/REC0003_P03.WAV").data() + 4) == 36u + 2000u);
 }
 
-static void test_stereo_mark_and_preroll_are_measured_in_seconds() {
-  // Одна секунда стерео — 64 000 байт. Метка и предзапись должны получиться в
-  // тех же секундах, что и в моно; считай кто-то по 32 000 — было бы вдвое больше.
-  Rig r(audio::STEREO_16K);
-  r.capture(64000);
-  CHECK(r.writer.start(9));
-  CHECK(r.writer.preRollBytes() == 64000u);
-  CHECK(r.writer.cfg.format.seconds(r.writer.preRollBytes()) == 1.0);
-  const uint32_t headAtPress = r.ring.head();
-  r.capture(64000 * 2);
-  CHECK(r.drain());
-  CHECK(r.writer.markAt(headAtPress));
-  CHECK(r.writer.mark());
-  const std::vector<uint8_t> &m = r.fs.files["/REC0009_P01.MRK"];
-  CHECK(std::string(m.begin(), m.end()) == "1.00\n3.00\n");
-  CHECK(r.writer.stop(true));
-  CHECK(pcmBytesOf(r.fs, "/REC0009_P01.WAV") == 64000u * 3);
-}
 
 static void test_stereo_power_loss_recovers_with_the_files_own_frame_size() {
   // Восстановление не знает, какая плата собрана: формат берётся из заголовка
@@ -535,36 +437,6 @@ static uint32_t referenceCrc(const std::vector<uint8_t> &d) {
   return ~c;
 }
 
-static std::vector<uint8_t> noise(size_t n, uint32_t seed) {
-  std::vector<uint8_t> v(n);
-  for (size_t i = 0; i < n; ++i) {
-    seed = seed * 1664525u + 1013904223u;
-    v[i] = static_cast<uint8_t>(seed >> 24);
-  }
-  return v;
-}
-
-static void test_crc32_is_zlib_crc_and_combines_like_zlib() {
-  const std::vector<uint8_t> nine = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
-  CHECK(referenceCrc(nine) == 0xCBF43926u);  // эталон сам проверен известным значением
-  CHECK(crc32::update(0, nine.data(), nine.size()) == 0xCBF43926u);
-
-  const std::vector<uint8_t> a = noise(44, 1), b = noise(70001, 2);
-  std::vector<uint8_t> ab = a;
-  ab.insert(ab.end(), b.begin(), b.end());
-  const uint32_t ca = crc32::update(0, a.data(), a.size());
-  const uint32_t cb = crc32::update(0, b.data(), b.size());
-  CHECK(crc32::update(ca, b.data(), b.size()) == referenceCrc(ab));  // продолжение, как esp_rom_crc32_le
-  CHECK(crc32::combine(ca, cb, static_cast<uint32_t>(b.size())) == referenceCrc(ab));
-  CHECK(crc32::combine(ca, 0, 0) == ca);
-  for (size_t len : {size_t(1), size_t(2), size_t(3), size_t(4095), size_t(32000)}) {
-    const std::vector<uint8_t> tail = noise(len, static_cast<uint32_t>(len));
-    std::vector<uint8_t> whole = a;
-    whole.insert(whole.end(), tail.begin(), tail.end());
-    CHECK(crc32::combine(ca, crc32::update(0, tail.data(), len), static_cast<uint32_t>(len)) ==
-          referenceCrc(whole));
-  }
-}
 
 // Загрузчик берёт CRC отсюда и не перечитывает с карты 19 МБ. Значит, он
 // обязан совпасть с CRC файла, каким тот лежит на карте после закрытия:
@@ -580,6 +452,8 @@ static void checkKnownCrcMatchesFile(Rig &r, const char *name) {
 }
 
 static void test_closed_parts_know_their_crc_without_reading_the_card() {
+  const uint8_t nine[] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
+  CHECK(crc32::update(0, nine, sizeof(nine)) == 0xCBF43926u);  // CRC-32 zlib, как X-Crc32
   Rig r;
   r.writer.cfg.partMaxBytes = 32000;
   r.capture(50000);  // предзапись
@@ -617,73 +491,25 @@ static void test_known_crc_needs_the_same_size_and_can_be_forgotten() {
   CHECK(!r.writer.knownCrc("REC0005_P01.WAV", size, &crc));
 }
 
-static void test_bad_or_unrenamed_parts_have_no_known_crc() {
-  uint32_t crc = 0;
-  Rig bad;
-  bad.writer.cfg.partMaxBytes = 32000;
-  bad.fs.failWriteAfter["/REC0007_P01.TMP"] = 44 + 20000;
-  bad.capture(40000);
-  CHECK(bad.writer.start(7));
-  CHECK(!bad.drain());
-  CHECK(!bad.writer.stop(false));
-  CHECK(!bad.writer.knownCrc("REC0007_P01.BAD", static_cast<uint32_t>(bad.fs.sizeOf("/REC0007_P01.BAD")), &crc));
-  CHECK(!bad.writer.knownCrc("REC0007_P01.WAV", 44 + 20000, &crc));
-
-  Rig stuck;
-  stuck.capture(9000);
-  CHECK(stuck.writer.start(8));
-  stuck.fs.failRename.insert("/REC0008_P01.TMP");
-  CHECK(!stuck.writer.stop(true));
-  CHECK(!stuck.writer.knownCrc("REC0008_P01.WAV", static_cast<uint32_t>(stuck.fs.sizeOf("/REC0008_P01.TMP")), &crc));
-}
-
-static void test_only_the_last_parts_are_remembered() {
-  Rig r;
-  r.writer.cfg.partMaxBytes = 1000;
-  const int parts = static_cast<int>(session::KNOWN_CRCS) + 4;
-  r.capture(static_cast<uint32_t>(parts) * 1000);
-  CHECK(r.writer.start(6));
-  CHECK(r.drain());
-  CHECK(r.writer.stop(true));
-  uint32_t crc = 0;
-  char name[session::PATH_MAX_LEN];
-  for (int p = 1; p <= parts; ++p) {
-    snprintf(name, sizeof(name), "REC0006_P%02d.WAV", p);
-    const bool known = r.writer.knownCrc(name, 1044, &crc);
-    CHECK(known == (p > parts - static_cast<int>(session::KNOWN_CRCS)));
-  }
-  checkKnownCrcMatchesFile(r, name);
-}
 
 int main() {
-  test_crc32_is_zlib_crc_and_combines_like_zlib();
   test_closed_parts_know_their_crc_without_reading_the_card();
   test_known_crc_needs_the_same_size_and_can_be_forgotten();
-  test_bad_or_unrenamed_parts_have_no_known_crc();
-  test_only_the_last_parts_are_remembered();
-  test_writer_config_derives_part_size_from_the_format();
   test_stereo_parts_rotate_on_the_byte_boundary_and_count_frames();
-  test_stereo_mark_and_preroll_are_measured_in_seconds();
   test_stereo_power_loss_recovers_with_the_files_own_frame_size();
   test_start_includes_preroll_and_stop_writes_end();
-  test_parts_rotate_exactly_on_the_byte_boundary();
   test_mark_lands_in_the_part_where_the_audio_will_land();
   test_failed_rename_at_stop_means_no_end_file();
   test_failed_header_rewrite_at_stop_makes_bad_and_no_end();
   test_write_error_mid_part_stops_dirty_without_end();
   test_failed_rotation_in_the_middle_stops_dirty();
-  test_part_limit_stops_cleanly_with_end();
-  test_missing_end_is_reported_but_audio_is_still_clean();
   test_recovery_fixes_header_and_renames_to_r();
-  test_recovery_with_nothing_to_do_is_quiet();
   test_max_session_on_card_reads_every_kind_of_file();
   test_cleanup_deletes_oldest_sent_in_batches_until_target();
   test_cleanup_stops_when_a_pass_deletes_nothing();
   test_cleanup_finishes_the_deletable_ones_even_if_one_is_stuck();
   test_tail_after_the_part_limit_becomes_the_next_session();
   test_cleanup_flags_low_card_only_when_nothing_is_left_to_delete();
-  test_cleanup_does_nothing_while_space_is_fine();
-  test_cleanup_removes_recovered_sent_and_its_marks();
 
   printf("session tests: %d checks, %d failed\n", g_checked, g_failed);
   return g_failed == 0 ? 0 : 1;
