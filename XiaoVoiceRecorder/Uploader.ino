@@ -397,7 +397,7 @@ SendResult prepareTransfer(const String &name) {
   g_upPerf = UploadPerf{};
   g_upPerf.active = true;
   Serial.printf("[up-perf] block=%u sd_hz=%lu tcp_snd_buf=%u tcp_wnd=%u tcp_mss=%u rssi=%d heap=%lu\n",
-                static_cast<unsigned>(upl::CHUNK_BYTES), static_cast<unsigned long>(cfg::SD_SPI_HZ),
+                static_cast<unsigned>(upl::CHUNK_BYTES), static_cast<unsigned long>(g_sdHz),
                 static_cast<unsigned>(TCP_SND_BUF), static_cast<unsigned>(TCP_WND),
                 static_cast<unsigned>(TCP_MSS), static_cast<int>(WiFi.RSSI()),
                 static_cast<unsigned long>(ESP.getFreeHeap()));

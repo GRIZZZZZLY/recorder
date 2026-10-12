@@ -60,7 +60,11 @@ constexpr uint32_t SERIAL_BAUD = 115200;
 
 // Пины и формат звука — в BoardConfig.h. Здесь только то, что от платы не зависит.
 constexpr audio::Format AUDIO = board::AUDIO;
+// Частота SPI карты по умолчанию; sd_hz в NVS переопределяет её без перепрошивки
+// (провода и карты разные). Применяется при монтировании, то есть после перезагрузки.
 constexpr uint32_t SD_SPI_HZ = 10000000;
+constexpr uint32_t SD_SPI_HZ_MIN = 400000;
+constexpr uint32_t SD_SPI_HZ_MAX = 40000000;
 
 // Сколько секунд до нажатия попадает в запись. Ёмкость буфера округляется
 // вверх до степени двойки (RingBuffer работает маской), поэтому фактическая
@@ -129,6 +133,7 @@ DeviceState g_state = ST_FAULT;
 bool g_audioReady = false;
 bool g_sdReady = false;
 int g_sdCsPin = -1;
+uint32_t g_sdHz = cfg::SD_SPI_HZ;  // с какой частотой карта смонтирована на самом деле
 uint32_t g_recordStartedMs = 0;
 uint32_t g_lastStatusMs = 0;
 uint16_t g_nextSessionId = 1;    // посчитан заранее, START не ходит по каталогу
@@ -270,7 +275,7 @@ bool tryMountSd(int csPin) {
   SPI.end();
   delay(20);
   SPI.begin(board::SD_SCK_PIN, board::SD_MISO_PIN, board::SD_MOSI_PIN, csPin);
-  if (!SD.begin(csPin, SPI, cfg::SD_SPI_HZ)) {
+  if (!SD.begin(csPin, SPI, g_sdHz)) {
     return false;
   }
   if (SD.cardType() == CARD_NONE) {
@@ -281,12 +286,17 @@ bool tryMountSd(int csPin) {
 }
 
 bool initSd() {
+  Preferences prefs;
+  prefs.begin("recorder", true);  // то же пространство, что у Uploader и Feedback
+  g_sdHz = prefs.isKey("sd_hz") ? prefs.getUInt("sd_hz", cfg::SD_SPI_HZ) : cfg::SD_SPI_HZ;
+  prefs.end();
+  if (g_sdHz < cfg::SD_SPI_HZ_MIN || g_sdHz > cfg::SD_SPI_HZ_MAX) g_sdHz = cfg::SD_SPI_HZ;
   Serial.printf("[sd] Mounting microSD, CS=GPIO%d...\n", board::SD_CS_PIN);
   if (tryMountSd(board::SD_CS_PIN)) {
     g_sdCsPin = board::SD_CS_PIN;
     const uint64_t sizeMb = SD.cardSize() / (1024ULL * 1024ULL);
-    Serial.printf("[sd] Ready. CS=GPIO%d, card=%llu MB\n",
-                  board::SD_CS_PIN, static_cast<unsigned long long>(sizeMb));
+    Serial.printf("[sd] Ready. CS=GPIO%d, card=%llu MB, SPI %lu Hz\n", board::SD_CS_PIN,
+                  static_cast<unsigned long long>(sizeMb), static_cast<unsigned long>(g_sdHz));
     return true;
   }
   Serial.printf("[sd] ERROR: card not mounted with CS=GPIO%d (%s).\n", board::SD_CS_PIN, board::NAME);
@@ -732,7 +742,28 @@ void printHelp() {
   Serial.println("           device_token=... device_id=... vibro_pin=N");
   Serial.println("           led_pin=N led_g_pin=N led_b_pin=N (красный, зелёный, синий)");
   Serial.println("           led_r_lvl=N led_g_lvl=N led_b_lvl=N (яркость 0..255), led_o_lvl=N (зелёный в оранжевом)");
+  Serial.println("           sd_hz=N (частота карты, Гц, после перезагрузки; пусто — 10 МГц)");
   Serial.println();
+}
+
+// sd_hz=N — частота карты в Гц до следующей перезагрузки; пусто — по умолчанию.
+bool setSdConfig(const String &key, const String &value) {
+  if (key != "sd_hz") return false;
+  Preferences prefs;
+  prefs.begin("recorder", false);
+  const uint32_t hz = static_cast<uint32_t>(value.toInt());
+  if (value.isEmpty()) {
+    prefs.remove("sd_hz");
+    Serial.printf("[cfg] sd_hz сброшено: %lu Гц после перезагрузки\n", static_cast<unsigned long>(cfg::SD_SPI_HZ));
+  } else if (hz < cfg::SD_SPI_HZ_MIN || hz > cfg::SD_SPI_HZ_MAX) {
+    Serial.printf("[cfg] sd_hz: нужно %lu..%lu Гц\n", static_cast<unsigned long>(cfg::SD_SPI_HZ_MIN),
+                  static_cast<unsigned long>(cfg::SD_SPI_HZ_MAX));
+  } else {
+    prefs.putUInt("sd_hz", hz);
+    Serial.printf("[cfg] sd_hz=%lu сохранено, применится после перезагрузки\n", static_cast<unsigned long>(hz));
+  }
+  prefs.end();
+  return true;
 }
 
 // Строка key=value настраивает, одиночная буква — команда. Разделение по
@@ -742,7 +773,7 @@ void processSerialLine(const String &line) {
   if (eq > 0) {
     const String key = line.substring(0, eq);
     const String value = line.substring(eq + 1);
-    if (!setUploadConfig(key, value) && !setFeedbackConfig(key, value)) {
+    if (!setUploadConfig(key, value) && !setFeedbackConfig(key, value) && !setSdConfig(key, value)) {
       Serial.printf("[cfg] Неизвестный параметр: %s\n", key.c_str());
     }
     return;

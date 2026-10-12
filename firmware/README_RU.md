@@ -1,21 +1,31 @@
-# Переходная сборка через ESP-IDF
+# Сборка через ESP-IDF
 
 Тот же исходный код, что в `XiaoVoiceRecorder/`, собранный `idf.py` с Arduino
 ESP32 3.3.11 как компонентом ESP-IDF 5.5. Arduino-сборка (`tools/build.sh`)
-остаётся основной и никуда не исчезает: этот каталог — второй путь к тому же
-устройству, а не замена.
+остаётся рядом: тот же код, удобная локальная проверка, быстрый откат.
 
-**`idf.py build` отсюда ещё не запускался**: ни локально (IDF на машине
-владельца нет), ни на плате. Первый прогон делает CI (`firmware-idf` в
-`.github/workflows/ci.yml`, пока с `continue-on-error`). До зелёного прогона
-считать этот каталог заготовкой.
+Чем отличается от Arduino-сборки: только настройками ядра, которые Arduino
+зашивает в готовые библиотеки. `sdkconfig.defaults` повторяет sdkconfig
+Arduino (`esp32s3-libs/3.3.11/qio_opi`, сверка 12 окт 2026) с одним намеренным
+отличием — буфер отправки TCP 32 КиБ вместо 5744 байт. На плате 12 окт:
+отправка 436 КиБ/с против 81 КиБ/с, потерь звука нет. Флаги, которые Arduino
+берёт из `boards.txt` (USB-журнал, PSRAM), задаёт `CMakeLists.txt`: без них
+журнал уходил мимо USB.
 
-Что проверено: порядок объявлений. Тот же набор `#include` трёх `.ino`, что в
-`main/main.cpp`, собран arduino-cli с ядром esp32 3.3.11 как обычный скетч —
-без автоматических прототипов Arduino для включённых файлов. Компилируется,
-1 086 594 байта. Значит, склейка в один translation unit сама по себе ошибок
-не даёт; непроверенным остаётся только слой IDF: `sdkconfig.defaults`,
-таблица разделов, менеджер компонентов.
+Локально IDF у владельца нет. Образы собирает CI (`firmware-idf`, артефакт
+`firmware-idf-sense` вместе с итоговым `sdkconfig`), шьёт esptool из
+Arduino-тулчейна:
+
+```bash
+gh run download <run-id> -n firmware-idf-sense -D img
+esptool --chip esp32s3 -p COM5 -b 921600 write_flash --flash_mode dio --flash_size 8MB \
+  --flash_freq 80m 0x0 img/build/bootloader/bootloader.bin \
+  0x8000 img/build/partition_table/partition-table.bin \
+  0xe000 img/build/ota_data_initial.bin 0x10000 img/build/recorder.bin
+```
+
+Раздел настроек (NVS, 0x9000) при этом не трогается: Wi-Fi, сервер и токен
+переживают переход в обе стороны. Откат — `bash tools/build.sh --upload -p COM5`.
 
 ## Зачем
 
@@ -45,8 +55,8 @@ idf.py -p COMx flash monitor
 
 | Файл | Что |
 | --- | --- |
-| `CMakeLists.txt` | проект IDF, имя `recorder` |
-| `sdkconfig.defaults` | PSRAM octal, флеш 8 МБ, тик 1 кГц, автозапуск `setup()/loop()`, USB CDC |
+| `CMakeLists.txt` | проект IDF, имя `recorder`; флаги USB-журнала и PSRAM из `boards.txt` |
+| `sdkconfig.defaults` | настройки Arduino-сборки (FAT, lwIP, Wi-Fi, стеки, дамп при сбое) + буфер TCP 32 КиБ |
 | `partitions.csv` | копия схемы Arduino `default_8MB`: NVS на том же месте, два раздела под OTA |
 | `main/main.cpp` | включает три `.ino` в один translation unit — так же, как их склеивает Arduino |
 | `main/idf_component.yml` | `espressif/arduino-esp32 ^3.3.11`, IDF `>=5.5,<6` |
