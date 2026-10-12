@@ -49,4 +49,3 @@ for t in $TESTS; do
   g++ $FLAGS -o "$OUT/$t" "$ROOT/$SRC/host_tests/$t.cpp"
   "$OUT/$t"
 done
-

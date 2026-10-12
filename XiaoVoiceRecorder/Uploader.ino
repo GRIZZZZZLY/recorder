@@ -7,8 +7,18 @@
  * верхней границей задержки REC. Захват микрофона работает отдельной задачей.
  * START прерывает передачу; следующая попытка спрашивает серверный offset.
  * Доставка подтверждается только после сверки размера и CRC ответа.
+ *
+ * Классы ответов — UploadPolicy.h: временная помеха откладывает очередь по
+ * расписанию 1/5/15/60 минут, конфликт или отказ одной части переименовывает
+ * её (.CONFLICT / .REJECT) и не держит остальные, 401 и кривой адрес
+ * останавливают отправку до смены настроек. Ничего не удаляется.
+ *
  * Измерения [up-perf] разделяют CRC, соединение, SD и TLS write; скорость
  * тела не включает CRC, но включает паузы между вызовами serviceUpload().
+ *
+ * ponytail: контрольная сумма считается чтением всего файла перед каждой
+ * попыткой. Путь наверх — считать на лету при записи и хранить рядом с
+ * частью, тогда 19 МБ не перечитываются вовсе.
  */
 
 #include <Preferences.h>
@@ -570,7 +580,7 @@ SendResult sendBodyChunks(int chunks) {
       g_upPerf.body, uploadClockUs, uploadButtonPending);
   g_diag.upload_bytes += g_upPerf.body.accepted - before;
   if (uploadpump::progressDue(g_upPerf.body.accepted, g_upPerf.lastReported)) {
-    Serial.printf("[up] %lu/%lu bytes, %llu KiB/s (body), sd_us=%llu write_us=%llu\n",
+    Serial.printf("[up] %lu из %lu байт, тело %llu КиБ/с, sd_us=%llu write_us=%llu\n",
                   static_cast<unsigned long>(g_upSent), static_cast<unsigned long>(g_upSize),
                   static_cast<unsigned long long>(uploadpump::kibPerSecond(
                       g_upPerf.body.accepted, uploadClockUs() - g_upPerf.bodyStarted)),
@@ -578,8 +588,8 @@ SendResult sendBodyChunks(int chunks) {
                   static_cast<unsigned long long>(g_upPerf.body.write.us));
   }
   if (result == uploadpump::READ_ERROR || result == uploadpump::WRITE_ERROR) {
-    Serial.printf("[up] %s error at %lu/%lu bytes; next attempt will probe server offset\n",
-                  result == uploadpump::READ_ERROR ? "SD" : "TLS write",
+    Serial.printf("[up] Обрыв (%s) на %lu из %lu байт; следующая попытка спросит у сервера, откуда продолжать.\n",
+                  result == uploadpump::READ_ERROR ? "чтение карты" : "запись в сокет",
                   static_cast<unsigned long>(g_upSent), static_cast<unsigned long>(g_upSize));
     return SEND_RETRY;
   }
@@ -852,8 +862,11 @@ void serviceUpload() {
         }
         return;
       }
-      g_upPerf.probeUs = uploadClockUs() - g_upPerf.probeStarted;
-      g_upPerf.probing = false;
+      // Только первый раз: после раннего выхода ради кнопки ответ уже собран.
+      if (g_upPerf.probing) {
+        g_upPerf.probeUs = uploadClockUs() - g_upPerf.probeStarted;
+        g_upPerf.probing = false;
+      }
       if (uploadButtonPending()) return;
       const int status = g_reply.startsWith("HTTP/1.") ? g_reply.substring(9, 12).toInt() : 0;
       const int split = g_reply.indexOf("\r\n\r\n");
@@ -941,4 +954,3 @@ void cleanupSentParts() {
     feedbackEvent("error");
   }
 }
-
