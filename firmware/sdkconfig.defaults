@@ -27,9 +27,24 @@ CONFIG_MBEDTLS_KEY_EXCHANGE_PSK=y
 
 # setup()/loop() запускает компонент Arduino; app_main() не пишем.
 CONFIG_AUTOSTART_ARDUINO=y
-# Serial через встроенный USB CDC, как в Arduino-сборке XIAO_ESP32S3 (cdc_on_boot=1).
-CONFIG_ARDUINO_USB_CDC_ON_BOOT=y
-CONFIG_ARDUINO_USB_MODE=1
+# Serial через USB задаётся макросами в CMakeLists.txt: у Arduino 3.3.11 нет
+# таких пунктов Kconfig, строки CONFIG_ARDUINO_USB_* молча игнорировались.
+
+# Как в sdkconfig Arduino-сборки (esp32s3-libs/3.3.11/qio_opi): 240 МГц
+# (у IDF по умолчанию 160), журнал IDF только ошибки, сторож задач
+# перезагружает плату и не следит за idle второго ядра — loop() живёт там
+# и в записи с полным буфером не уступает такт.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_LOG_DEFAULT_LEVEL_ERROR=y
+CONFIG_BOOTLOADER_LOG_LEVEL_ERROR=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
+# ОПЫТ 12 окт 2026, не измерено: у Arduino буфер отправки TCP 5744 байта
+# (зашит в готовые библиотеки). При нём 80 КиБ/с означают RTT около 70 мс.
+# 32 КиБ проверяют, упирается ли отправка в этот буфер; [up-perf] печатает
+# фактическое значение. Цена — до ~27 КиБ внутренней RAM на соединение.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
 
 # Компилятор: оптимизация по размеру, как у Arduino по умолчанию.
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
