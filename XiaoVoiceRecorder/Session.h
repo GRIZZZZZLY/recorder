@@ -2,7 +2,7 @@
 //
 //   session::Writer      START с предзаписью, слив буфера, ротация частей ровно
 //                        по байтам, метки, STOP с .END только после чистого
-//                        закрытия
+//                        закрытия, CRC закрытых частей без второго чтения
 //   session::recoverUnfinished  .TMP после пропадания питания -> _R.WAV
 //   session::cleanupSent        удаление только .SENT, старые первыми, пока не
 //                               освободится нужное место
@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include "AudioFormat.h"
+#include "Crc32.h"
 #include "RingBuffer.h"
 #include "Storage.h"
 #include "UploadPolicy.h"
@@ -26,6 +27,7 @@ namespace session {
 
 constexpr size_t PATH_MAX_LEN = 32;
 constexpr uint16_t MAX_SESSIONS = 9999;
+constexpr size_t KNOWN_CRCS = 16;
 
 // --- имена и заголовок WAV ------------------------------------------------------
 
@@ -98,6 +100,28 @@ class Writer {
   bool endCreated() const { return m_endCreated; }
   const char *currentPath() const { return m_path; }
   WriterStats &stats() { return m_stats; }
+
+  // CRC-32 файла части (заголовок + звук), посчитанный при записи, — для
+  // X-Crc32 без второго чтения карты. Есть только у частей, чисто закрытых
+  // в .WAV с момента загрузки, и только у последних KNOWN_CRCS. name — имя без
+  // «/», fileBytes — размер файла на карте: другой размер значит другой файл.
+  bool knownCrc(const char *name, uint32_t fileBytes, uint32_t *crc) const {
+    for (const KnownCrc &k : m_known) {
+      if (k.fileBytes == fileBytes && k.fileBytes != 0 && strcmp(k.name, name) == 0) {
+        *crc = k.crc;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Сервер не принял CRC (422): то, что лежит на карте, разошлось с тем, что
+  // писалось. Дальше CRC этой части считается только чтением файла.
+  void forgetCrc(const char *name) {
+    for (KnownCrc &k : m_known) {
+      if (strcmp(k.name, name) == 0) k = KnownCrc{};
+    }
+  }
 
   // START. Всё, что буфер держит сейчас, — предзапись: становится началом части 1.
   bool start(uint16_t sessionId) {
@@ -259,6 +283,7 @@ class Writer {
       return false;
     }
     m_partBytes = 0;
+    m_dataCrc = 0;
     m_lastFlushMs = m_now();
     return true;
   }
@@ -278,6 +303,7 @@ class Writer {
     char finalPath[PATH_MAX_LEN];
     partPath(finalPath, sizeof(finalPath), m_session, m_part, ok ? "WAV" : "BAD");
     const bool renamed = m_fs.rename(m_path, finalPath);
+    if (ok && renamed) rememberCrc(finalPath + 1);
     m_sessionBytes += m_partBytes;
     logf("[rec] %s %s | %lu audio bytes | header=%s | renamed=%s",
          ok ? "PART OK" : "PART FAILED", renamed ? finalPath : m_path,
@@ -320,6 +346,7 @@ class Writer {
 
     // Считаем то, что реально дошло до карты, чтобы заголовок описывал файл.
     const uint32_t kept = cfg.format.wholeFrames(static_cast<uint32_t>(written));
+    m_dataCrc = crc32::update(m_dataCrc, m_chunk, kept);
     m_partBytes += kept;
     m_stats.written_frames += cfg.format.frames(kept);
     if (written != got) {
@@ -329,6 +356,20 @@ class Writer {
       return false;
     }
     return true;
+  }
+
+  // CRC файла = CRC итогового заголовка, продолженный CRC звука: заголовок
+  // переписывается последним, а звук уже посчитан по мере записи.
+  // ponytail: только в памяти, до перезагрузки; после неё загрузчик читает
+  // файл целиком, как раньше. Путь наверх — записывать CRC рядом с частью.
+  void rememberCrc(const char *name) {
+    uint8_t h[audio::WAV_HEADER_BYTES];
+    audio::buildWavHeader(h, cfg.format, m_partBytes);
+    KnownCrc &k = m_known[m_knownNext];
+    m_knownNext = (m_knownNext + 1) % KNOWN_CRCS;
+    snprintf(k.name, sizeof(k.name), "%s", name);
+    k.fileBytes = audio::WAV_HEADER_BYTES + m_partBytes;
+    k.crc = crc32::combine(crc32::update(0, h, sizeof(h)), m_dataCrc, m_partBytes);
   }
 
   void logf(const char *fmt, ...) {
@@ -360,6 +401,15 @@ class Writer {
   char m_path[PATH_MAX_LEN] = {0};
   uint8_t m_chunk[CHUNK_CAP];
   WriterStats m_stats;
+  uint32_t m_dataCrc = 0;  // CRC звука открытой части, без заголовка
+
+  struct KnownCrc {
+    char name[PATH_MAX_LEN] = {0};
+    uint32_t fileBytes = 0;
+    uint32_t crc = 0;
+  };
+  KnownCrc m_known[KNOWN_CRCS];
+  size_t m_knownNext = 0;
 };
 
 // --- обслуживание карты -------------------------------------------------------------------

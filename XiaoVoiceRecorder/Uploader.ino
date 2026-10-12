@@ -16,9 +16,9 @@
  * Измерения [up-perf] разделяют CRC, соединение, SD и TLS write; скорость
  * тела не включает CRC, но включает паузы между вызовами serviceUpload().
  *
- * ponytail: контрольная сумма считается чтением всего файла перед каждой
- * попыткой. Путь наверх — считать на лету при записи и хранить рядом с
- * частью, тогда 19 МБ не перечитываются вовсе.
+ * CRC части, закрытой с момента загрузки, берётся из session::Writer — он
+ * считает его по мере записи, 19 МБ не перечитываются. Иначе (после
+ * перезагрузки, у _R-частей, после 422) — чтением всего файла, по кускам.
  */
 
 #include <Preferences.h>
@@ -386,6 +386,11 @@ SendResult prepareTransfer(const String &name) {
   g_upName = name;
   g_upCrc = 0;
   g_upCrcDone = 0;
+  // Часть, закрытая с этой загрузки, знает свой CRC: UP_CRC пройдёт сразу.
+  if (g_writer.knownCrc(name.c_str(), g_upSize, &g_upCrc)) {
+    g_upCrcDone = g_upSize;
+    Serial.printf("[up] CRC %s посчитан при записи, файл не перечитывается.\n", name.c_str());
+  }
   g_upSent = 0;
   g_reply = "";
   g_transferStartedMs = millis();
@@ -643,6 +648,9 @@ SendResult classifyReply() {
   const String body = split >= 0 ? g_reply.substring(split + 4) : String();
   if (verdict != SEND_OK) {
     Serial.printf("[up] Ответ %d: %s\n", status, body.c_str());
+    // 422 — CRC не сошёлся. Если он был из памяти записи, карта могла отдать
+    // не то, что писалось: дальше считать только по файлу, иначе повтор вечен.
+    if (status == 422) g_writer.forgetCrc(g_upName.c_str());
     return verdict;
   }
   char buf[16];
@@ -655,6 +663,7 @@ SendResult classifyReply() {
   const bool sizeEchoed = sizeAt >= 0 && (sizeEnd >= body.length() || !isDigit(body[sizeEnd]));
   if (!crcEchoed || !sizeEchoed) {
     Serial.printf("[up] Сервер подтвердил не то: %s\n", body.c_str());
+    g_writer.forgetCrc(g_upName.c_str());
     return SEND_RETRY;
   }
   return SEND_OK;
