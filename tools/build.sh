@@ -10,7 +10,7 @@
 #
 # Ищет arduino-cli так: $ARDUINO_CLI, затем в PATH, затем на E: (тулчейн
 # владельца). Каталоги ядра можно переопределить через ARDUINO_DIRECTORIES_*:
-# в CI они лежат в рабочем каталоге, у владельца — на E:, чтобы не занимать C:.
+# у владельца они на E:, чтобы не занимать C:.
 set -euo pipefail
 
 SKETCH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/XiaoVoiceRecorder"

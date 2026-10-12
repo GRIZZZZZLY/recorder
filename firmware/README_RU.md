@@ -12,16 +12,14 @@ Arduino (`esp32s3-libs/3.3.11/qio_opi`, сверка 12 окт 2026) с одни
 берёт из `boards.txt` (USB-журнал, PSRAM), задаёт `CMakeLists.txt`: без них
 журнал уходил мимо USB.
 
-Локально IDF у владельца нет. Образы собирает CI (`firmware-idf`, артефакт
-`firmware-idf-sense` вместе с итоговым `sdkconfig`), шьёт esptool из
-Arduino-тулчейна:
+CI нет (12 окт 2026): образы собираются только локально, `cd firmware &&
+idf.py build`, и нужен установленный ESP-IDF 5.5.5. На машине владельца его
+пока нет. Последние образы, собранные ещё в CI (`master` 25ed1ff, run
+38303844611, артефакт `firmware-idf-sense`), лежат на GitHub до 26 окт 2026.
+Шьёт esptool из Arduino-тулчейна:
 
 ```bash
-gh run download <run-id> -n firmware-idf-sense -D img
-esptool --chip esp32s3 -p COM5 -b 921600 write_flash --flash_mode dio --flash_size 8MB \
-  --flash_freq 80m 0x0 img/build/bootloader/bootloader.bin \
-  0x8000 img/build/partition_table/partition-table.bin \
-  0xe000 img/build/ota_data_initial.bin 0x10000 img/build/recorder.bin
+esptool --chip esp32s3 -p COM5 -b 921600 write_flash --flash_mode dio --flash_size 8MB   --flash_freq 80m 0x0 build/bootloader/bootloader.bin   0x8000 build/partition_table/partition-table.bin   0xe000 build/ota_data_initial.bin 0x10000 build/recorder.bin
 ```
 
 Раздел настроек (NVS, 0x9000) при этом не трогается: Wi-Fi, сервер и токен
