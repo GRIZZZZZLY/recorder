@@ -95,6 +95,7 @@ jobs:
           name: firmware-idf-sense
           retention-days: 14
           path: |
+            firmware/sdkconfig
             firmware/build/flasher_args.json
             firmware/build/recorder.bin
             firmware/build/ota_data_initial.bin

@@ -39,6 +39,18 @@ CONFIG_LOG_DEFAULT_LEVEL_ERROR=y
 CONFIG_BOOTLOADER_LOG_LEVEL_ERROR=y
 CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+# Журнал ядра Arduino молчит, как при Core Debug Level: None в Arduino-сборке.
+CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL_NONE=y
+
+# FAT как у Arduino. У IDF по умолчанию длинных имён нет (только 8.3), и
+# «REC0036_P01.TMP» не создаётся: 12 окт первая IDF-прошивка не смогла начать
+# запись — fopen(/sd/REC0036_P01.TMP) failed.
+CONFIG_FATFS_LFN_STACK=y
+CONFIG_FATFS_MAX_LFN=255
+CONFIG_FATFS_API_ENCODING_UTF_8=y
+CONFIG_FATFS_CODEPAGE_850=y
+CONFIG_FATFS_VOLUME_COUNT=2
+CONFIG_FATFS_USE_LABEL=y
 
 # ОПЫТ 12 окт 2026, не измерено: у Arduino буфер отправки TCP 5744 байта
 # (зашит в готовые библиотеки). При нём 80 КиБ/с означают RTT около 70 мс.
