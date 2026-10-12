@@ -23,7 +23,7 @@
 | microSD SPI | GPIO7/8/9, CS GPIO21 | GPIO7/8/9, CS GPIO44 |
 | Кнопка REC | GPIO0 (BOOT) | GPIO2 |
 | Батарея | нет, `Batt: unknown` | ADC GPIO1 через делитель |
-| Вибро / LED | не распаяны, `vibro_pin=N led_pin=N` | GPIO3 (затвор MOSFET) / GPIO4 |
+| Вибро / LED | проводами: GPIO3 (ключ) / RGB GPIO4, 5, 6 | GPIO3 (затвор MOSFET) / GPIO4 |
 | Сборка | `bash tools/build.sh` | `bash tools/build.sh --board reva` |
 | Проверено на железе | нет | нет, платы ещё нет |
 
@@ -193,8 +193,9 @@ XIAO не даёт прошивке ни делителя, ни газометр
 ## Резервируемые ресурсы
 
 Sense: GPIO41/42 микрофон, GPIO7/8/9 SPI карты, GPIO21 CS (общий с
-пользовательским LED), GPIO0 кнопка BOOT как REC. LED и вибро задаются через
-Serial (`led_pin=N`, `vibro_pin=N`).
+пользовательским LED), GPIO0 кнопка BOOT как REC. LED R/G/B на GPIO4/5/6 и
+вибро на GPIO3 — по умолчанию из `BoardConfig.h`, перекрываются через Serial
+(`led_pin`, `led_g_pin`, `led_b_pin`, `vibro_pin`). Цвет — `Indicator.h`.
 
 RevA: GPIO5/6 микрофоны, GPIO7/8/9/44 карта, GPIO2 кнопка, GPIO1 АЦП батареи,
 GPIO3 вибро, GPIO4 LED. Занятые пины прошивка отдать под LED/вибро не даст.
