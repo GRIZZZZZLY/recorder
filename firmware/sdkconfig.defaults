@@ -17,8 +17,11 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_MALLOC=y
-CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
-CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+# Как у Arduino: блоки больше 4 КиБ (буферы TLS тоже) идут в PSRAM.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=0
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+CONFIG_SPIRAM_MEMTEST=n
 
 # Arduino как компонент требует тик 1 кГц (millis/delay) и PSK-режимы mbedTLS.
 CONFIG_FREERTOS_HZ=1000
@@ -27,10 +30,82 @@ CONFIG_MBEDTLS_KEY_EXCHANGE_PSK=y
 
 # setup()/loop() запускает компонент Arduino; app_main() не пишем.
 CONFIG_AUTOSTART_ARDUINO=y
-# Serial через встроенный USB CDC, как в Arduino-сборке XIAO_ESP32S3 (cdc_on_boot=1).
-CONFIG_ARDUINO_USB_CDC_ON_BOOT=y
-CONFIG_ARDUINO_USB_MODE=1
+# Serial через USB задаётся макросами в CMakeLists.txt: у Arduino 3.3.11 нет
+# таких пунктов Kconfig, строки CONFIG_ARDUINO_USB_* молча игнорировались.
 
-# Компилятор: оптимизация по размеру, как у Arduino по умолчанию.
+# Как в sdkconfig Arduino-сборки (esp32s3-libs/3.3.11/qio_opi): 240 МГц
+# (у IDF по умолчанию 160), журнал IDF только ошибки, сторож задач
+# перезагружает плату и не следит за idle второго ядра — loop() живёт там
+# и в записи с полным буфером не уступает такт.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_LOG_DEFAULT_LEVEL_ERROR=y
+CONFIG_BOOTLOADER_LOG_LEVEL_ERROR=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+# Журнал ядра Arduino молчит, как при Core Debug Level: None в Arduino-сборке.
+CONFIG_ARDUHAL_LOG_DEFAULT_LEVEL_NONE=y
+
+# FAT как у Arduino. У IDF по умолчанию длинных имён нет (только 8.3), и
+# «REC0036_P01.TMP» не создаётся: 12 окт первая IDF-прошивка не смогла начать
+# запись — fopen(/sd/REC0036_P01.TMP) failed.
+CONFIG_FATFS_LFN_STACK=y
+CONFIG_FATFS_MAX_LFN=255
+CONFIG_FATFS_API_ENCODING_UTF_8=y
+CONFIG_FATFS_CODEPAGE_850=y
+CONFIG_FATFS_VOLUME_COUNT=2
+CONFIG_FATFS_USE_LABEL=y
+
+# Остальное, что влияет на сеть, звук и стеки, — значения Arduino-сборки
+# (сверка sdkconfig из CI с esp32s3-libs/3.3.11/qio_opi, 12 окт). Без этого
+# сравнение скорости Arduino и IDF меряло бы десяток различий сразу.
+CONFIG_LWIP_TCPIP_CORE_LOCKING=y
+CONFIG_LWIP_CHECK_THREAD_SAFETY=y
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096
+CONFIG_LWIP_TCP_MSS=1436
+CONFIG_LWIP_TCP_RTO_TIME=3000
+CONFIG_LWIP_TCP_SACK_OUT=y
+CONFIG_LWIP_TCP_SYNMAXRTX=6
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER=y
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_RX_BA_WIN=8
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+CONFIG_ESP_PHY_REDUCE_TX_POWER=y
+CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=n
+CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN=16384
+CONFIG_I2S_ISR_IRAM_SAFE=y
+CONFIG_ESP_TIMER_TASK_STACK_SIZE=8192
+CONFIG_FREERTOS_ISR_STACKSIZE=2096
+CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=3120
+CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=1024
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=300
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2048
+CONFIG_ESP_IPC_TASK_STACK_SIZE=2048
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+
+# ОПЫТ 12 окт 2026, не измерено: у Arduino буфер отправки TCP 5744 байта
+# (зашит в готовые библиотеки). При нём 80 КиБ/с означают RTT около 70 мс.
+# 32 КиБ проверяют, упирается ли отправка в этот буфер; [up-perf] печатает
+# фактическое значение. Цена — до ~27 КиБ внутренней RAM на соединение.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+
+# Компилятор и защита — как у Arduino: оптимизация по размеру, исключения C++,
+# проверка стека, лёгкая порча освобождённой кучи, сторож конца стека задачи.
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
-CONFIG_COMPILER_CXX_EXCEPTIONS=n
+CONFIG_COMPILER_CXX_EXCEPTIONS=y
+CONFIG_COMPILER_STACK_CHECK_MODE_NORM=y
+CONFIG_HEAP_POISONING_LIGHT=y
+CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+
+# Дамп при сбое во флеш (раздел coredump в partitions.csv) и откат прошивки,
+# как у Arduino. Bluetooth и Zigbee, включённые у Arduino, здесь намеренно
+# выключены: не используются и занимают память.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
