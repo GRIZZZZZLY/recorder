@@ -62,7 +62,10 @@ constexpr uint32_t SERIAL_BAUD = 115200;
 constexpr audio::Format AUDIO = board::AUDIO;
 // Частота SPI карты по умолчанию; sd_hz в NVS переопределяет её без перепрошивки
 // (провода и карты разные). Применяется при монтировании, то есть после перезагрузки.
-constexpr uint32_t SD_SPI_HZ = 10000000;
+// Замер 12 окт, XIAO Sense, IDF-сборка, чтение тела при отправке: 10 МГц —
+// 1,24 с/МБ, 20 МГц — 0,73 с/МБ, 40 МГц — 0,74 с/МБ (упор уже не в частоту).
+// Ошибок записи и потерь звука нет ни на одной. 20 — та же скорость с запасом.
+constexpr uint32_t SD_SPI_HZ = 20000000;
 constexpr uint32_t SD_SPI_HZ_MIN = 400000;
 constexpr uint32_t SD_SPI_HZ_MAX = 40000000;
 
@@ -742,7 +745,7 @@ void printHelp() {
   Serial.println("           device_token=... device_id=... vibro_pin=N");
   Serial.println("           led_pin=N led_g_pin=N led_b_pin=N (красный, зелёный, синий)");
   Serial.println("           led_r_lvl=N led_g_lvl=N led_b_lvl=N (яркость 0..255), led_o_lvl=N (зелёный в оранжевом)");
-  Serial.println("           sd_hz=N (частота карты, Гц, после перезагрузки; пусто — 10 МГц)");
+  Serial.println("           sd_hz=N (частота карты, Гц, после перезагрузки; пусто — 20 МГц)");
   Serial.println();
 }
 
