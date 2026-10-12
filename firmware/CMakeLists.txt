@@ -11,4 +11,11 @@
 cmake_minimum_required(VERSION 3.16)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+# Флаги, которые Arduino-сборка XIAO_ESP32S3 берёт из boards.txt (USBMode=hwcdc,
+# CDCOnBoot, PSRAM=opi), а не из sdkconfig. Без первых двух Serial уходит на
+# UART0 вместо USB: журнал и команды на COM-порту пропадают. Задаются на всю
+# сборку, потому что объект Serial объявляет само ядро (HWCDC.cpp).
+idf_build_set_property(COMPILE_DEFINITIONS "ARDUINO_USB_MODE=1" APPEND)
+idf_build_set_property(COMPILE_DEFINITIONS "ARDUINO_USB_CDC_ON_BOOT=1" APPEND)
+idf_build_set_property(COMPILE_DEFINITIONS "BOARD_HAS_PSRAM" APPEND)
 project(recorder)

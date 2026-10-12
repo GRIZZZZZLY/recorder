@@ -4,6 +4,7 @@
 #include <Preferences.h>
 #include <SD.h>
 #include <SPI.h>
+#include <esp_system.h>
 
 #include "AudioFormat.h"
 #include "Battery.h"
@@ -59,7 +60,14 @@ constexpr uint32_t SERIAL_BAUD = 115200;
 
 // Пины и формат звука — в BoardConfig.h. Здесь только то, что от платы не зависит.
 constexpr audio::Format AUDIO = board::AUDIO;
-constexpr uint32_t SD_SPI_HZ = 10000000;
+// Частота SPI карты по умолчанию; sd_hz в NVS переопределяет её без перепрошивки
+// (провода и карты разные). Применяется при монтировании, то есть после перезагрузки.
+// Замер 12 окт, XIAO Sense, IDF-сборка, чтение тела при отправке: 10 МГц —
+// 1,24 с/МБ, 20 МГц — 0,73 с/МБ, 40 МГц — 0,74 с/МБ (упор уже не в частоту).
+// Ошибок записи и потерь звука нет ни на одной. 20 — та же скорость с запасом.
+constexpr uint32_t SD_SPI_HZ = 20000000;
+constexpr uint32_t SD_SPI_HZ_MIN = 400000;
+constexpr uint32_t SD_SPI_HZ_MAX = 40000000;
 
 // Сколько секунд до нажатия попадает в запись. Ёмкость буфера округляется
 // вверх до степени двойки (RingBuffer работает маской), поэтому фактическая
@@ -128,6 +136,7 @@ DeviceState g_state = ST_FAULT;
 bool g_audioReady = false;
 bool g_sdReady = false;
 int g_sdCsPin = -1;
+uint32_t g_sdHz = cfg::SD_SPI_HZ;  // с какой частотой карта смонтирована на самом деле
 uint32_t g_recordStartedMs = 0;
 uint32_t g_lastStatusMs = 0;
 uint16_t g_nextSessionId = 1;    // посчитан заранее, START не ходит по каталогу
@@ -153,6 +162,8 @@ volatile uint32_t g_btnLastEdgeMs = 0;
 volatile bool g_btnLastLevel = false;
 volatile uint32_t g_btnLostEdges = 0;
 uint32_t g_btnPressHead = 0;   // положение потока в момент последнего нажатия
+uint32_t g_btnShorts = 0;      // с момента включения, для диагностики
+uint32_t g_btnLongs = 0;
 
 // Определены в Uploader.ino и Feedback.ino; компилятор Arduino дописывает их
 // следом за этим файлом.
@@ -170,7 +181,8 @@ void continueInNewSession();
 void feedbackSetup();
 void feedbackService(DeviceState state);
 void feedbackEvent(const char *name);
-bool setFeedbackPin(const String &key, const String &value);
+bool setFeedbackConfig(const String &key, const String &value);
+void feedbackLedTest();
 
 // --- микрофон и кольцевой буфер ------------------------------------------------------
 
@@ -266,7 +278,7 @@ bool tryMountSd(int csPin) {
   SPI.end();
   delay(20);
   SPI.begin(board::SD_SCK_PIN, board::SD_MISO_PIN, board::SD_MOSI_PIN, csPin);
-  if (!SD.begin(csPin, SPI, cfg::SD_SPI_HZ)) {
+  if (!SD.begin(csPin, SPI, g_sdHz)) {
     return false;
   }
   if (SD.cardType() == CARD_NONE) {
@@ -277,12 +289,17 @@ bool tryMountSd(int csPin) {
 }
 
 bool initSd() {
+  Preferences prefs;
+  prefs.begin("recorder", true);  // то же пространство, что у Uploader и Feedback
+  g_sdHz = prefs.isKey("sd_hz") ? prefs.getUInt("sd_hz", cfg::SD_SPI_HZ) : cfg::SD_SPI_HZ;
+  prefs.end();
+  if (g_sdHz < cfg::SD_SPI_HZ_MIN || g_sdHz > cfg::SD_SPI_HZ_MAX) g_sdHz = cfg::SD_SPI_HZ;
   Serial.printf("[sd] Mounting microSD, CS=GPIO%d...\n", board::SD_CS_PIN);
   if (tryMountSd(board::SD_CS_PIN)) {
     g_sdCsPin = board::SD_CS_PIN;
     const uint64_t sizeMb = SD.cardSize() / (1024ULL * 1024ULL);
-    Serial.printf("[sd] Ready. CS=GPIO%d, card=%llu MB\n",
-                  board::SD_CS_PIN, static_cast<unsigned long long>(sizeMb));
+    Serial.printf("[sd] Ready. CS=GPIO%d, card=%llu MB, SPI %lu Hz\n", board::SD_CS_PIN,
+                  static_cast<unsigned long long>(sizeMb), static_cast<unsigned long>(g_sdHz));
     return true;
   }
   Serial.printf("[sd] ERROR: card not mounted with CS=GPIO%d (%s).\n", board::SD_CS_PIN, board::NAME);
@@ -370,11 +387,22 @@ void stopRecording(StopReason reason) {
   if (g_state != ST_RECORDING) {
     return;
   }
+  // Красный и вибро — сразу по удержанию: закрытие части на карте занимает
+  // до секунды, а за ним отправка забирает цикл ещё на секунды. Человек должен
+  // видеть, что остановка засчитана. Если часть закрылась плохо, следом идёт error.
+  const bool normal = reason == STOP_NORMAL;
+  if (normal) {
+    feedbackEvent("stop");
+  }
   // .END появляется только если каждая часть закрылась чисто: ошибка на
   // последней делает её .BAD, и сервер не получит ложного «сессия закончена».
-  const bool clean = g_writer.stop(reason == STOP_NORMAL);
+  const bool clean = g_writer.stop(normal);
   g_state = ST_ARMED;
-  feedbackEvent(clean ? "stop" : "error");
+  if (!clean) {
+    feedbackEvent("error");
+  } else if (!normal) {
+    feedbackEvent("stop");
+  }
 
   const uint32_t elapsedSec = (millis() - g_recordStartedMs) / 1000;
   Serial.printf("[rec] STOP session %04u | %u parts | %lu s | %lu audio bytes | marks %u | "
@@ -491,9 +519,15 @@ void onLongPress() {
 void dispatchButton(ButtonDecoder::Event event, uint32_t ringHead) {
   switch (event) {
     case ButtonDecoder::SHORT:
+      ++g_btnShorts;
+      Serial.printf("[btn] короткое нажатие #%lu, %lu мс\n", static_cast<unsigned long>(g_btnShorts),
+                    static_cast<unsigned long>(g_button.lastPressMs()));
       onShortPress(ringHead);
       break;
     case ButtonDecoder::LONG:
+      ++g_btnLongs;
+      Serial.printf("[btn] удержание #%lu, %lu мс\n", static_cast<unsigned long>(g_btnLongs),
+                    static_cast<unsigned long>(cfg::LONG_PRESS_MS));
       onLongPress();
       break;
     default:
@@ -590,9 +624,29 @@ const char *stateName(DeviceState s) {
   }
 }
 
+// Причина последней перезагрузки. Строки загрузки по USB теряются, пока
+// компьютер заново открывает порт, поэтому причина видна и в команде s.
+const char *resetReasonName() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "power on";
+    case ESP_RST_EXT: return "external pin";
+    case ESP_RST_SW: return "software (flash or restart)";
+    case ESP_RST_PANIC: return "PANIC - firmware crash";
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT: return "WATCHDOG - firmware hung";
+    case ESP_RST_DEEPSLEEP: return "deep sleep wake";
+    case ESP_RST_BROWNOUT: return "BROWNOUT - supply voltage dropped";
+    case ESP_RST_SDIO: return "SDIO";
+    case ESP_RST_USB: return "USB";
+    default: return "unknown";
+  }
+}
+
 void printStatus() {
   Serial.println("--- STATUS ---");
   Serial.printf("State: %s\n", stateName(g_state));
+  Serial.printf("Reset: %s, uptime %lu s\n", resetReasonName(), static_cast<unsigned long>(millis() / 1000));
   Serial.printf("Audio: %s, capture %s\n", g_audioReady ? "ready" : "ERROR",
                 g_captureRunning ? "running" : "off");
   Serial.printf("SD:    %s", g_sdReady ? "ready" : "ERROR");
@@ -661,6 +715,8 @@ void printDiag() {
   Serial.printf("upload_duration_ms    %lu\n", static_cast<unsigned long>(g_diag.upload_duration_ms));
   Serial.printf("upload_preempted      %lu\n", static_cast<unsigned long>(g_diag.upload_preempted));
   Serial.printf("button_lost_edges     %lu\n", static_cast<unsigned long>(g_btnLostEdges));
+  Serial.printf("button_short / long   %lu / %lu\n", static_cast<unsigned long>(g_btnShorts),
+                static_cast<unsigned long>(g_btnLongs));
   Serial.printf("uptime_ms             %lu\n", static_cast<unsigned long>(millis()));
   // Ожидание по часам против фактически захваченного: разница — оценка
   // потерь между DMA и задачей захвата, которых буфер не видит.
@@ -683,10 +739,34 @@ void printHelp() {
   Serial.println("  w  какие сети Wi-Fi видно и сигнал");
   Serial.println("  k  очистка .SENT по порогу места");
   Serial.println("  p  микрофон вкл/выкл в ARMED (замер тока без захвата)");
+  Serial.println("  t  тест светодиода: красный, зелёный, синий, оранжевый по 2 с");
   Serial.println("  h  справка");
   Serial.println("Настройка: wifi_ssid=... wifi_pass=... server_url=...");
-  Serial.println("           device_token=... device_id=... led_pin=N vibro_pin=N");
+  Serial.println("           device_token=... device_id=... vibro_pin=N");
+  Serial.println("           led_pin=N led_g_pin=N led_b_pin=N (красный, зелёный, синий)");
+  Serial.println("           led_r_lvl=N led_g_lvl=N led_b_lvl=N (яркость 0..255), led_o_lvl=N (зелёный в оранжевом)");
+  Serial.println("           sd_hz=N (частота карты, Гц, после перезагрузки; пусто — 20 МГц)");
   Serial.println();
+}
+
+// sd_hz=N — частота карты в Гц до следующей перезагрузки; пусто — по умолчанию.
+bool setSdConfig(const String &key, const String &value) {
+  if (key != "sd_hz") return false;
+  Preferences prefs;
+  prefs.begin("recorder", false);
+  const uint32_t hz = static_cast<uint32_t>(value.toInt());
+  if (value.isEmpty()) {
+    prefs.remove("sd_hz");
+    Serial.printf("[cfg] sd_hz сброшено: %lu Гц после перезагрузки\n", static_cast<unsigned long>(cfg::SD_SPI_HZ));
+  } else if (hz < cfg::SD_SPI_HZ_MIN || hz > cfg::SD_SPI_HZ_MAX) {
+    Serial.printf("[cfg] sd_hz: нужно %lu..%lu Гц\n", static_cast<unsigned long>(cfg::SD_SPI_HZ_MIN),
+                  static_cast<unsigned long>(cfg::SD_SPI_HZ_MAX));
+  } else {
+    prefs.putUInt("sd_hz", hz);
+    Serial.printf("[cfg] sd_hz=%lu сохранено, применится после перезагрузки\n", static_cast<unsigned long>(hz));
+  }
+  prefs.end();
+  return true;
 }
 
 // Строка key=value настраивает, одиночная буква — команда. Разделение по
@@ -696,7 +776,7 @@ void processSerialLine(const String &line) {
   if (eq > 0) {
     const String key = line.substring(0, eq);
     const String value = line.substring(eq + 1);
-    if (!setUploadConfig(key, value) && !setFeedbackPin(key, value)) {
+    if (!setUploadConfig(key, value) && !setFeedbackConfig(key, value) && !setSdConfig(key, value)) {
       Serial.printf("[cfg] Неизвестный параметр: %s\n", key.c_str());
     }
     return;
@@ -750,6 +830,9 @@ void processSerialLine(const String &line) {
         Serial.println("[audio] Захват запущен.");
       }
       break;
+    case 't': case 'T':
+      feedbackLedTest();
+      break;
     case 'h': case 'H': case '?':
       printHelp();
       break;
@@ -779,6 +862,16 @@ void handleSerial() {
 // --- setup / loop ---------------------------------------------------------------------------
 
 void setup() {
+#if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
+  // USB-Serial-JTAG (HWCDC). Если компьютер подключён, но порт никто не
+  // читает, ядро считает это «host backpressure» и ждёт до 20 x tx_timeout
+  // (100 мс) на каждую запись — до 2 с на строку журнала. Так в записях
+  // 0024, 0028 и 0032 (10 окт) терялись секунды звука. 1 мс на попытку —
+  // не больше ~20 мс на строку; буфер 4 КиБ, чтобы читающий порт не терял
+  // строки пачкой. Без компьютера (аккумулятор, зарядка) ничего не меняется.
+  Serial.setTxBufferSize(4096);
+  Serial.setTxTimeoutMs(1);
+#endif
   Serial.begin(cfg::SERIAL_BAUD);
   delay(1200);
 

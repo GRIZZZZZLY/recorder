@@ -522,7 +522,145 @@ static void test_stereo_power_loss_recovers_with_the_files_own_frame_size() {
   CHECK(logHas("1 ch"));
 }
 
+// --- CRC части, посчитанный при записи ----------------------------------------------------
+//
+// Эталон — побитовый CRC-32 zlib, независимый от табличного в Crc32.h.
+
+static uint32_t referenceCrc(const std::vector<uint8_t> &d) {
+  uint32_t c = 0xFFFFFFFFu;
+  for (uint8_t b : d) {
+    c ^= b;
+    for (int k = 0; k < 8; ++k) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+  }
+  return ~c;
+}
+
+static std::vector<uint8_t> noise(size_t n, uint32_t seed) {
+  std::vector<uint8_t> v(n);
+  for (size_t i = 0; i < n; ++i) {
+    seed = seed * 1664525u + 1013904223u;
+    v[i] = static_cast<uint8_t>(seed >> 24);
+  }
+  return v;
+}
+
+static void test_crc32_is_zlib_crc_and_combines_like_zlib() {
+  const std::vector<uint8_t> nine = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
+  CHECK(referenceCrc(nine) == 0xCBF43926u);  // эталон сам проверен известным значением
+  CHECK(crc32::update(0, nine.data(), nine.size()) == 0xCBF43926u);
+
+  const std::vector<uint8_t> a = noise(44, 1), b = noise(70001, 2);
+  std::vector<uint8_t> ab = a;
+  ab.insert(ab.end(), b.begin(), b.end());
+  const uint32_t ca = crc32::update(0, a.data(), a.size());
+  const uint32_t cb = crc32::update(0, b.data(), b.size());
+  CHECK(crc32::update(ca, b.data(), b.size()) == referenceCrc(ab));  // продолжение, как esp_rom_crc32_le
+  CHECK(crc32::combine(ca, cb, static_cast<uint32_t>(b.size())) == referenceCrc(ab));
+  CHECK(crc32::combine(ca, 0, 0) == ca);
+  for (size_t len : {size_t(1), size_t(2), size_t(3), size_t(4095), size_t(32000)}) {
+    const std::vector<uint8_t> tail = noise(len, static_cast<uint32_t>(len));
+    std::vector<uint8_t> whole = a;
+    whole.insert(whole.end(), tail.begin(), tail.end());
+    CHECK(crc32::combine(ca, crc32::update(0, tail.data(), len), static_cast<uint32_t>(len)) ==
+          referenceCrc(whole));
+  }
+}
+
+// Загрузчик берёт CRC отсюда и не перечитывает с карты 19 МБ. Значит, он
+// обязан совпасть с CRC файла, каким тот лежит на карте после закрытия:
+// заголовок с итоговым размером плюс звук.
+static void checkKnownCrcMatchesFile(Rig &r, const char *name) {
+  const std::string path = std::string("/") + name;
+  CHECK(r.fs.has(path));
+  if (!r.fs.has(path)) return;
+  const std::vector<uint8_t> &file = r.fs.files.at(path);
+  uint32_t crc = 0;
+  CHECK(r.writer.knownCrc(name, static_cast<uint32_t>(file.size()), &crc));
+  CHECK(crc == referenceCrc(file));
+}
+
+static void test_closed_parts_know_their_crc_without_reading_the_card() {
+  Rig r;
+  r.writer.cfg.partMaxBytes = 32000;
+  r.capture(50000);  // предзапись
+  CHECK(r.writer.start(3));
+  CHECK(r.drain());
+  r.capture(20000, 77);
+  CHECK(r.drain());
+  CHECK(r.writer.stop(true));
+  checkKnownCrcMatchesFile(r, "REC0003_P01.WAV");  // закрыта ротацией
+  checkKnownCrcMatchesFile(r, "REC0003_P02.WAV");
+  checkKnownCrcMatchesFile(r, "REC0003_P03.WAV");  // закрыта STOP, неполная
+
+  Rig s(audio::STEREO_16K);
+  s.writer.cfg.partMaxBytes = 64000;
+  s.capture(100000);
+  CHECK(s.writer.start(4));
+  CHECK(s.drain());
+  CHECK(s.writer.stop(true));
+  checkKnownCrcMatchesFile(s, "REC0004_P01.WAV");
+  checkKnownCrcMatchesFile(s, "REC0004_P02.WAV");
+}
+
+static void test_known_crc_needs_the_same_size_and_can_be_forgotten() {
+  Rig r;
+  r.capture(9000);
+  CHECK(r.writer.start(5));
+  CHECK(r.writer.stop(true));
+  const uint32_t size = static_cast<uint32_t>(r.fs.sizeOf("/REC0005_P01.WAV"));
+  uint32_t crc = 0;
+  CHECK(r.writer.knownCrc("REC0005_P01.WAV", size, &crc));
+  CHECK(!r.writer.knownCrc("REC0005_P01.WAV", size + 1, &crc));  // файл не тот, что закрывали
+  CHECK(!r.writer.knownCrc("REC0005_P02.WAV", size, &crc));
+  CHECK(!r.writer.knownCrc("REC0005_P01_R.WAV", size, &crc));
+  r.writer.forgetCrc("REC0005_P01.WAV");  // сервер ответил 422: дальше только чтение карты
+  CHECK(!r.writer.knownCrc("REC0005_P01.WAV", size, &crc));
+}
+
+static void test_bad_or_unrenamed_parts_have_no_known_crc() {
+  uint32_t crc = 0;
+  Rig bad;
+  bad.writer.cfg.partMaxBytes = 32000;
+  bad.fs.failWriteAfter["/REC0007_P01.TMP"] = 44 + 20000;
+  bad.capture(40000);
+  CHECK(bad.writer.start(7));
+  CHECK(!bad.drain());
+  CHECK(!bad.writer.stop(false));
+  CHECK(!bad.writer.knownCrc("REC0007_P01.BAD", static_cast<uint32_t>(bad.fs.sizeOf("/REC0007_P01.BAD")), &crc));
+  CHECK(!bad.writer.knownCrc("REC0007_P01.WAV", 44 + 20000, &crc));
+
+  Rig stuck;
+  stuck.capture(9000);
+  CHECK(stuck.writer.start(8));
+  stuck.fs.failRename.insert("/REC0008_P01.TMP");
+  CHECK(!stuck.writer.stop(true));
+  CHECK(!stuck.writer.knownCrc("REC0008_P01.WAV", static_cast<uint32_t>(stuck.fs.sizeOf("/REC0008_P01.TMP")), &crc));
+}
+
+static void test_only_the_last_parts_are_remembered() {
+  Rig r;
+  r.writer.cfg.partMaxBytes = 1000;
+  const int parts = static_cast<int>(session::KNOWN_CRCS) + 4;
+  r.capture(static_cast<uint32_t>(parts) * 1000);
+  CHECK(r.writer.start(6));
+  CHECK(r.drain());
+  CHECK(r.writer.stop(true));
+  uint32_t crc = 0;
+  char name[session::PATH_MAX_LEN];
+  for (int p = 1; p <= parts; ++p) {
+    snprintf(name, sizeof(name), "REC0006_P%02d.WAV", p);
+    const bool known = r.writer.knownCrc(name, 1044, &crc);
+    CHECK(known == (p > parts - static_cast<int>(session::KNOWN_CRCS)));
+  }
+  checkKnownCrcMatchesFile(r, name);
+}
+
 int main() {
+  test_crc32_is_zlib_crc_and_combines_like_zlib();
+  test_closed_parts_know_their_crc_without_reading_the_card();
+  test_known_crc_needs_the_same_size_and_can_be_forgotten();
+  test_bad_or_unrenamed_parts_have_no_known_crc();
+  test_only_the_last_parts_are_remembered();
   test_writer_config_derives_part_size_from_the_format();
   test_stereo_parts_rotate_on_the_byte_boundary_and_count_frames();
   test_stereo_mark_and_preroll_are_measured_in_seconds();

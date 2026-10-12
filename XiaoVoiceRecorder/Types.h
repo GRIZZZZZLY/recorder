@@ -16,7 +16,7 @@ enum CrcStep { CRC_MORE, CRC_DONE, CRC_ERROR };
 namespace fb {
 constexpr uint8_t MAX_STEPS = 8;
 
-// Один канал индикации: LED или ключ вибромотора.
+// Канал ключа вибромотора. Цвет светодиода живёт в Indicator.h.
 struct Channel {
   int pin = -1;
   // Последовательность длительностей: вкл, выкл, вкл, ... (мс). 0 — конец.

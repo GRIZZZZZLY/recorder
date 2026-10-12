@@ -40,6 +40,10 @@ class ButtonDecoder {
 
   bool held() const { return m_stable; }
 
+  // Сколько длилось нажатие, закончившееся событием SHORT: от фронта нажатия
+  // до фронта отпускания. Для журнала, логика на это не опирается.
+  uint32_t lastPressMs() const { return m_changedAt - m_pressedAt; }
+
  private:
   uint32_t m_debounce;
   uint32_t m_longPress;
