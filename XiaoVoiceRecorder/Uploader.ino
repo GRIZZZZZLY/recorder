@@ -1,48 +1,53 @@
 /*
  * Отправка готовых частей на личный сервер. Контракт: shared/protocol.md.
  *
- * Кооперативная машина состояний: каждый вызов serviceUpload() делает один
- * ограниченный шаг (подключение Wi-Fi без ожидания, кусок контрольной суммы,
- * несколько кусков тела по 4 КиБ, чтение ответа), поэтому loop() между шагами
- * успевает опросить кнопку и слить буфер на карту. START во время передачи
- * обрывает её немедленно (preemptUpload); недосланная часть остаётся .WAV и
- * уйдёт заново целиком — сервер идемпотентен.
+ * Кооперативная машина состояний: CRC и тело уступают loop() между блоками
+ * при событии REC или исчерпании бюджета. Отдельный вызов SD/TLS, DNS,
+ * рукопожатие и операции каталога остаются блокирующими — бюджет не является
+ * верхней границей задержки REC. Захват микрофона работает отдельной задачей.
+ * START прерывает передачу; следующая попытка спрашивает серверный offset.
+ * Доставка подтверждается только после сверки размера и CRC ответа.
  *
  * Классы ответов — UploadPolicy.h: временная помеха откладывает очередь по
  * расписанию 1/5/15/60 минут, конфликт или отказ одной части переименовывает
  * её (.CONFLICT / .REJECT) и не держит остальные, 401 и кривой адрес
  * останавливают отправку до смены настроек. Ничего не удаляется.
  *
- * Единственный шаг, который блокирует loop() целиком, — TLS-рукопожатие
- * (секунда-две по оценке, на плате не измерено). Буфер предзаписи это
- * переживает, задача захвата не останавливается.
+ * Измерения [up-perf] разделяют CRC, соединение, SD и TLS write; скорость
+ * тела не включает CRC, но включает паузы между вызовами serviceUpload().
  *
- * ponytail: контрольная сумма считается чтением всего файла перед отправкой,
- * пусть и по кускам между опросами кнопки. Путь наверх — считать на лету при
- * записи и хранить рядом с частью, тогда 19 МБ не перечитываются вовсе.
+ * CRC части, закрытой с момента загрузки, берётся из session::Writer — он
+ * считает его по мере записи, 19 МБ не перечитываются. Иначе (после
+ * перезагрузки, у _R-частей, после 422) — чтением всего файла, по кускам.
  */
 
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <esp_rom_crc.h>
+#include <esp_timer.h>
+#include <lwip/opt.h>
 #include <time.h>
 
 #include "Certificates.h"
 #include "Session.h"
 #include "UploadPolicy.h"
+#include "UploadPump.h"
 
 namespace upl {
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 20000;
 // В СЕКУНДАХ: NetworkClientSecure::setHandshakeTimeout сам умножает на 1000
 // (arduino-esp32 3.3.11). Прежние 15000 давали 4 ч 10 мин блокировки loop().
-// 5 с соединения плюс 15 с рукопожатия короче предзаписи (32,8 с): REC,
-// нажатый в это время, ждёт, но звук с момента нажатия уже лежит в буфере.
+// DNS имеет собственное ожидание; общей гарантии 20 с нет. Особенно важен
+// замер задержек с fallback-буфером без PSRAM (около 2 с в моно).
 constexpr unsigned long HANDSHAKE_TIMEOUT_S = 15;
-constexpr uint32_t SOCKET_TIMEOUT_MS = 5000;   // одна операция записи в сокет
+constexpr uint32_t SOCKET_TIMEOUT_MS = 5000;   // connect / отсутствие прогресса write, не жёсткий deadline
 constexpr uint32_t REPLY_TIMEOUT_MS = 30000;
 constexpr uint32_t EMPTY_QUEUE_RECHECK_MS = 60UL * 60UL * 1000UL;
+// Arduino-ESP32 3.3.11 send_ssl_data() сам дробит write на <=4096 байт.
 constexpr size_t CHUNK_BYTES = 4096;
+constexpr uint64_t STEP_BUDGET_US_IDLE = 25000;
+constexpr uint64_t STEP_BUDGET_US_RECORDING = 10000;
 constexpr int SEND_CHUNKS_PER_STEP_IDLE = 8;       // в ARMED: loop свободен
 constexpr int SEND_CHUNKS_PER_STEP_RECORDING = 1;  // при UPLOAD_DURING_RECORDING
 constexpr int CRC_CHUNKS_PER_STEP_IDLE = 16;       // 64 КиБ с карты за оборот loop()
@@ -52,7 +57,7 @@ constexpr const char *NVS_NAMESPACE = "recorder";
 constexpr const char *NTP_SERVER = "pool.ntp.org";
 }  // namespace upl
 
-enum UpState { UP_IDLE, UP_WIFI, UP_CRC, UP_PROBE, UP_SEND, UP_REPLY, UP_CLOSE };
+enum UpState { UP_IDLE, UP_WIFI, UP_CRC, UP_CONNECT, UP_PROBE, UP_SEND, UP_REPLY, UP_CLOSE };
 
 Preferences g_prefs;
 
@@ -92,13 +97,69 @@ char g_upPrefix[64];
 uint16_t g_upPort = 443;
 uint32_t g_upSize = 0;
 uint32_t g_upSent = 0;
-uint32_t g_upBodyFrom = 0;  // с какого байта шло тело этой попытки
 uint32_t g_upCrc = 0;
 uint32_t g_upCrcDone = 0;
 uint32_t g_wifiStartedMs = 0;
 uint32_t g_replyStartedMs = 0;
 uint32_t g_transferStartedMs = 0;
 String g_reply;
+
+// CRC и тело никогда не работают одновременно: один буфер вместо двух.
+static uint8_t g_uploadBuffer[upl::CHUNK_BYTES];
+struct UploadPerf {
+  uploadpump::Stats body;
+  uploadpump::Timing crcRead, crcCompute, crcStep, connect, headers;
+  uint64_t ended = 0;
+  uint64_t started = 0, crcWallUs = 0, probeStarted = 0, probeUs = 0;
+  uint64_t bodyStarted = 0, bodyUs = 0, replyStarted = 0;
+  uint32_t lastReported = 0;
+  bool active = false, probing = false, sending = false, replying = false;
+};
+UploadPerf g_upPerf;
+
+static uint64_t uploadClockUs() { return static_cast<uint64_t>(esp_timer_get_time()); }
+static bool uploadButtonPending() { return g_btnHead != g_btnTail; }
+
+void freezeUploadPerf() {
+  if (!g_upPerf.active || g_upPerf.ended) return;
+  const uint64_t now = uploadClockUs();
+  g_upPerf.ended = now;
+  if (g_upState == UP_CRC) g_upPerf.crcWallUs = now - g_upPerf.started;
+  if (g_upPerf.probing) g_upPerf.probeUs = now - g_upPerf.probeStarted;
+  if (g_upPerf.sending) g_upPerf.bodyUs = now - g_upPerf.bodyStarted;
+}
+
+void printUploadPerf(const char *outcome) {
+  if (!g_upPerf.active) return;
+  freezeUploadPerf();
+  const uint64_t now = g_upPerf.ended;
+  const uint64_t replyUs = g_upPerf.replying ? now - g_upPerf.replyStarted : 0;
+  Serial.printf("[up-perf] outcome=%s file_ms=%llu crc_wall_ms=%llu crc_read_us=%llu "
+                "crc_compute_us=%llu crc_calls=%lu crc_step_max_us=%llu\n",
+                outcome, (now - g_upPerf.started) / 1000ULL, g_upPerf.crcWallUs / 1000ULL,
+                static_cast<unsigned long long>(g_upPerf.crcRead.us),
+                static_cast<unsigned long long>(g_upPerf.crcCompute.us),
+                static_cast<unsigned long>(g_upPerf.crcRead.calls),
+                static_cast<unsigned long long>(g_upPerf.crcStep.maxUs));
+  Serial.printf("[up-perf] connect_ms=%llu headers_us=%llu probe_ms=%llu reply_ms=%llu "
+                "body_ms=%llu accepted=%lu rate_KiB_s=%llu\n",
+                g_upPerf.connect.us / 1000ULL,
+                static_cast<unsigned long long>(g_upPerf.headers.us), g_upPerf.probeUs / 1000ULL,
+                replyUs / 1000ULL, g_upPerf.bodyUs / 1000ULL,
+                static_cast<unsigned long>(g_upPerf.body.accepted),
+                static_cast<unsigned long long>(uploadpump::kibPerSecond(g_upPerf.body.accepted, g_upPerf.bodyUs)));
+  Serial.printf("[up-perf] sd_us=%llu sd_max_us=%llu sd_calls=%lu write_us=%llu "
+                "write_max_us=%llu write_calls=%lu body_step_max_us=%llu heap=%lu\n",
+                static_cast<unsigned long long>(g_upPerf.body.read.us),
+                static_cast<unsigned long long>(g_upPerf.body.read.maxUs),
+                static_cast<unsigned long>(g_upPerf.body.read.calls),
+                static_cast<unsigned long long>(g_upPerf.body.write.us),
+                static_cast<unsigned long long>(g_upPerf.body.write.maxUs),
+                static_cast<unsigned long>(g_upPerf.body.write.calls),
+                static_cast<unsigned long long>(g_upPerf.body.step.maxUs),
+                static_cast<unsigned long>(ESP.getFreeHeap()));
+  g_upPerf.active = false;
+}
 
 int wifiCount() {
   int n = 0;
@@ -325,9 +386,22 @@ SendResult prepareTransfer(const String &name) {
   g_upName = name;
   g_upCrc = 0;
   g_upCrcDone = 0;
+  // Часть, закрытая с этой загрузки, знает свой CRC: UP_CRC пройдёт сразу.
+  if (g_writer.knownCrc(name.c_str(), g_upSize, &g_upCrc)) {
+    g_upCrcDone = g_upSize;
+    Serial.printf("[up] CRC %s посчитан при записи, файл не перечитывается.\n", name.c_str());
+  }
   g_upSent = 0;
   g_reply = "";
   g_transferStartedMs = millis();
+  g_upPerf = UploadPerf{};
+  g_upPerf.active = true;
+  Serial.printf("[up-perf] block=%u sd_hz=%lu tcp_snd_buf=%u tcp_wnd=%u tcp_mss=%u rssi=%d heap=%lu\n",
+                static_cast<unsigned>(upl::CHUNK_BYTES), static_cast<unsigned long>(g_sdHz),
+                static_cast<unsigned>(TCP_SND_BUF), static_cast<unsigned>(TCP_WND),
+                static_cast<unsigned>(TCP_MSS), static_cast<int>(WiFi.RSSI()),
+                static_cast<unsigned long>(ESP.getFreeHeap()));
+  g_upPerf.started = uploadClockUs();
   return SEND_OK;
 }
 
@@ -338,18 +412,26 @@ SendResult prepareTransfer(const String &name) {
 // Сам тип CrcStep живёт в Types.h: Arduino вставляет прототипы в начало
 // объединённого файла, раньше тел .ino.
 CrcStep serviceCrc(int chunks) {
-  static uint8_t buffer[upl::CHUNK_BYTES];
+  const uint64_t started = uploadClockUs();
+  const uint64_t budget = g_state == ST_RECORDING ? upl::STEP_BUDGET_US_RECORDING : upl::STEP_BUDGET_US_IDLE;
   for (int i = 0; i < chunks && g_upCrcDone < g_upSize; ++i) {
-    const int read = g_upFile.read(buffer, sizeof(buffer));
+    if (uploadButtonPending() || (i > 0 && uploadClockUs() - started >= budget)) break;
+    uint64_t at = uploadClockUs();
+    const int read = g_upFile.read(g_uploadBuffer, sizeof(g_uploadBuffer));
+    g_upPerf.crcRead.add(uploadClockUs() - at);
     if (read <= 0) {
       Serial.printf("[up] Карта отдала %lu из %lu байт, дальше чтения нет.\n",
                     static_cast<unsigned long>(g_upCrcDone),
                     static_cast<unsigned long>(g_upSize));
+      g_upPerf.crcStep.add(uploadClockUs() - started);
       return CRC_ERROR;
     }
-    g_upCrc = esp_rom_crc32_le(g_upCrc, buffer, static_cast<uint32_t>(read));
+    at = uploadClockUs();
+    g_upCrc = esp_rom_crc32_le(g_upCrc, g_uploadBuffer, static_cast<uint32_t>(read));
+    g_upPerf.crcCompute.add(uploadClockUs() - at);
     g_upCrcDone += static_cast<uint32_t>(read);
   }
+  g_upPerf.crcStep.add(uploadClockUs() - started);
   return g_upCrcDone >= g_upSize ? CRC_DONE : CRC_MORE;
 }
 
@@ -388,9 +470,11 @@ SendResult openConnection() {
   g_client.stop();
   g_client.setCACert(ISRG_ROOT_X1);
   g_client.setHandshakeTimeout(upl::HANDSHAKE_TIMEOUT_S);
-  // Рукопожатие блокирует loop() на секунду-две: буфер это переживает,
-  // задача захвата не останавливается.
-  if (!g_client.connect(g_upHost, g_upPort, upl::SOCKET_TIMEOUT_MS)) {
+  // DNS + TCP + TLS измеряются вместе: публичный connect() не разделяет их.
+  const uint64_t at = uploadClockUs();
+  const bool connected = g_client.connect(g_upHost, g_upPort, upl::SOCKET_TIMEOUT_MS);
+  g_upPerf.connect.add(uploadClockUs() - at);
+  if (!connected) {
     char err[96];
     g_client.lastError(err, sizeof(err));
     Serial.printf("[up] Нет соединения с %s:%u: %s\n", g_upHost, g_upPort, err);
@@ -403,13 +487,18 @@ SendResult openConnection() {
   req += "/api/v1/upload/offset HTTP/1.1\r\n";
   appendPartHeaders(req);
   req += "Connection: keep-alive\r\n\r\n";
-  if (g_client.print(req) != req.length()) {
+  const uint64_t headerAt = uploadClockUs();
+  const size_t headerWritten = g_client.print(req);
+  g_upPerf.headers.add(uploadClockUs() - headerAt);
+  if (headerWritten != req.length()) {
     Serial.println("[up] Вопрос о докачке не ушёл.");
     g_client.stop();
     return SEND_RETRY;
   }
   g_reply = "";
   g_replyStartedMs = millis();
+  g_upPerf.probeStarted = uploadClockUs();
+  g_upPerf.probing = true;
   return SEND_OK;
 }
 
@@ -460,13 +549,15 @@ SendResult sendUploadHeaders(uint32_t offset) {
   req += board::ID;
   req += "\r\nConnection: close\r\n\r\n";
 
-  if (g_client.print(req) != req.length()) {
+  const uint64_t headerAt = uploadClockUs();
+  const size_t headerWritten = g_client.print(req);
+  g_upPerf.headers.add(uploadClockUs() - headerAt);
+  if (headerWritten != req.length()) {
     Serial.println("[up] Заголовки не ушли.");
     g_client.stop();
     return SEND_RETRY;
   }
   g_upSent = offset;
-  g_upBodyFrom = offset;
   g_reply = "";
 
   Serial.printf("[up] %s -> сервер, %lu байт%s, crc %08lx, меток %s, частей %u\n",
@@ -486,33 +577,45 @@ void closeTransfer() {
 
 // Шлёт до chunks кусков тела. Возвращает SEND_RETRY при обрыве, SEND_OK иначе.
 SendResult sendBodyChunks(int chunks) {
-  static uint8_t buffer[upl::CHUNK_BYTES];
-  static uint32_t bodyStartedMs = 0;
-  for (int i = 0; i < chunks && g_upSent < g_upSize; ++i) {
-    const uint32_t thisTry = g_upSent - g_upBodyFrom;
-    if (thisTry == 0) bodyStartedMs = millis();
-    // Скорость каждый мегабайт: по ней видно, во что упирается отправка.
-    if (thisTry > 0 && thisTry % (1UL << 20) == 0) {
-      const uint32_t ms = millis() - bodyStartedMs;
-      Serial.printf("[up] %lu МБ из %lu, %lu КБ/с\n", static_cast<unsigned long>(g_upSent >> 20),
-                    static_cast<unsigned long>(g_upSize >> 20),
-                    static_cast<unsigned long>(ms ? (thisTry / 1024UL) * 1000UL / ms : 0));
-    }
-    const int read = g_upFile.read(buffer, sizeof(buffer));
-    if (read <= 0) {
-      Serial.println("[up] Файл оборвался при чтении.");
-      return SEND_RETRY;
-    }
-    const size_t written = g_client.write(buffer, static_cast<size_t>(read));
-    if (written != static_cast<size_t>(read)) {
-      Serial.printf("[up] Обрыв на %lu из %lu байт\n",
-                    static_cast<unsigned long>(g_upSent), static_cast<unsigned long>(g_upSize));
-      return SEND_RETRY;
-    }
-    g_upSent += written;
-    g_diag.upload_bytes += written;
+  const uint32_t before = g_upPerf.body.accepted;
+  const uploadpump::Result result = uploadpump::sendStep(
+      g_upFile, g_client, g_uploadBuffer, sizeof(g_uploadBuffer), g_upSize, g_upSent,
+      static_cast<unsigned>(chunks),
+      g_state == ST_RECORDING ? upl::STEP_BUDGET_US_RECORDING : upl::STEP_BUDGET_US_IDLE,
+      g_upPerf.body, uploadClockUs, uploadButtonPending);
+  g_diag.upload_bytes += g_upPerf.body.accepted - before;
+  if (uploadpump::progressDue(g_upPerf.body.accepted, g_upPerf.lastReported)) {
+    Serial.printf("[up] %lu из %lu байт, тело %llu КиБ/с, sd_us=%llu write_us=%llu\n",
+                  static_cast<unsigned long>(g_upSent), static_cast<unsigned long>(g_upSize),
+                  static_cast<unsigned long long>(uploadpump::kibPerSecond(
+                      g_upPerf.body.accepted, uploadClockUs() - g_upPerf.bodyStarted)),
+                  static_cast<unsigned long long>(g_upPerf.body.read.us),
+                  static_cast<unsigned long long>(g_upPerf.body.write.us));
+  }
+  if (result == uploadpump::READ_ERROR || result == uploadpump::WRITE_ERROR) {
+    Serial.printf("[up] Обрыв (%s) на %lu из %lu байт; следующая попытка спросит у сервера, откуда продолжать.\n",
+                  result == uploadpump::READ_ERROR ? "чтение карты" : "запись в сокет",
+                  static_cast<unsigned long>(g_upSent), static_cast<unsigned long>(g_upSize));
+    return SEND_RETRY;
   }
   return SEND_OK;
+}
+
+// Ответы короткие, но побайтовый read делал сотни вызовов mbedTLS. Читаем
+// только уже доступные байты, не используем блокирующий readBytes().
+void readUploadReply() {
+  uint8_t buffer[256];
+  while (g_reply.length() < upl::REPLY_MAX_BYTES) {
+    const int available = g_client.available();
+    if (available <= 0) break;
+    size_t count = static_cast<size_t>(available);
+    if (count > sizeof(buffer)) count = sizeof(buffer);
+    const size_t room = upl::REPLY_MAX_BYTES - g_reply.length();
+    if (count > room) count = room;
+    const int got = g_client.read(buffer, count);
+    if (got <= 0) break;
+    g_reply.concat(reinterpret_cast<const char *>(buffer), static_cast<unsigned int>(got));
+  }
 }
 
 // Ответ читается по мере прихода; конец — сервер закрыл соединение
@@ -545,6 +648,9 @@ SendResult classifyReply() {
   const String body = split >= 0 ? g_reply.substring(split + 4) : String();
   if (verdict != SEND_OK) {
     Serial.printf("[up] Ответ %d: %s\n", status, body.c_str());
+    // 422 — CRC не сошёлся. Если он был из памяти записи, карта могла отдать
+    // не то, что писалось: дальше считать только по файлу, иначе повтор вечен.
+    if (status == 422) g_writer.forgetCrc(g_upName.c_str());
     return verdict;
   }
   char buf[16];
@@ -557,6 +663,7 @@ SendResult classifyReply() {
   const bool sizeEchoed = sizeAt >= 0 && (sizeEnd >= body.length() || !isDigit(body[sizeEnd]));
   if (!crcEchoed || !sizeEchoed) {
     Serial.printf("[up] Сервер подтвердил не то: %s\n", body.c_str());
+    g_writer.forgetCrc(g_upName.c_str());
     return SEND_RETRY;
   }
   return SEND_OK;
@@ -626,6 +733,7 @@ void nextPartOrClose() {
 }
 
 void finishTransfer(SendResult result) {
+  printUploadPerf(result == SEND_OK ? "ok" : "failed");
   closeTransfer();
   g_diag.upload_duration_ms += millis() - g_transferStartedMs;
   if (result == SEND_OK) {
@@ -647,12 +755,15 @@ void armUpload() {
   g_uploadArmed = true;
 }
 
-// START во время передачи: сеть выключается сразу, часть уйдёт заново позже.
+// START: закрываем соединение; позже сервер сообщит, откуда докачивать.
 void preemptUpload() {
   if (g_upState == UP_IDLE) {
     return;
   }
   Serial.printf("[up] Запись началась, отправка %s прервана.\n", g_upName.c_str());
+  // Заморозить числа сейчас, распечатать после STOP: не задерживать START
+  // дополнительными строками Serial.
+  freezeUploadPerf();
   closeTransfer();
   disconnectWifi();
   g_upState = UP_IDLE;
@@ -661,6 +772,7 @@ void preemptUpload() {
 }
 
 void serviceUpload() {
+  if (g_upPerf.active && g_upPerf.ended) printUploadPerf("preempted");
   const uint32_t now = millis();
   const bool recording = g_state == ST_RECORDING;
   switch (g_upState) {
@@ -735,6 +847,12 @@ void serviceUpload() {
         finishTransfer(SEND_RETRY);
         return;
       }
+      g_upPerf.crcWallUs = uploadClockUs() - g_upPerf.started;
+      g_upState = UP_CONNECT;
+      return;  // дать loop() обработать REC перед блокирующим connect()
+    }
+    case UP_CONNECT: {
+      if (uploadButtonPending()) return;
       const SendResult opened = openConnection();
       if (opened == SEND_OK) {
         g_upState = UP_PROBE;
@@ -744,9 +862,7 @@ void serviceUpload() {
       return;
     }
     case UP_PROBE: {
-      while (g_client.available() > 0 && g_reply.length() < upl::REPLY_MAX_BYTES) {
-        g_reply += static_cast<char>(g_client.read());
-      }
+      readUploadReply();
       if (!replyComplete()) {
         const bool closed = !g_client.connected() && g_client.available() == 0;
         if (closed || now - g_replyStartedMs >= upl::REPLY_TIMEOUT_MS) {
@@ -755,6 +871,12 @@ void serviceUpload() {
         }
         return;
       }
+      // Только первый раз: после раннего выхода ради кнопки ответ уже собран.
+      if (g_upPerf.probing) {
+        g_upPerf.probeUs = uploadClockUs() - g_upPerf.probeStarted;
+        g_upPerf.probing = false;
+      }
+      if (uploadButtonPending()) return;
       const int status = g_reply.startsWith("HTTP/1.") ? g_reply.substring(9, 12).toInt() : 0;
       const int split = g_reply.indexOf("\r\n\r\n");
       const String body = g_reply.substring(split + 4);
@@ -779,7 +901,11 @@ void serviceUpload() {
         return;
       }
       g_upState = g_upSent >= g_upSize ? UP_REPLY : UP_SEND;
-      g_replyStartedMs = now;
+      g_replyStartedMs = millis();
+      g_upPerf.bodyStarted = uploadClockUs();
+      g_upPerf.sending = g_upState == UP_SEND;
+      g_upPerf.replying = g_upState == UP_REPLY;
+      g_upPerf.replyStarted = g_upPerf.bodyStarted;
       return;
     }
     case UP_SEND: {
@@ -790,15 +916,17 @@ void serviceUpload() {
         return;
       }
       if (g_upSent >= g_upSize) {
-        g_replyStartedMs = now;
+        g_replyStartedMs = millis();
+        g_upPerf.bodyUs = uploadClockUs() - g_upPerf.bodyStarted;
+        g_upPerf.sending = false;
+        g_upPerf.replying = true;
+        g_upPerf.replyStarted = uploadClockUs();
         g_upState = UP_REPLY;
       }
       return;
     }
     case UP_REPLY: {
-      while (g_client.available() > 0 && g_reply.length() < upl::REPLY_MAX_BYTES) {
-        g_reply += static_cast<char>(g_client.read());
-      }
+      readUploadReply();
       const bool closed = !g_client.connected() && g_client.available() == 0;
       if (replyComplete() || (closed && g_reply.length() > 0)) {
         finishTransfer(classifyReply());

@@ -47,8 +47,11 @@ constexpr int BAT_ADC_PIN = 1;
 constexpr float BAT_DIVIDER = 2.0f;
 
 // GPIO3 управляет затвором MOSFET (AO3400A), не мотором. GPIO4 — LED состояния.
+// Светодиод на RevA один: зелёного и синего каналов нет, GPIO5/6 — микрофон.
 constexpr int VIBRO_PIN = 3;
 constexpr int LED_PIN = 4;
+constexpr int LED_G_PIN = -1;
+constexpr int LED_B_PIN = -1;
 
 #else
 
@@ -80,11 +83,14 @@ constexpr int REC_BUTTON2_PIN = 2;
 constexpr int BAT_ADC_PIN = -1;
 constexpr float BAT_DIVIDER = 0.0f;
 
-// Прототип: D2 (GPIO3) -> резистор -> затвор MOSFET вибро, D3 (GPIO4) ->
-// резистор -> LED -> GND. Пока не припаяны, пин просто дёргается впустую.
-// Перекрывается через Serial: led_pin=N vibro_pin=N, -1 выключает.
+// Прототип: D2 (GPIO3) -> 1 кОм -> база NPN вибро. RGB-светодиод с общим
+// катодом: D3 (GPIO4) -> 330 Ом -> красный, D4 (GPIO5) -> 47 Ом -> зелёный,
+// D5 (GPIO6) -> 47 Ом -> синий. Пока не припаяны, пины дёргаются впустую.
+// Перекрывается через Serial: led_pin / led_g_pin / led_b_pin / vibro_pin, -1 выключает.
 constexpr int VIBRO_PIN = 3;
 constexpr int LED_PIN = 4;
+constexpr int LED_G_PIN = 5;
+constexpr int LED_B_PIN = 6;
 
 #endif
 

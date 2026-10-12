@@ -12,6 +12,7 @@
 #include "../AudioFormat.h"
 #include "../Battery.h"
 #include "../Button.h"
+#include "../Indicator.h"
 #include "../RingBuffer.h"
 #include "../UploadPolicy.h"
 
@@ -155,6 +156,7 @@ static void test_button_short_press_fires_on_release() {
   CHECK(b.feed(true, 300) == ButtonDecoder::NONE);
   CHECK(b.feed(false, 400) == ButtonDecoder::NONE);  // антидребезг отпускания
   CHECK(b.feed(false, 450) == ButtonDecoder::SHORT);
+  CHECK(b.lastPressMs() == 400);                     // от фронта до фронта
   CHECK(b.feed(false, 5000) == ButtonDecoder::NONE);
 }
 
@@ -197,6 +199,47 @@ static void test_edges_captured_while_the_loop_was_blocked_still_decode() {
   CHECK(h.feed(true, 1040) == ButtonDecoder::NONE);
   CHECK(h.feed(true, 3000) == ButtonDecoder::LONG);
   CHECK(h.feed(true, 3100) == ButtonDecoder::NONE);
+}
+
+// --- Indicator ----------------------------------------------------------------------
+
+static void test_led_follows_recording_mark_and_stop() {
+  using namespace led;
+  Flash f;
+  CHECK(colorAt(ST_ARMED, f, 0) == COLOR_OFF);          // в ожидании не светится
+  CHECK(colorAt(ST_ARMED, f, 5000) == COLOR_OFF);
+  CHECK(colorAt(ST_RECORDING, f, 6000) == COLOR_BLUE);  // запись — синий без пауз
+  CHECK(colorAt(ST_RECORDING, f, 9999) == COLOR_BLUE);
+
+  f.play(FLASH_MARK, 10000);                            // метка — оранжевый и обратно в синий
+  CHECK(colorAt(ST_RECORDING, f, 10000) == COLOR_ORANGE);
+  CHECK(colorAt(ST_RECORDING, f, 10299) == COLOR_ORANGE);
+  CHECK(colorAt(ST_RECORDING, f, 10300) == COLOR_BLUE);
+
+  f.play(FLASH_STOP, 20000);                            // остановка — красный секунду, потом темно
+  CHECK(colorAt(ST_ARMED, f, 20000) == COLOR_RED);
+  CHECK(colorAt(ST_ARMED, f, 20999) == COLOR_RED);
+  CHECK(colorAt(ST_ARMED, f, 21000) == COLOR_OFF);
+}
+
+static void test_led_error_blinks_six_times_and_new_flash_replaces_old() {
+  using namespace led;
+  Flash f;
+  f.play(FLASH_ERROR, 0);
+  int reds = 0;
+  for (uint32_t t = 0; t < 1000; t += 50) {
+    if (colorAt(ST_RECORDING, f, t) == COLOR_RED) ++reds;
+  }
+  CHECK(reds == 6);
+  CHECK(colorAt(ST_RECORDING, f, 1000) == COLOR_BLUE);
+
+  f.play(FLASH_STOP, 2000);
+  f.play(FLASH_MARK, 2100);                             // новая вспышка не ждёт старую
+  CHECK(colorAt(ST_RECORDING, f, 2100) == COLOR_ORANGE);
+  CHECK(colorAt(ST_RECORDING, f, 2400) == COLOR_BLUE);
+
+  CHECK(colorAt(ST_FAULT, f, 5050) == COLOR_RED);       // неисправность — красный раз в секунду
+  CHECK(colorAt(ST_FAULT, f, 5500) == COLOR_OFF);
 }
 
 // --- AudioFormat --------------------------------------------------------------------
@@ -483,6 +526,8 @@ int main() {
   test_button_long_press_fires_while_held_and_release_is_silent();
   test_button_glitch_shorter_than_debounce_is_ignored();
   test_edges_captured_while_the_loop_was_blocked_still_decode();
+  test_led_follows_recording_mark_and_stop();
+  test_led_error_blinks_six_times_and_new_flash_replaces_old();
   test_mono_format_matches_the_sense_prototype();
   test_stereo_format_doubles_every_byte_count();
   test_mark_formatting_rounds_to_hundredths();
