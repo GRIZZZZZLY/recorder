@@ -1,7 +1,8 @@
 # Arduino ESP32 как компонент ESP-IDF. 3.3.x официально совместим с IDF 5.5:
 # https://docs.espressif.com/projects/arduino-esp32/en/latest/esp-idf_component.html
-# Та же версия ядра, что и у Arduino-сборки (tools/build.sh, .github/workflows/ci.yml),
-# чтобы обе сборки давали одинаковое поведение.
+# Версия закреплена точно: 3.3.12 — та, что работает на плате с 12 окт 2026
+# (прежнее "^3.3.11" молча брало новейшую 3.x). Arduino-сборка (tools/build.sh)
+# пока на 3.3.11; по светодиоду между ними изменилась только документация.
 dependencies:
-  espressif/arduino-esp32: "^3.3.11"
+  espressif/arduino-esp32: "==3.3.12"
   idf: ">=5.5.0,<6.0.0"

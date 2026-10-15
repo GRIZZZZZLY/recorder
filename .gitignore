@@ -16,6 +16,14 @@ node_modules/
 web/.next/
 web/out/
 
+# Прошивка через ESP-IDF: сборка, скачанные компоненты и итоговый sdkconfig
+# (он выводится из sdkconfig.defaults). dependencies.lock — в истории:
+# закрепляет версии компонентов.
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig
+firmware/sdkconfig.old
+
 # Ключи и пароли рядом с кодом не лежат.
 .env
 *.env

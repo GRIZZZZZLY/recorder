@@ -1,8 +1,10 @@
 # Сборка через ESP-IDF
 
 Тот же исходный код, что в `XiaoVoiceRecorder/`, собранный `idf.py` с Arduino
-ESP32 3.3.11 как компонентом ESP-IDF 5.5. Arduino-сборка (`tools/build.sh`)
-остаётся рядом: тот же код, удобная локальная проверка, быстрый откат.
+ESP32 как компонентом ESP-IDF 5.5.5. Версия ядра закреплена в
+`main/idf_component.yml` и `dependencies.lock`: 3.3.12 — та, что работает на
+плате с 12 окт 2026. Arduino-сборка (`tools/build.sh`, ядро 3.3.11) остаётся
+рядом: тот же код, быстрая проверка, откат.
 
 Чем отличается от Arduino-сборки: только настройками ядра, которые Arduino
 зашивает в готовые библиотеки. `sdkconfig.defaults` повторяет sdkconfig
@@ -12,22 +14,42 @@ Arduino (`esp32s3-libs/3.3.11/qio_opi`, сверка 12 окт 2026) с одни
 берёт из `boards.txt` (USB-журнал, PSRAM), задаёт `CMakeLists.txt`: без них
 журнал уходил мимо USB.
 
-CI нет (12 окт 2026): образы собираются только локально, `cd firmware &&
-idf.py build`, и нужен установленный ESP-IDF 5.5.5. На машине владельца его
-пока нет. Последние образы, собранные ещё в CI (`master` 25ed1ff, run
-38303844611, артефакт `firmware-idf-sense`), лежат на GitHub до 26 окт 2026.
-Шьёт esptool из Arduino-тулчейна:
+## Собрать и прошить
 
 ```bash
-esptool --chip esp32s3 -p COM5 -b 921600 write_flash --flash_mode dio --flash_size 8MB   --flash_freq 80m 0x0 build/bootloader/bootloader.bin   0x8000 build/partition_table/partition-table.bin   0xe000 build/ota_data_initial.bin 0x10000 build/recorder.bin
+bash tools/idf.sh build              # firmware/build/recorder.bin
+bash tools/idf.sh -p COM5 flash      # собрать и прошить плату
 ```
 
-Раздел настроек (NVS, 0x9000) при этом не трогается: Wi-Fi, сервер и токен
-переживают переход в обе стороны. Откат — `bash tools/build.sh --upload -p COM5`.
+`tools/idf.sh` сам находит ESP-IDF и ставит окружение (в Git Bash — через
+`export.bat` в cmd: `idf.py` не поддерживает MSYS). Первая сборка скачивает
+компоненты и идёт около 6 минут, следующие — около минуты. `tools/check.sh`
+собирает IDF перед каждым пушем в master.
+
+Раздел настроек (NVS, 0x9000) прошивкой не трогается: Wi-Fi, сервер и токен
+переживают переход в обе стороны. Откат на Arduino — `bash tools/build.sh
+--upload -p COM5`.
+
+## ESP-IDF на машине владельца
+
+Установлен 15 окт 2026 в `E:/esp-idf/`:
+
+| Что | Где |
+| --- | --- |
+| ESP-IDF v5.5.5 (архив с dl.espressif.com, SHA-256 сверен с GitHub) | `E:/esp-idf/esp-idf-v5.5.5` |
+| Компилятор, cmake, ninja, Python-окружение (`install.bat esp32s3`) | `E:/esp-idf/tools` |
+| Кэш скачанных компонентов | `E:/esp-idf/component-cache` |
+
+На другой машине: задать `IDF_PATH` на каталог ESP-IDF 5.5.5, остальное
+`tools/idf.sh` выведет рядом с ним. Инструменты ставятся один раз:
+`install.bat esp32s3` (Windows, в cmd без `MSYSTEM`) или `./install.sh esp32s3`.
+GitHub с машины владельца отдаёт ESP-IDF очень медленно (около 0,1 МБ/с), а
+`dl.espressif.com` — около 4 МБ/с: архив релиза и `IDF_GITHUB_ASSETS=dl.espressif.com/github_assets`
+для инструментов.
 
 ## Зачем
 
-Arduino ESP32 3.3.11 уже построен поверх ESP-IDF 5.5, поэтому переход — не
+Arduino ESP32 3.3 уже построен поверх ESP-IDF 5.5, поэтому переход — не
 переписывание, а снятие слоёв. Что даёт native IDF, чего нет у Arduino:
 
 - PDM RX драйвер с двумя слотами на одной линии DATA — ровно под два
@@ -57,7 +79,7 @@ idf.py -p COMx flash monitor
 | `sdkconfig.defaults` | настройки Arduino-сборки (FAT, lwIP, Wi-Fi, стеки, дамп при сбое) + буфер TCP 32 КиБ |
 | `partitions.csv` | копия схемы Arduino `default_8MB`: NVS на том же месте, два раздела под OTA |
 | `main/main.cpp` | включает три `.ino` в один translation unit — так же, как их склеивает Arduino |
-| `main/idf_component.yml` | `espressif/arduino-esp32 ^3.3.11`, IDF `>=5.5,<6` |
+| `main/idf_component.yml`, `dependencies.lock` | `espressif/arduino-esp32 ==3.3.12`, IDF `>=5.5,<6`; точные версии всех компонентов |
 
 Своих исходников здесь нет и не должно появляться, пока не начнётся замена
 подсистем: логика живёт в `XiaoVoiceRecorder/*.h` и проверяется хост-тестами.
@@ -80,7 +102,7 @@ Recorder RevA и по риску для записи:
    состояний `Uploader.ino` остаётся кооперативной.
 
 Когда последняя зависимость от Arduino уйдёт, IDF обновляется до 6.x отдельным
-шагом. До этого — 5.5.x, потому что Arduino 3.3.11 совместим именно с ним.
+шагом. До этого — 5.5.x, потому что Arduino 3.3 совместим именно с ним.
 
 ## Чего здесь нет намеренно
 

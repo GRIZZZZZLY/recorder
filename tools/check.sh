@@ -8,8 +8,8 @@
 #    молча, поэтому тогда весь набор идёт на VPS (tools/remote_tests.sh).
 # 2. Прошивка: хост-тесты; без g++ — на VPS (tools/host_tests.sh --remote).
 # 3. Прошивка: сборка Arduino, профиль sense.
-# 4. Прошивка: сборка ESP-IDF — если idf.py есть в PATH. Плата работает на
-#    IDF-сборке; без idf.py шаг пропускается с предупреждением в итоге.
+# 4. Прошивка: сборка ESP-IDF (tools/idf.sh) — основная прошивка платы.
+#    Если ESP-IDF на машине нет, шаг пропускается с предупреждением в итоге.
 # 5. Сайт: проверка типов, тесты, сборка.
 set -euo pipefail
 
@@ -36,10 +36,10 @@ step "прошивка: сборка Arduino (sense)"
 bash tools/build.sh --board sense
 
 step "прошивка: сборка ESP-IDF"
-if command -v idf.py >/dev/null 2>&1; then
-  (cd firmware && idf.py build)
+if bash tools/idf.sh --check; then
+  bash tools/idf.sh build
 else
-  echo "idf.py не найден — пропущено."
+  echo "Пропущено."
   SKIPPED+=("сборка ESP-IDF (плата работает на ней: прошивку из этой версии не шить)")
 fi
 
