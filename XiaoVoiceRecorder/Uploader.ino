@@ -2,9 +2,11 @@
  * Отправка готовых частей на личный сервер. Контракт: shared/protocol.md.
  *
  * Кооперативная машина состояний: CRC и тело уступают loop() между блоками
- * при событии REC или исчерпании бюджета. Отдельный вызов SD/TLS, DNS,
- * рукопожатие и операции каталога остаются блокирующими — бюджет не является
- * верхней границей задержки REC. Захват микрофона работает отдельной задачей.
+ * при событии REC или исчерпании бюджета. Соединение (DNS + TCP + TLS, дома
+ * около 2 с, при плохом Wi-Fi до 20 с) идёт в своей задаче, и кнопка в это
+ * время отвечает сразу. Блокирующими остаются отдельные вызовы чтения карты и
+ * записи в сокет — бюджет не верхняя граница задержки REC. Захват микрофона
+ * работает отдельной задачей.
  * START прерывает передачу; следующая попытка спрашивает серверный offset.
  * Доставка подтверждается только после сверки размера и CRC ответа.
  *
@@ -28,6 +30,8 @@
 #include <esp_timer.h>
 #include <lwip/opt.h>
 #include <time.h>
+
+#include <atomic>
 
 #include "Certificates.h"
 #include "Session.h"
@@ -104,6 +108,17 @@ uint32_t g_replyStartedMs = 0;
 uint32_t g_transferStartedMs = 0;
 String g_reply;
 
+// Соединение в своей задаче. Пока задача жива (RUNNING или CANCELLED),
+// g_client принадлежит ей, и loop() его не трогает; после OK/FAILED клиент
+// снова у loop(). Переходы — только compare_exchange, без них отмена могла
+// бы разминуться с концом соединения и оставить его открытым навсегда.
+enum ConnectJob : uint8_t { CONNECT_NONE, CONNECT_RUNNING, CONNECT_CANCELLED, CONNECT_OK, CONNECT_FAILED };
+std::atomic<uint8_t> g_connectJob{CONNECT_NONE};
+uint64_t g_connectUs = 0;           // пишет задача до перехода в OK/FAILED
+uint32_t g_connectStackFree = 0;    // запас стека задачи, байт
+char g_connectError[96];
+constexpr uint32_t CONNECT_STACK_BYTES = 8192;  // как у loopTask, где connect() жил раньше
+
 // CRC и тело никогда не работают одновременно: один буфер вместо двух.
 static uint8_t g_uploadBuffer[upl::CHUNK_BYTES];
 struct UploadPerf {
@@ -141,9 +156,9 @@ void printUploadPerf(const char *outcome) {
                 static_cast<unsigned long long>(g_upPerf.crcCompute.us),
                 static_cast<unsigned long>(g_upPerf.crcRead.calls),
                 static_cast<unsigned long long>(g_upPerf.crcStep.maxUs));
-  Serial.printf("[up-perf] connect_ms=%llu headers_us=%llu probe_ms=%llu reply_ms=%llu "
+  Serial.printf("[up-perf] connect_ms=%llu connect_stack_free=%lu headers_us=%llu probe_ms=%llu reply_ms=%llu "
                 "body_ms=%llu accepted=%lu rate_KiB_s=%llu\n",
-                g_upPerf.connect.us / 1000ULL,
+                g_upPerf.connect.us / 1000ULL, static_cast<unsigned long>(g_connectStackFree),
                 static_cast<unsigned long long>(g_upPerf.headers.us), g_upPerf.probeUs / 1000ULL,
                 replyUs / 1000ULL, g_upPerf.bodyUs / 1000ULL,
                 static_cast<unsigned long>(g_upPerf.body.accepted),
@@ -463,23 +478,43 @@ void appendPartHeaders(String &req) {
   req += "\r\n";
 }
 
-// Шаг 3: TLS-соединение и вопрос серверу, сколько байт этой части у него уже
-// есть (докачка после обрыва). Ответ читает UP_PROBE, тело уходит потом по
-// тому же соединению.
-SendResult openConnection() {
+// Шаг 3а: TLS-соединение в своей задаче — DNS, TCP и рукопожатие блокируют
+// её, а не loop(). Serial отсюда не трогаем: итог печатает loop().
+void connectTask(void *) {
   g_client.stop();
   g_client.setCACert(ISRG_ROOT_X1);
   g_client.setHandshakeTimeout(upl::HANDSHAKE_TIMEOUT_S);
   // DNS + TCP + TLS измеряются вместе: публичный connect() не разделяет их.
   const uint64_t at = uploadClockUs();
   const bool connected = g_client.connect(g_upHost, g_upPort, upl::SOCKET_TIMEOUT_MS);
-  g_upPerf.connect.add(uploadClockUs() - at);
-  if (!connected) {
-    char err[96];
-    g_client.lastError(err, sizeof(err));
-    Serial.printf("[up] Нет соединения с %s:%u: %s\n", g_upHost, g_upPort, err);
-    return SEND_RETRY;
+  g_connectUs = uploadClockUs() - at;
+  g_connectError[0] = '\0';
+  if (!connected) g_client.lastError(g_connectError, sizeof(g_connectError));
+  g_connectStackFree = uxTaskGetStackHighWaterMark(nullptr);
+  uint8_t running = CONNECT_RUNNING;
+  if (!g_connectJob.compare_exchange_strong(running, connected ? CONNECT_OK : CONNECT_FAILED)) {
+    // START отменил передачу, пока шло соединение: убрать за собой самим.
+    g_client.stop();
+    g_connectJob.store(CONNECT_NONE);
   }
+  vTaskDelete(nullptr);
+}
+
+// Отдать g_client обратно: закрыть, если он у loop(); если соединение ещё
+// идёт — пометить отмену, задача закроет его сама.
+void releaseClient() {
+  uint8_t job = CONNECT_RUNNING;
+  if (g_connectJob.compare_exchange_strong(job, CONNECT_CANCELLED) || job == CONNECT_CANCELLED) {
+    return;
+  }
+  g_client.stop();
+  g_connectJob.store(CONNECT_NONE);
+}
+
+// Шаг 3б: соединение есть — вопрос серверу, сколько байт этой части у него
+// уже есть (докачка после обрыва). Ответ читает UP_PROBE, тело уходит потом
+// по тому же соединению.
+SendResult openConnection() {
   String req;
   req.reserve(384);
   req += "GET ";
@@ -569,7 +604,7 @@ SendResult sendUploadHeaders(uint32_t offset) {
 }
 
 void closeTransfer() {
-  g_client.stop();
+  releaseClient();
   if (g_upFile) {
     g_upFile.close();
   }
@@ -780,6 +815,11 @@ void serviceUpload() {
       if (!g_sdReady || g_uploadBlocked || !uploadConfigured()) {
         return;
       }
+      // Прерванное соединение ещё сворачивается в своей задаче: новая
+      // попытка не начинается, пока g_client и адрес сервера заняты им.
+      if (g_connectJob.load() != CONNECT_NONE) {
+        return;
+      }
       if (!g_uploadArmed && static_cast<int32_t>(now - g_nextUploadAttemptMs) < 0) {
         return;
       }
@@ -849,10 +889,32 @@ void serviceUpload() {
       }
       g_upPerf.crcWallUs = uploadClockUs() - g_upPerf.started;
       g_upState = UP_CONNECT;
-      return;  // дать loop() обработать REC перед блокирующим connect()
+      return;  // соединение начнётся на следующем обороте loop()
     }
     case UP_CONNECT: {
-      if (uploadButtonPending()) return;
+      const uint8_t job = g_connectJob.load();
+      if (job == CONNECT_RUNNING || job == CONNECT_CANCELLED) {
+        return;  // идёт это соединение или ещё сворачивается прерванное
+      }
+      if (job == CONNECT_NONE) {
+        if (uploadButtonPending()) return;
+        Serial.printf("[up] Соединение с %s:%u...\n", g_upHost, g_upPort);
+        g_connectJob.store(CONNECT_RUNNING);
+        // Ядро 0 — к Wi-Fi и lwIP; loop() и захват звука живут на ядре 1.
+        if (xTaskCreatePinnedToCore(connectTask, "connect", CONNECT_STACK_BYTES, nullptr, 1, nullptr, 0) !=
+            pdPASS) {
+          g_connectJob.store(CONNECT_NONE);
+          Serial.println("[up] Нет памяти на задачу соединения.");
+          finishTransfer(SEND_RETRY);
+        }
+        return;
+      }
+      g_upPerf.connect.add(g_connectUs);
+      if (job == CONNECT_FAILED) {
+        Serial.printf("[up] Нет соединения с %s:%u: %s\n", g_upHost, g_upPort, g_connectError);
+        finishTransfer(SEND_RETRY);
+        return;
+      }
       const SendResult opened = openConnection();
       if (opened == SEND_OK) {
         g_upState = UP_PROBE;
